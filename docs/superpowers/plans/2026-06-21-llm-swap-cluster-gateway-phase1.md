@@ -647,16 +647,16 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 	defer r.mu.Unlock()
 
 	w := &Worker{
-		ID: hb.AgentID,
-		Tags: append([]string(nil), hb.Tags...),
-		LlamaSwapURL: hb.LlamaSwapURL,
+		ID:            hb.AgentID,
+		Tags:          append([]string(nil), hb.Tags...),
+		LlamaSwapURL:  hb.LlamaSwapURL,
 		RunningModels: append([]protocol.RunningModel(nil), hb.RunningModels...),
-		Artifacts: hb.Artifacts,
-		Capacity: hb.Capacity,
-		NeedsRestart: hb.NeedsRestart,
-		LastError: hb.LastError,
+		Artifacts:     copyStringMap(hb.Artifacts),
+		Capacity:      hb.Capacity,
+		NeedsRestart:  hb.NeedsRestart,
+		LastError:     hb.LastError,
 		LastHeartbeat: now,
-		State: WorkerActive,
+		State:         WorkerActive,
 	}
 	if hb.NeedsRestart {
 		w.State = WorkerDraining
@@ -674,7 +674,8 @@ func (r *WorkerRegistry) Healthy(id string, now time.Time) bool {
 	if !ok {
 		return false
 	}
-	if now.Sub(w.LastHeartbeat) > r.staleAfter {
+	age := now.Sub(w.LastHeartbeat)
+	if age >= r.staleAfter {
 		return false
 	}
 	return w.State == WorkerActive
@@ -685,7 +686,18 @@ func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
 	defer r.mu.RUnlock()
 	out := make([]Worker, 0, len(r.workers))
 	for _, w := range r.workers {
-		cp := *w
+		cp := Worker{
+			ID:            w.ID,
+			Tags:          append([]string(nil), w.Tags...),
+			LlamaSwapURL:  w.LlamaSwapURL,
+			RunningModels: append([]protocol.RunningModel(nil), w.RunningModels...),
+			Artifacts:     copyStringMap(w.Artifacts),
+			Capacity:      w.Capacity,
+			NeedsRestart:  w.NeedsRestart,
+			LastError:     w.LastError,
+			LastHeartbeat: w.LastHeartbeat,
+			State:         w.State,
+		}
 		out = append(out, cp)
 		_ = now
 	}
@@ -700,7 +712,8 @@ func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) 
 	if !ok {
 		return nil, false
 	}
-	if now.Sub(w.LastHeartbeat) >= r.staleAfter {
+	age := now.Sub(w.LastHeartbeat)
+	if age >= r.staleAfter {
 		return nil, false
 	}
 	if w.State != WorkerActive {
@@ -724,6 +737,17 @@ func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) 
 	}
 
 	return release, true
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 ```
 
