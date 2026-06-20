@@ -53,8 +53,8 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	if performance["enable"] != true {
 		t.Fatalf("performance.enable = %#v, want true", performance["enable"])
 	}
-	if performance["interval"] != "5s" {
-		t.Fatalf("performance.interval = %#v, want 5s", performance["interval"])
+	if performance["every"] != "5s" {
+		t.Fatalf("performance.every = %#v, want 5s", performance["every"])
 	}
 
 	hooks := doc["hooks"].(map[string]any)

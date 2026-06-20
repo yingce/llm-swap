@@ -20,8 +20,8 @@ type llamaSwapConfig struct {
 }
 
 type llamaSwapPerformance struct {
-	Enable   bool   `yaml:"enable"`
-	Interval string `yaml:"interval"`
+	Enable bool   `yaml:"enable"`
+	Every  string `yaml:"every"`
 }
 
 type llamaSwapModel struct {
@@ -36,8 +36,8 @@ func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, 
 		StartPort: 10001,
 		GlobalTTL: 0,
 		Performance: llamaSwapPerformance{
-			Enable:   true,
-			Interval: "5s",
+			Enable: true,
+			Every:  "5s",
 		},
 		Models: make(map[string]llamaSwapModel, len(resp.TagPolicy.AllowedModels)),
 	}
