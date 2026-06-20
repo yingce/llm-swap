@@ -181,6 +181,119 @@ func TestProxyRetriesDifferentWorkerBeforeHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyAllWorkersReturn503ReportsUpstreamRetryExhausted(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "upstream_retry_exhausted")
+	assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
+}
+
+func TestProxyAllWorkersReturn429PreservesTooManyRequests(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "upstream_retry_exhausted")
+	assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
+}
+
+func TestProxyMalformedWorkerURLReportsWorkerUnavailable(t *testing.T) {
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "broken", "", true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "worker_unavailable")
+	assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
+}
+
+func TestProxyStripsRequestHeadersNamedByConnection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Client-Hop"); got != "" {
+			t.Fatalf("X-Client-Hop reached upstream: %q", got)
+		}
+		if got := r.Header.Get("Connection"); got != "" {
+			t.Fatalf("Connection reached upstream: %q", got)
+		}
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "worker", upstream.URL, true)
+	req := proxyRequest(`{"model":"qwen","messages":[]}`)
+	req.Header.Set("Connection", "X-Client-Hop")
+	req.Header.Set("X-Client-Hop", "secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestProxyStripsResponseHeadersNamedByConnection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Connection", "X-Upstream-Hop")
+		w.Header().Set("X-Upstream-Hop", "secret")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "worker", upstream.URL, true)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Upstream-Hop"); got != "" {
+		t.Fatalf("X-Upstream-Hop = %q, want stripped", got)
+	}
+	if got := rr.Header().Get("Connection"); got != "" {
+		t.Fatalf("Connection = %q, want stripped", got)
+	}
+}
+
 func TestProxyStreamingKeepsWorkerAndAccountingActiveUntilBodyCopyFinishes(t *testing.T) {
 	started := make(chan struct{})
 	releaseStream := make(chan struct{})
@@ -303,6 +416,21 @@ func assertOpenAIErrorCode(t *testing.T, body []byte, code string) {
 	}
 	if resp.Error.Code != code {
 		t.Fatalf("error code = %q, want %q; body=%s", resp.Error.Code, code, string(body))
+	}
+}
+
+func assertNotOpenAIErrorCode(t *testing.T, body []byte, code string) {
+	t.Helper()
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&resp); err != nil {
+		t.Fatalf("decode OpenAI error: %v; body=%s", err, string(body))
+	}
+	if resp.Error.Code == code {
+		t.Fatalf("error code = %q, did not want it; body=%s", resp.Error.Code, string(body))
 	}
 }
 

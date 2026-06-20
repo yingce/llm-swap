@@ -36,6 +36,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	exclude := make(map[string]bool)
+	var lastDispatchFailure *proxyDispatchFailure
 	for attempt := 0; attempt < maxProxyAttempts; attempt++ {
 		if err := r.Context().Err(); err != nil {
 			return
@@ -55,8 +56,11 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		accountingRelease := s.accounting.Acquire(r.Header.Get("X-Request-ID"), model, tag, worker.ID)
 		release := releaseOnce(workerRelease, accountingRelease)
 
-		retry, err := s.proxyAttempt(w, r, body, worker)
+		retry, dispatchFailure, err := s.proxyAttempt(w, r, body, worker)
 		release()
+		if dispatchFailure != nil {
+			lastDispatchFailure = dispatchFailure
+		}
 		if err != nil && r.Context().Err() != nil {
 			return
 		}
@@ -72,18 +76,52 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		return
 	}
+	if lastDispatchFailure != nil {
+		lastDispatchFailure.write(w)
+		return
+	}
 	protocol.WriteOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_worker", "no healthy worker is available for the requested model")
 }
 
-func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, worker Worker) (bool, error) {
+type proxyDispatchFailure struct {
+	status  int
+	code    string
+	message string
+}
+
+func (f proxyDispatchFailure) write(w http.ResponseWriter) {
+	protocol.WriteOpenAIError(w, f.status, f.code, f.message)
+}
+
+func workerUnavailableFailure() *proxyDispatchFailure {
+	return &proxyDispatchFailure{
+		status:  http.StatusServiceUnavailable,
+		code:    "worker_unavailable",
+		message: "selected worker is unavailable",
+	}
+}
+
+func upstreamRetryExhaustedFailure(status int) *proxyDispatchFailure {
+	message := "upstream returned a retryable status after exhausting proxy attempts"
+	if text := http.StatusText(status); text != "" {
+		message = "upstream returned " + text + " after exhausting proxy attempts"
+	}
+	return &proxyDispatchFailure{
+		status:  status,
+		code:    "upstream_retry_exhausted",
+		message: message,
+	}
+}
+
+func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, worker Worker) (bool, *proxyDispatchFailure, error) {
 	upstreamURL, err := upstreamRequestURL(worker.LlamaSwapURL, r.URL)
 	if err != nil {
-		return true, err
+		return true, workerUnavailableFailure(), err
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		return true, err
+		return true, workerUnavailableFailure(), err
 	}
 	copyRequestHeaders(req.Header, r.Header)
 	if s.config.Tokens.LlamaSwap != "" {
@@ -95,21 +133,24 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 
 	resp, err := defaultProxyHTTPClient.Do(req)
 	if err != nil {
-		return retryableProxyError(err, r.Context()), err
+		if retryableProxyError(err, r.Context()) {
+			return true, workerUnavailableFailure(), err
+		}
+		return false, nil, err
 	}
 	defer resp.Body.Close()
 
 	if retryableUpstreamStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return true, nil
+		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil
 	}
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if err := copyResponseBody(w, resp.Body); err != nil {
-		return false, nil
+		return false, nil, nil
 	}
-	return false, nil
+	return false, nil, nil
 }
 
 func upstreamRequestURL(baseURL string, requestURL *url.URL) (string, error) {
@@ -136,8 +177,9 @@ func (e proxyURLError) Error() string {
 const errMissingBaseURL proxyURLError = "missing upstream base url"
 
 func copyRequestHeaders(dst, src http.Header) {
+	connectionHeaders := connectionHeaderNames(src)
 	for key, values := range src {
-		if hopByHopHeader(key) {
+		if hopByHopHeader(key) || connectionHeaders[strings.ToLower(key)] {
 			continue
 		}
 		for _, value := range values {
@@ -147,14 +189,28 @@ func copyRequestHeaders(dst, src http.Header) {
 }
 
 func copyResponseHeaders(dst, src http.Header) {
+	connectionHeaders := connectionHeaderNames(src)
 	for key, values := range src {
-		if hopByHopHeader(key) {
+		if hopByHopHeader(key) || connectionHeaders[strings.ToLower(key)] {
 			continue
 		}
 		for _, value := range values {
 			dst.Add(key, value)
 		}
 	}
+}
+
+func connectionHeaderNames(h http.Header) map[string]bool {
+	names := make(map[string]bool)
+	for _, value := range h.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "" {
+				names[name] = true
+			}
+		}
+	}
+	return names
 }
 
 func hopByHopHeader(name string) bool {
