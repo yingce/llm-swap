@@ -692,10 +692,38 @@ func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
 	return out
 }
 
-func (r *WorkerRegistry) SetActive(workerID string, active int) {
+func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.active[workerID] = active
+
+	w, ok := r.workers[workerID]
+	if !ok {
+		return nil, false
+	}
+	if now.Sub(w.LastHeartbeat) >= r.staleAfter {
+		return nil, false
+	}
+	if w.State != WorkerActive {
+		return nil, false
+	}
+
+	r.active[workerID]++
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+
+			if r.active[workerID] <= 1 {
+				delete(r.active, workerID)
+				return
+			}
+			r.active[workerID]--
+		})
+	}
+
+	return release, true
 }
 ```
 
@@ -1565,12 +1593,17 @@ func (s *Server) handleModelProxy() http.HandlerFunc {
 				return
 			}
 			exclude[pick.ID] = true
+			releaseWorker, ok := s.workers.Acquire(pick.ID, time.Now())
+			if !ok {
+				continue
+			}
 			tag := pick.Tags[0]
-			release := s.accounting.Acquire(r.Header.Get("X-Request-Id"), model, tag, pick.ID)
-			s.workers.SetActive(pick.ID, s.accounting.WorkerActive(pick.ID))
-			ok, status := s.tryProxy(w, r, body, pick.LlamaSwapURL)
-			release()
-			s.workers.SetActive(pick.ID, s.accounting.WorkerActive(pick.ID))
+			releaseAccounting := s.accounting.Acquire(r.Header.Get("X-Request-Id"), model, tag, pick.ID)
+			ok, status := func() (bool, int) {
+				defer releaseWorker()
+				defer releaseAccounting()
+				return s.tryProxy(w, r, body, pick.LlamaSwapURL)
+			}()
 			if ok {
 				return
 			}

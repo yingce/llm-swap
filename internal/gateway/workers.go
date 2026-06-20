@@ -132,13 +132,6 @@ func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) 
 	return release, true
 }
 
-func (r *WorkerRegistry) SetActive(workerID string, active int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.active[workerID] = active
-}
-
 func copyStringMap(in map[string]string) map[string]string {
 	if in == nil {
 		return nil
