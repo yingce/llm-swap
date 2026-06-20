@@ -389,6 +389,13 @@ Agent may derive `running_models` from llama-swap `GET /running`.
 
 Gateway marks a worker unhealthy when heartbeat is stale or when repeated llama-swap health/metrics pulls fail.
 
+Heartbeat timing:
+
+- Agent sends heartbeat every 3 seconds.
+- Gateway marks a worker unavailable when no heartbeat has been received for 6 seconds.
+- An unavailable worker is removed from scheduling candidates immediately.
+- If the worker resumes heartbeat later, gateway may return it to service after a successful state refresh from `/running`.
+
 ## Request Lifecycle
 
 For every client request:
@@ -410,6 +417,15 @@ For every client request:
 ```
 
 For streaming/SSE responses, release occurs only when the stream ends, the upstream errors, the client disconnects, or the gateway timeout/cancel path runs.
+
+Dispatch retry policy:
+
+- Gateway attempts a request up to 3 total times: the first selected worker plus 2 retries.
+- Retries must choose a different eligible worker when possible.
+- Gateway retries when the selected worker is unavailable, connection setup fails, returns a retryable upstream error, or fails before response headers are sent.
+- Gateway does not retry after a streaming response has started or after response bytes have been sent to the client.
+- Each failed attempt releases its model/tag/worker active counters before retrying.
+- If all attempts fail, gateway returns the last meaningful error as an OpenAI-compatible error response.
 
 In-memory state for V1:
 
