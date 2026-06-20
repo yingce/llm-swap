@@ -1,0 +1,117 @@
+package gateway
+
+import (
+	"sync"
+	"time"
+
+	"llm-swap/internal/config"
+	"llm-swap/internal/protocol"
+)
+
+type WorkerState string
+
+const (
+	WorkerActive   WorkerState = "active"
+	WorkerDraining WorkerState = "draining"
+)
+
+type Worker struct {
+	ID            string
+	Tags          []string
+	LlamaSwapURL  string
+	RunningModels []protocol.RunningModel
+	Artifacts     map[string]string
+	Capacity      config.WorkerDefaults
+	NeedsRestart  bool
+	LastError     string
+	LastHeartbeat time.Time
+	State         WorkerState
+}
+
+type WorkerRegistry struct {
+	mu         sync.RWMutex
+	staleAfter time.Duration
+	workers    map[string]*Worker
+	active     map[string]int
+}
+
+func NewWorkerRegistry(staleAfter time.Duration) *WorkerRegistry {
+	return &WorkerRegistry{
+		staleAfter: staleAfter,
+		workers:    make(map[string]*Worker),
+		active:     make(map[string]int),
+	}
+}
+
+func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.Time) protocol.HeartbeatResponse {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	w := &Worker{
+		ID:            hb.AgentID,
+		Tags:          append([]string(nil), hb.Tags...),
+		LlamaSwapURL:  hb.LlamaSwapURL,
+		RunningModels: append([]protocol.RunningModel(nil), hb.RunningModels...),
+		Artifacts:     copyStringMap(hb.Artifacts),
+		Capacity:      hb.Capacity,
+		NeedsRestart:  hb.NeedsRestart,
+		LastError:     hb.LastError,
+		LastHeartbeat: now,
+		State:         WorkerActive,
+	}
+	if hb.NeedsRestart {
+		w.State = WorkerDraining
+	}
+	r.workers[hb.AgentID] = w
+
+	restartAllowed := hb.NeedsRestart && r.active[hb.AgentID] == 0
+	return protocol.HeartbeatResponse{WorkerState: string(w.State), RestartAllowed: restartAllowed}
+}
+
+func (r *WorkerRegistry) Healthy(id string, now time.Time) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	w, ok := r.workers[id]
+	if !ok {
+		return false
+	}
+	if now.Sub(w.LastHeartbeat) >= r.staleAfter {
+		return false
+	}
+	return w.State == WorkerActive
+}
+
+func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]Worker, 0, len(r.workers))
+	for _, w := range r.workers {
+		cp := *w
+		cp.Tags = append([]string(nil), w.Tags...)
+		cp.RunningModels = append([]protocol.RunningModel(nil), w.RunningModels...)
+		cp.Artifacts = copyStringMap(w.Artifacts)
+		out = append(out, cp)
+		_ = now
+	}
+	return out
+}
+
+func (r *WorkerRegistry) SetActive(workerID string, active int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.active[workerID] = active
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
