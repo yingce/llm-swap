@@ -1,0 +1,4 @@
+.git/
+.worktrees/
+bin/
+dist/
