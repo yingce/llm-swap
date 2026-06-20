@@ -38,8 +38,8 @@ func validateGateway(cfg GatewayConfig) error {
 	if strings.TrimSpace(cfg.OSS.BaseURL) == "" {
 		return fmt.Errorf("oss.base_url is required")
 	}
-	if cfg.Tokens.Agent == "" || cfg.Tokens.LlamaSwap == "" {
-		return fmt.Errorf("tokens.agent and tokens.llama_swap are required")
+	if cfg.Tokens.Client == "" || cfg.Tokens.Agent == "" || cfg.Tokens.LlamaSwap == "" {
+		return fmt.Errorf("tokens.client, tokens.agent, and tokens.llama_swap are required")
 	}
 	if len(cfg.Models) == 0 {
 		return fmt.Errorf("models is required")
@@ -65,6 +65,9 @@ func validateGateway(cfg GatewayConfig) error {
 		}
 	}
 	for tag, policy := range cfg.TagPolicies {
+		if policy.MaxConcurrency < 0 || policy.MaxQueue < 0 || policy.WorkerDefaults.MaxConcurrency < 0 || policy.WorkerDefaults.MaxQueue < 0 {
+			return fmt.Errorf("tag %s concurrency and queue limits must be non-negative", tag)
+		}
 		for _, model := range policy.AllowedModels {
 			if _, ok := cfg.Models[model]; !ok {
 				return fmt.Errorf("tag %s allowed model %s is not defined", tag, model)

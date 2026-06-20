@@ -86,3 +86,61 @@ tag_policies:
 		t.Fatalf("warm_when_idle = %q", cfg.TagPolicies["gpu-4090"].WarmWhenIdle)
 	}
 }
+
+func TestLoadGatewayConfigRequiresClientToken(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  agent: agent-token
+  llama_swap: worker-token
+models:
+  qwen:
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "tokens.client") {
+		t.Fatalf("error = %v, want tokens.client", err)
+	}
+}
+
+func TestLoadGatewayConfigRejectsNegativeTagLimits(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+  llama_swap: worker-token
+models:
+  qwen:
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+  gpu-4090:
+    max_concurrency: -1
+    worker_defaults:
+      max_queue: -1
+    allowed_models: [qwen]
+`
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "tag gpu-4090") {
+		t.Fatalf("error = %v, want tag gpu-4090", err)
+	}
+}
