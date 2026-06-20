@@ -90,6 +90,10 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(hb.AgentID) == "" {
+		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		return
+	}
 
 	resp := s.workers.UpsertHeartbeat(hb, time.Now())
 	writeJSON(w, resp)

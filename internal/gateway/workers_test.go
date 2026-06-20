@@ -167,6 +167,30 @@ func TestHeartbeatEndpointRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestHeartbeatEndpointRejectsBlankAgentID(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	data, err := json.Marshal(protocol.HeartbeatRequest{
+		AgentID:      " ",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/internal/agent/heartbeat", bytes.NewReader(data))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if srv.workers.Healthy("", time.Now()) {
+		t.Fatal("blank agent_id should not register an empty worker")
+	}
+}
+
 func postHeartbeat(t *testing.T, srv *Server, body protocol.HeartbeatRequest) protocol.HeartbeatResponse {
 	t.Helper()
 	data, err := json.Marshal(body)
