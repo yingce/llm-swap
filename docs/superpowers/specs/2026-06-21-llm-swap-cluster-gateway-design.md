@@ -75,6 +75,7 @@ Agent responsibilities:
 - Store artifact marker files to avoid duplicate downloads.
 - Render local `llama-swap.yaml`.
 - Restart local llama-swap only when rendered config content changes.
+- Coordinate config-change restarts with gateway drain state.
 - Apply a local lock around download, extraction, config write, and restart.
 - Report heartbeat to gateway.
 
@@ -85,6 +86,8 @@ Agent does not:
 - Maintain global queues.
 - Decide global model eviction.
 - Kill model runtime processes directly except as part of restarting llama-swap service.
+
+When a config change requires restarting llama-swap, the agent must not restart it while gateway-assigned requests are active on that worker. The agent reports `needs_restart`, waits for gateway to mark the worker draining, and restarts llama-swap only after a heartbeat response returns `restart_allowed: true`.
 
 ### llama-swap
 
@@ -202,7 +205,7 @@ tag_policies:
 Fields:
 
 - `allowed_models`: Models this tag must download and may serve.
-- `warm_when_idle`: One model to preload when the worker starts or when running state is empty.
+- `warm_when_idle`: One model to preload when the worker starts and to reload when the worker is healthy, idle, and `/running` is empty.
 - `max_concurrency`: Global active request cap across workers with this tag.
 - `max_queue`: Global queue cap across workers with this tag.
 - `worker_defaults.max_concurrency`: Default per-worker cap for workers with this tag.
@@ -303,7 +306,8 @@ Download rules:
 - If marker exists and `model + object + kind + crc64ecma` match, skip download.
 - If marker is missing, download.
 - If `object`, `kind`, or `crc64ecma` changes, download into a temporary path.
-- Verify downloaded OSS object CRC64 ECMA.
+- Before downloading, send `HEAD` to OSS and require the returned `x-oss-hash-crc64ecma` to match the configured `crc64ecma`.
+- After downloading, compute local CRC64 ECMA for the downloaded object and require it to match the configured `crc64ecma`.
 - For `tar_gz`, extract into a temporary directory, then atomically replace the target directory.
 - For `file`, write to a temporary file, then atomically replace the target file.
 - Write marker only after successful verification and install.
@@ -348,10 +352,19 @@ Important rules:
 - Agent does not allocate per-model runtime ports.
 - Agent compares the rendered file content with the existing config.
 - If content is unchanged, it does not restart llama-swap.
-- If content changed, it writes the file atomically and restarts llama-swap.
+- If content changed, it writes the file atomically and restarts llama-swap only after the gateway drain protocol allows it.
 - `warm_when_idle` renders to `hooks.on_startup.preload`.
 
 If runtime commands require a custom stop command, the gateway model config can include `cmd_stop`, and agent renders it to llama-swap `cmdStop`.
+
+Restart drain protocol:
+
+- Agent detects rendered config content changed.
+- Agent reports `needs_restart: true` in heartbeat and keeps serving the current llama-swap config.
+- Gateway marks the worker `draining`, stops assigning new requests to it, and waits until `worker_active[worker_id] == 0`.
+- Gateway returns `restart_allowed: true` in the heartbeat response.
+- Agent restarts llama-swap, verifies `/health` and `/running`, then reports `needs_restart: false`.
+- Gateway refreshes worker state and returns it to scheduling candidates.
 
 ## Heartbeat
 
@@ -381,6 +394,7 @@ Payload:
     "max_concurrency": 8,
     "max_queue": 16
   },
+  "needs_restart": false,
   "last_error": null
 }
 ```
@@ -388,6 +402,17 @@ Payload:
 Agent may derive `running_models` from llama-swap `GET /running`.
 
 Gateway marks a worker unhealthy when heartbeat is stale or when repeated llama-swap health/metrics pulls fail.
+
+Heartbeat response:
+
+```json
+{
+  "worker_state": "active",
+  "restart_allowed": false
+}
+```
+
+When the agent reports `needs_restart: true`, gateway responds with `worker_state: "draining"` until `worker_active[worker_id] == 0`, then returns `restart_allowed: true`. Agent restarts llama-swap only after receiving `restart_allowed: true`.
 
 Heartbeat timing:
 
@@ -422,7 +447,8 @@ Dispatch retry policy:
 
 - Gateway attempts a request up to 3 total times: the first selected worker plus 2 retries.
 - Retries must choose a different eligible worker when possible.
-- Gateway retries when the selected worker is unavailable, connection setup fails, returns a retryable upstream error, or fails before response headers are sent.
+- Gateway retries only when the selected worker is unavailable, connection setup fails, connection times out, the worker fails before response headers are sent, or the worker returns `429`, `502`, `503`, or `504`.
+- Gateway does not retry request errors such as `400`, `401`, `403`, or `404`.
 - Gateway does not retry after a streaming response has started or after response bytes have been sent to the client.
 - Each failed attempt releases its model/tag/worker active counters before retrying.
 - If all attempts fail, gateway returns the last meaningful error as an OpenAI-compatible error response.
@@ -557,9 +583,13 @@ hooks:
       - qwen3-32b-awq
 ```
 
-V1 uses `warm_when_idle` to render startup preload.
+V1 uses `warm_when_idle` for both startup preload and idle reload:
 
-Runtime active warming after llama-swap is already running is optional in V1. If needed, gateway can later add a controlled warm operation that sends a cheap request through llama-swap, but it must avoid expensive generation and must not affect user metrics.
+- Agent renders `warm_when_idle` to `hooks.on_startup.preload`.
+- Gateway treats a healthy worker with `worker_active == 0` and empty `/running` as idle-empty.
+- For idle-empty workers, gateway may trigger the tag's `warm_when_idle` model after confirming the artifact is ready.
+- The warm trigger must use a controlled low-cost request path and must not be counted as a user request.
+- If no safe low-cost warm path exists for a runtime, gateway skips runtime active warming and waits for the next real request to load the model.
 
 ## Metrics
 
@@ -597,6 +627,15 @@ Worker metrics collection:
 - Gateway uses heartbeat for artifact, running model, and worker capacity state.
 
 Prometheus should scrape gateway only in V1. Direct worker scraping is not required.
+
+Merge rules:
+
+- Gateway must not blindly concatenate worker Prometheus output.
+- Gateway re-exports worker-derived metrics with stable labels such as `worker_id`, `tag`, and `source="llama-swap"`.
+- Gateway normalizes metric names under its own namespace when needed to avoid collisions.
+- `/api/metrics` is a historical activity array; gateway must deduplicate repeated pulls using a stable key derived from worker ID plus metric ID, request ID, or timestamp/path/model fields.
+- `/api/performance` samples are deduplicated by worker ID, timestamp, device, and metric type.
+- If a worker metrics pull fails, gateway records scrape failure metrics but does not mark the worker unavailable until heartbeat or repeated health checks also fail.
 
 ## Logs
 
