@@ -1,0 +1,34 @@
+oss:
+  base_url: https://oss.example.com/llm-swap
+
+tokens:
+  client: client-token
+  agent: agent-token
+  llama_swap: worker-token
+
+models:
+  qwen3-32b-awq:
+    priority: 10
+    min_loaded: 0
+    max_loaded: 1
+    max_concurrency: 2
+    max_queue: 8
+    queue_timeout_ms: 30000
+    ttl: 600
+    artifact:
+      object: models/qwen3-32b-awq.tar.gz
+      kind: tar_gz
+      crc64ecma: sample-crc64ecma
+    run: llama-swap run qwen3-32b-awq
+    cmd_stop: llama-swap stop qwen3-32b-awq
+
+tag_policies:
+  gpu-sample:
+    max_concurrency: 2
+    max_queue: 8
+    worker_defaults:
+      max_concurrency: 2
+      max_queue: 8
+    allowed_models:
+      - qwen3-32b-awq
+    warm_when_idle: qwen3-32b-awq

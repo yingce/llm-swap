@@ -14,6 +14,7 @@ type Server struct {
 	config     config.GatewayConfig
 	workers    *WorkerRegistry
 	accounting *Accounting
+	metrics    *Metrics
 	mux        *http.ServeMux
 }
 
@@ -22,9 +23,11 @@ func NewServer(cfg config.GatewayConfig) *Server {
 		config:     cfg,
 		workers:    NewWorkerRegistry(6 * time.Second),
 		accounting: NewAccounting(),
+		metrics:    NewMetrics(),
 		mux:        http.NewServeMux(),
 	}
 
+	s.mux.Handle("GET /metrics", s.metrics.Handler())
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("POST /v1/chat/completions", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModelProxy)))
