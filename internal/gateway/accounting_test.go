@@ -59,3 +59,76 @@ func TestAccountingTracksActiveCountsAndSnapshot(t *testing.T) {
 		t.Fatal("released request should not remain in snapshot")
 	}
 }
+
+func TestAccountingDuplicateRequestIDsReleaseIndependently(t *testing.T) {
+	a := NewAccounting()
+
+	release1 := a.Acquire("same", "qwen", "gpu-4090", "gpu-01")
+	release2 := a.Acquire("same", "qwen", "gpu-4090", "gpu-01")
+
+	if got := a.ModelActive("qwen"); got != 2 {
+		t.Fatalf("qwen active = %d, want 2", got)
+	}
+	if got := a.TagActive("gpu-4090"); got != 2 {
+		t.Fatalf("gpu-4090 active = %d, want 2", got)
+	}
+	if got := a.WorkerActive("gpu-01"); got != 2 {
+		t.Fatalf("gpu-01 active = %d, want 2", got)
+	}
+
+	release1()
+	if got := a.ModelActive("qwen"); got != 1 {
+		t.Fatalf("qwen active after first release = %d, want 1", got)
+	}
+	snapshot := a.RequestSnapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("snapshot length after first release = %d, want 1", len(snapshot))
+	}
+	for key, record := range snapshot {
+		if record.RequestID != "same" || record.Model != "qwen" || record.Tag != "gpu-4090" || record.WorkerID != "gpu-01" {
+			t.Fatalf("snapshot[%q] = %+v, want second request record", key, record)
+		}
+	}
+
+	release2()
+	if got := a.ModelActive("qwen"); got != 0 {
+		t.Fatalf("qwen active after second release = %d, want 0", got)
+	}
+	if got := len(a.RequestSnapshot()); got != 0 {
+		t.Fatalf("snapshot length after second release = %d, want 0", got)
+	}
+}
+
+func TestAccountingEmptyRequestIDsReleaseIndependently(t *testing.T) {
+	a := NewAccounting()
+
+	release1 := a.Acquire("", "qwen", "gpu-4090", "gpu-01")
+	release2 := a.Acquire("", "qwen", "gpu-4090", "gpu-02")
+
+	if got := a.ModelActive("qwen"); got != 2 {
+		t.Fatalf("qwen active = %d, want 2", got)
+	}
+	snapshot := a.RequestSnapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("snapshot length = %d, want 2", len(snapshot))
+	}
+
+	release1()
+	if got := a.ModelActive("qwen"); got != 1 {
+		t.Fatalf("qwen active after first release = %d, want 1", got)
+	}
+	snapshot = a.RequestSnapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("snapshot length after first release = %d, want 1", len(snapshot))
+	}
+	for key, record := range snapshot {
+		if record.RequestID != "" || record.WorkerID != "gpu-02" {
+			t.Fatalf("snapshot[%q] = %+v, want second empty request record", key, record)
+		}
+	}
+
+	release2()
+	if got := a.ModelActive("qwen"); got != 0 {
+		t.Fatalf("qwen active after second release = %d, want 0", got)
+	}
+}

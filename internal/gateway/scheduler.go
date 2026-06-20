@@ -30,16 +30,13 @@ func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (W
 		if !s.Workers.Healthy(worker.ID, now) {
 			continue
 		}
-		if strings.TrimSpace(worker.LastError) != "" {
-			continue
-		}
 		if !workerAllowsModel(s.Config, worker, model) {
 			continue
 		}
-		running := runningModelReady(worker, model)
-		if !running && !artifactReady(worker, model) {
+		if !artifactReady(worker, model) {
 			continue
 		}
+		running := runningModelReady(worker, model)
 		candidates = append(candidates, scoredWorker{
 			worker: worker,
 			score:  workerScore(running),

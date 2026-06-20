@@ -1,13 +1,17 @@
 package gateway
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 type Accounting struct {
-	mu       sync.RWMutex
-	requests map[string]RequestAccounting
-	models   map[string]int
-	tags     map[string]int
-	workers  map[string]int
+	mu          sync.RWMutex
+	nextRequest uint64
+	requests    map[uint64]RequestAccounting
+	models      map[string]int
+	tags        map[string]int
+	workers     map[string]int
 }
 
 type RequestAccounting struct {
@@ -19,7 +23,7 @@ type RequestAccounting struct {
 
 func NewAccounting() *Accounting {
 	return &Accounting{
-		requests: make(map[string]RequestAccounting),
+		requests: make(map[uint64]RequestAccounting),
 		models:   make(map[string]int),
 		tags:     make(map[string]int),
 		workers:  make(map[string]int),
@@ -35,10 +39,9 @@ func (a *Accounting) Acquire(requestID, model, tag, workerID string) func() {
 	}
 
 	a.mu.Lock()
-	if existing, ok := a.requests[requestID]; ok {
-		a.decrementLocked(existing)
-	}
-	a.requests[requestID] = record
+	a.nextRequest++
+	ownershipKey := a.nextRequest
+	a.requests[ownershipKey] = record
 	a.models[model]++
 	a.tags[tag]++
 	a.workers[workerID]++
@@ -47,7 +50,7 @@ func (a *Accounting) Acquire(requestID, model, tag, workerID string) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			a.release(record)
+			a.release(ownershipKey)
 		})
 	}
 }
@@ -74,22 +77,38 @@ func (a *Accounting) RequestSnapshot() map[string]RequestAccounting {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	requestIDCounts := make(map[string]int, len(a.requests))
+	for _, record := range a.requests {
+		requestIDCounts[record.RequestID]++
+	}
+
 	out := make(map[string]RequestAccounting, len(a.requests))
-	for requestID, record := range a.requests {
-		out[requestID] = record
+	for ownershipKey, record := range a.requests {
+		snapshotKey := record.RequestID
+		if snapshotKey == "" || requestIDCounts[snapshotKey] > 1 {
+			snapshotKey = syntheticRequestKey(ownershipKey)
+		}
+		baseSnapshotKey := snapshotKey
+		for suffix := 2; ; suffix++ {
+			if _, exists := out[snapshotKey]; !exists {
+				break
+			}
+			snapshotKey = fmt.Sprintf("%s:%d", baseSnapshotKey, suffix)
+		}
+		out[snapshotKey] = record
 	}
 	return out
 }
 
-func (a *Accounting) release(record RequestAccounting) {
+func (a *Accounting) release(ownershipKey uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	current, ok := a.requests[record.RequestID]
-	if !ok || current != record {
+	record, ok := a.requests[ownershipKey]
+	if !ok {
 		return
 	}
-	delete(a.requests, record.RequestID)
+	delete(a.requests, ownershipKey)
 	a.decrementLocked(record)
 }
 
@@ -105,4 +124,8 @@ func decrementCount(counts map[string]int, key string) {
 		return
 	}
 	counts[key]--
+}
+
+func syntheticRequestKey(ownershipKey uint64) string {
+	return fmt.Sprintf("__acquire:%d", ownershipKey)
 }
