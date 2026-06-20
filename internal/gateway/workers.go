@@ -98,6 +98,40 @@ func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
 	return out
 }
 
+func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	w, ok := r.workers[workerID]
+	if !ok {
+		return nil, false
+	}
+	if now.Sub(w.LastHeartbeat) >= r.staleAfter {
+		return nil, false
+	}
+	if w.State != WorkerActive {
+		return nil, false
+	}
+
+	r.active[workerID]++
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+
+			if r.active[workerID] <= 1 {
+				delete(r.active, workerID)
+				return
+			}
+			r.active[workerID]--
+		})
+	}
+
+	return release, true
+}
+
 func (r *WorkerRegistry) SetActive(workerID string, active int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
