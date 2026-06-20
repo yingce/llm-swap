@@ -144,3 +144,50 @@ tag_policies:
 		t.Fatalf("error = %v, want tag gpu-4090", err)
 	}
 }
+
+func TestLoadGatewayConfigRejectsNegativeQueueTimeout(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+  llama_swap: worker-token
+models:
+  qwen:
+    queue_timeout_ms: -1
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "queue_timeout_ms") {
+		t.Fatalf("error = %v, want queue_timeout_ms", err)
+	}
+}
+
+func TestLoadAgentRequiresRuntimeFields(t *testing.T) {
+	raw := `
+agent:
+  id: gpu-01
+  tags: [gpu-4090]
+  model_root: /data/models
+  llama_swap_config: /etc/llama-swap/config.yaml
+  gateway_url: http://gateway
+`
+	_, err := LoadAgent(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "llama_swap_url") {
+		t.Fatalf("error = %v, want llama_swap_url", err)
+	}
+}

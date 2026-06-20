@@ -28,8 +28,8 @@ func LoadAgent(r io.Reader) (AgentConfig, error) {
 	if len(cfg.Agent.Tags) == 0 {
 		return cfg, fmt.Errorf("agent.tags is required")
 	}
-	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.GatewayURL == "" {
-		return cfg, fmt.Errorf("agent model_root, llama_swap_config, and gateway_url are required")
+	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.LlamaSwapURL == "" || cfg.Agent.GatewayURL == "" || cfg.Agent.Token == "" {
+		return cfg, fmt.Errorf("agent model_root, llama_swap_config, llama_swap_url, gateway_url, and token are required")
 	}
 	return cfg, nil
 }
@@ -62,6 +62,9 @@ func validateGateway(cfg GatewayConfig) error {
 		}
 		if model.MaxConcurrency < 0 || model.MaxQueue < 0 {
 			return fmt.Errorf("model %s concurrency and queue limits must be non-negative", name)
+		}
+		if model.QueueTimeoutMS < 0 {
+			return fmt.Errorf("model %s queue_timeout_ms must be non-negative", name)
 		}
 	}
 	for tag, policy := range cfg.TagPolicies {
