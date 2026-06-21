@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
@@ -292,6 +295,117 @@ func TestReconcileInstallErrorReportsArtifactErrorAndDoesNotMarkReady(t *testing
 	}
 	if heartbeats[0].LastError == "" {
 		t.Fatalf("last_error is empty, want install error context")
+	}
+}
+
+func TestRunHeartbeatsWhileArtifactInstallBlocked(t *testing.T) {
+	crc := crc64String([]byte("model payload"))
+	getStarted := make(chan struct{})
+	releaseDownload := make(chan struct{})
+	var closeGetStarted sync.Once
+	var closeRelease sync.Once
+	var getCount atomic.Int32
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-oss-hash-crc64ecma", crc)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			getCount.Add(1)
+			closeGetStarted.Do(func() { close(getStarted) })
+			select {
+			case <-releaseDownload:
+			case <-r.Context().Done():
+			}
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	t.Cleanup(func() {
+		closeRelease.Do(func() { close(releaseDownload) })
+		oss.Close()
+	})
+
+	heartbeatCh := make(chan protocol.HeartbeatRequest, 16)
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/agent/config":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(reconcileConfig(oss.URL, crc)); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/agent/heartbeat":
+			var hb protocol.HeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
+				t.Fatal(err)
+			}
+			heartbeatCh <- hb
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(protocol.HeartbeatResponse{}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      oss.Client(),
+		Service:         &FakeService{},
+		RunInterval:     10 * time.Millisecond,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- rec.Run(ctx)
+	}()
+
+	select {
+	case <-getStarted:
+	case <-time.After(time.Second):
+		t.Fatal("artifact GET did not start")
+	}
+
+	installingHeartbeats := 0
+	for installingHeartbeats < 2 {
+		select {
+		case hb := <-heartbeatCh:
+			if got := hb.Artifacts["qwen"]; got == "ready" {
+				t.Fatalf("artifact status = ready while download is blocked")
+			} else if got == "installing" {
+				installingHeartbeats++
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("observed %d installing heartbeats, want at least 2", installingHeartbeats)
+		}
+	}
+	if got := getCount.Load(); got != 1 {
+		t.Fatalf("artifact GET count = %d, want 1 while install is blocked", got)
+	}
+
+	cancel()
+	closeRelease.Do(func() { close(releaseDownload) })
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Fatalf("Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not stop after cancellation")
 	}
 }
 
