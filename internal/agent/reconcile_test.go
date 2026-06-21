@@ -1,16 +1,198 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
+
+func TestReconcileInstallsAllowedArtifactAndHeartbeatReportsReady(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGateway(t, oss.URL, crc, &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	modelRoot := t.TempDir()
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "llama-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(modelRoot, "qwen", "model.gguf"))
+	if err != nil {
+		t.Fatalf("read installed artifact: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("installed artifact = %q, want %q", got, payload)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if heartbeats[0].Artifacts["qwen"] != "ready" {
+		t.Fatalf("artifact status = %q, want ready", heartbeats[0].Artifacts["qwen"])
+	}
+}
+
+func TestReconcileMarkerSkipStillReportsReady(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected OSS request %s %s", r.Method, r.URL.Path)
+	}))
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, protocol.AgentConfigResponse{
+		OSS: ossConfig(oss.URL),
+		Models: map[string]config.Model{
+			"qwen": {Artifact: artifact, Run: "llama --model {{model_path}}"},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			Tag:           "gpu-4090",
+			AllowedModels: []string{"qwen"},
+		},
+	}, &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if heartbeats[0].Artifacts["qwen"] != "ready" {
+		t.Fatalf("artifact status = %q, want ready", heartbeats[0].Artifacts["qwen"])
+	}
+}
+
+func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestart(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	responses := []protocol.HeartbeatResponse{
+		{WorkerState: "draining", RestartAllowed: true},
+		{WorkerState: "active", RestartAllowed: false},
+	}
+	gateway := reconcileGatewayWithDynamicHeartbeat(t, reconcileConfig(oss.URL, crc), &heartbeats, func() protocol.HeartbeatResponse {
+		resp := responses[0]
+		if len(responses) > 1 {
+			responses = responses[1:]
+		}
+		return resp
+	})
+	defer gateway.Close()
+
+	svc := &FakeService{}
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	}
+	if svc.Restarts != 1 {
+		t.Fatalf("restarts = %d, want 1", svc.Restarts)
+	}
+	if len(heartbeats) != 1 || !heartbeats[0].NeedsRestart {
+		t.Fatalf("first heartbeat needs_restart = %v, want true", heartbeats)
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 2 {
+		t.Fatalf("heartbeats = %d, want 2", len(heartbeats))
+	}
+	if heartbeats[1].NeedsRestart {
+		t.Fatalf("second heartbeat needs_restart = true, want false after successful restart")
+	}
+}
+
+func TestReconcileInstallErrorReportsArtifactErrorAndDoesNotMarkReady(t *testing.T) {
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGateway(t, oss.URL, "123456789", &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err == nil {
+		t.Fatalf("Reconcile() error = nil, want install error")
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if got := heartbeats[0].Artifacts["qwen"]; got != "error" {
+		t.Fatalf("artifact status = %q, want error", got)
+	}
+	if strings.Contains(strings.ToLower(heartbeats[0].Artifacts["qwen"]), "ready") {
+		t.Fatalf("artifact status must not be ready: %q", heartbeats[0].Artifacts["qwen"])
+	}
+	if heartbeats[0].LastError == "" {
+		t.Fatalf("last_error is empty, want install error context")
+	}
+}
 
 func TestWriteConfigSkipsRestartWhenUnchanged(t *testing.T) {
 	dir := t.TempDir()
@@ -219,4 +401,72 @@ func TestConfigClientReturnsErrorOnNon2xx(t *testing.T) {
 	if _, err := client.Heartbeat(protocol.HeartbeatRequest{AgentID: "gpu-01"}); err == nil {
 		t.Fatal("Heartbeat should return error for non-2xx status")
 	}
+}
+
+func reconcileGateway(t *testing.T, ossURL, crc string, heartbeats *[]protocol.HeartbeatRequest, heartbeatResp protocol.HeartbeatResponse) *httptest.Server {
+	t.Helper()
+	return reconcileGatewayWithConfig(t, reconcileConfig(ossURL, crc), heartbeats, heartbeatResp)
+}
+
+func reconcileGatewayWithConfig(t *testing.T, cfg protocol.AgentConfigResponse, heartbeats *[]protocol.HeartbeatRequest, heartbeatResp protocol.HeartbeatResponse) *httptest.Server {
+	t.Helper()
+	return reconcileGatewayWithDynamicHeartbeat(t, cfg, heartbeats, func() protocol.HeartbeatResponse {
+		return heartbeatResp
+	})
+}
+
+func reconcileGatewayWithDynamicHeartbeat(t *testing.T, cfg protocol.AgentConfigResponse, heartbeats *[]protocol.HeartbeatRequest, heartbeatResp func() protocol.HeartbeatResponse) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/agent/config":
+			if got := r.URL.Query().Get("tags"); got != "gpu-4090" {
+				t.Fatalf("tags = %q, want gpu-4090", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(cfg); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/agent/heartbeat":
+			var hb protocol.HeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
+				t.Fatal(err)
+			}
+			*heartbeats = append(*heartbeats, hb)
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(heartbeatResp()); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+}
+
+func reconcileConfig(ossURL, crc string) protocol.AgentConfigResponse {
+	return protocol.AgentConfigResponse{
+		OSS: ossConfig(ossURL),
+		Models: map[string]config.Model{
+			"qwen": {
+				Artifact: config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: crc},
+				Run:      "llama --model {{model_path}}",
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			Tag:           "gpu-4090",
+			AllowedModels: []string{"qwen"},
+			WorkerDefaults: config.WorkerDefaults{
+				MaxConcurrency: 2,
+				MaxQueue:       4,
+			},
+		},
+	}
+}
+
+func ossConfig(baseURL string) config.OSSConfig {
+	return config.OSSConfig{BaseURL: baseURL}
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,8 +19,12 @@ type ConfigClient struct {
 }
 
 func (c ConfigClient) GetConfig(tags []string) (protocol.AgentConfigResponse, error) {
+	return c.GetConfigContext(context.Background(), tags)
+}
+
+func (c ConfigClient) GetConfigContext(ctx context.Context, tags []string) (protocol.AgentConfigResponse, error) {
 	u := strings.TrimRight(c.BaseURL, "/") + "/internal/agent/config?tags=" + url.QueryEscape(strings.Join(tags, ","))
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return protocol.AgentConfigResponse{}, err
 	}
@@ -42,11 +47,15 @@ func (c ConfigClient) GetConfig(tags []string) (protocol.AgentConfigResponse, er
 }
 
 func (c ConfigClient) Heartbeat(hb protocol.HeartbeatRequest) (protocol.HeartbeatResponse, error) {
+	return c.HeartbeatContext(context.Background(), hb)
+}
+
+func (c ConfigClient) HeartbeatContext(ctx context.Context, hb protocol.HeartbeatRequest) (protocol.HeartbeatResponse, error) {
 	data, err := json.Marshal(hb)
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/internal/agent/heartbeat", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/internal/agent/heartbeat", bytes.NewReader(data))
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}

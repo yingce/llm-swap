@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"llm-swap/internal/agent"
 	"llm-swap/internal/config"
 )
 
@@ -18,8 +24,42 @@ func main() {
 	}
 	defer f.Close()
 
-	if _, err := config.LoadAgent(f); err != nil {
+	cfg, err := config.LoadAgent(f)
+	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("agent config loaded")
+
+	gatewayHTTP := &http.Client{Timeout: 30 * time.Second}
+	artifactHTTP := &http.Client{}
+	var service agent.Service
+	if cfg.Agent.LlamaSwapService == "" {
+		log.Println("agent.llama_swap_service is empty; restart requests will be logged and skipped")
+		service = agent.LoggingService{Logger: log.Default()}
+	} else {
+		service = agent.SystemdService{Name: cfg.Agent.LlamaSwapService}
+	}
+
+	reconciler := &agent.Reconciler{
+		AgentID:         cfg.Agent.ID,
+		Tags:            cfg.Agent.Tags,
+		ModelRoot:       cfg.Agent.ModelRoot,
+		LlamaSwapConfig: cfg.Agent.LlamaSwapConfig,
+		LlamaSwapURL:    cfg.Agent.LlamaSwapURL,
+		LlamaSwapToken:  cfg.Agent.Token,
+		Gateway: agent.ConfigClient{
+			BaseURL: cfg.Agent.GatewayURL,
+			Token:   cfg.Agent.Token,
+			HTTP:    gatewayHTTP,
+		},
+		HTTPClient: artifactHTTP,
+		Service:    service,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	log.Printf("agent reconcile loop starting for %s", cfg.Agent.ID)
+	if err := reconciler.Run(ctx); err != nil && err != context.Canceled {
+		log.Fatal(err)
+	}
 }
