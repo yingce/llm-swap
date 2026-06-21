@@ -33,7 +33,7 @@ func main() {
 	artifactHTTP := &http.Client{}
 	var service agent.Service
 	if cfg.Agent.LlamaSwapService == "" {
-		log.Println("agent.llama_swap_service is empty; restart requests will be logged and skipped")
+		log.Println("agent.llama_swap_service is empty; restart requests will fail until configured")
 		service = agent.LoggingService{Logger: log.Default()}
 	} else {
 		service = agent.SystemdService{Name: cfg.Agent.LlamaSwapService}

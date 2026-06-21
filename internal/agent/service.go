@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os/exec"
 )
@@ -27,8 +28,9 @@ func (s LoggingService) Restart(context.Context) error {
 	if logger == nil {
 		logger = log.Default()
 	}
-	logger.Println("restart requested but no llama_swap_service configured; skipping")
-	return nil
+	err := errors.New("agent.llama_swap_service is empty; cannot restart llama-swap")
+	logger.Println(err)
+	return err
 }
 
 type FakeService struct {

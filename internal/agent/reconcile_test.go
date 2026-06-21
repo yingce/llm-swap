@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -203,6 +204,40 @@ func TestReconcileLoadsPendingRestartMarkerWhenConfigUnchanged(t *testing.T) {
 	}
 }
 
+func TestWriteConfigChangedMarkerFailureDoesNotCommitNewBytes(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "llama-swap.yaml")
+	markerPath := restartPendingMarkerPath(configPath)
+	oldConfig := []byte("models: old\n")
+	if err := os.WriteFile(configPath, oldConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markerPath, []byte("pending\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	markerErr := os.ErrPermission
+	changed, err := writeConfigIfChangedAndMarkPending(configPath, []byte("models: new\n"), func() error {
+		return markerErr
+	})
+	if !errors.Is(err, markerErr) {
+		t.Fatalf("writeConfigIfChangedAndMarkPending() error = %v, want %v", err, markerErr)
+	}
+	if changed {
+		t.Fatalf("changed = true, want false when marker write fails before commit")
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after failed write: %v", err)
+	}
+	if string(got) != string(oldConfig) {
+		t.Fatalf("config changed despite marker write failure:\n%s", got)
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("pending marker was cleared after failed write: %v", err)
+	}
+}
+
 func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestart(t *testing.T) {
 	payload := []byte("model payload")
 	crc := crc64String(payload)
@@ -257,6 +292,44 @@ func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestar
 	}
 	if heartbeats[1].NeedsRestart {
 		t.Fatalf("second heartbeat needs_restart = true, want false after successful restart")
+	}
+}
+
+func TestReconcileLoggingServiceRestartErrorKeepsPendingMarker(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGateway(t, oss.URL, crc, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         LoggingService{},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err == nil {
+		t.Fatalf("Reconcile() error = nil, want logging service restart error")
+	} else if !strings.Contains(err.Error(), "llama_swap_service") {
+		t.Fatalf("Reconcile() error = %q, want llama_swap_service context", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if !heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeat needs_restart = false, want true before restart attempt")
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); err != nil {
+		t.Fatalf("pending restart marker missing after failed logging restart: %v", err)
 	}
 }
 
