@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"llm-swap/internal/protocol"
 )
 
 func TestMetricsScraperDeduplicatesRowsAcrossPulls(t *testing.T) {
@@ -209,6 +211,48 @@ func TestMetricsRouteReportsActiveProxiedRequestByWorkerAndModel(t *testing.T) {
 	waitForActiveRequestMetric(t, srv, "metrics-worker", "qwen", 0)
 }
 
+func TestMetricsRouteMergesWorkerStateAndLlamaSwapActivity(t *testing.T) {
+	var sawAuth bool
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/metrics" {
+			t.Fatalf("path = %q, want /api/metrics", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got == "Bearer llama-secret" {
+			sawAuth = true
+		}
+		_, _ = w.Write([]byte(`[{"id":"activity-1","model":"qwen"}]`))
+	}))
+	defer worker.Close()
+
+	srv := NewServer(testProxyConfig())
+	srv.workers.UpsertHeartbeat(protocolHeartbeat("worker-a", worker.URL), time.Now())
+
+	body := scrapeMetrics(t, srv)
+
+	if !sawAuth {
+		t.Fatal("worker metrics scrape did not send llama-swap bearer token")
+	}
+	assertMetricLine(t, body, `llm_swap_gateway_worker_up{worker_id="worker-a"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_model_ready{model="qwen",worker_id="worker-a"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_model_running{model="qwen",worker_id="worker-a"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_activity_rows_total{worker_id="worker-a"} 1`)
+
+	body = scrapeMetrics(t, srv)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_activity_rows_total{worker_id="worker-a"} 1`)
+}
+
+func protocolHeartbeat(workerID, workerURL string) protocol.HeartbeatRequest {
+	return protocol.HeartbeatRequest{
+		AgentID:      workerID,
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: workerURL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "ready"},
+		},
+	}
+}
+
 func waitForActiveRequestMetric(t *testing.T, srv *Server, workerID, model string, want float64) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -238,6 +282,16 @@ func scrapeMetrics(t *testing.T, srv *Server) string {
 		t.Fatalf("metrics status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
 	return rr.Body.String()
+}
+
+func assertMetricLine(t *testing.T, body, want string) {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if line == want {
+			return
+		}
+	}
+	t.Fatalf("metrics missing line %q; body:\n%s", want, body)
 }
 
 func activeRequestMetricValue(body, workerID, model string) (float64, bool) {

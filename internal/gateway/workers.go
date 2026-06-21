@@ -98,6 +98,17 @@ func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
 	return out
 }
 
+func (r *WorkerRegistry) ActiveSnapshot() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make(map[string]int, len(r.active))
+	for workerID, active := range r.active {
+		out[workerID] = active
+	}
+	return out
+}
+
 func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
