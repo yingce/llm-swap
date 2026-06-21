@@ -57,6 +57,54 @@ func TestMetricsScraperIsolatesWorkers(t *testing.T) {
 	}
 }
 
+func TestMetricsScraperEvictsOldSeenRowsWhenBoundExceeded(t *testing.T) {
+	payloads := []string{
+		`[{"id":"request-1"}]`,
+		`[{"id":"request-2"}]`,
+		`[{"id":"request-3"}]`,
+		`[{"id":"request-4"}]`,
+		`[{"id":"request-4"}]`,
+		`[{"id":"request-1"}]`,
+	}
+	var pull int
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if pull >= len(payloads) {
+			t.Fatalf("unexpected metrics pull %d", pull+1)
+		}
+		_, _ = w.Write([]byte(payloads[pull]))
+		pull++
+	}))
+	defer worker.Close()
+
+	scraper := newMetricsScraperWithMaxSeen(3)
+
+	for i := 0; i < 4; i++ {
+		got, err := scraper.PullActivity("worker-a", worker.URL)
+		if err != nil {
+			t.Fatalf("PullActivity #%d returned error: %v", i+1, err)
+		}
+		if got != 1 {
+			t.Fatalf("PullActivity #%d = %d, want 1", i+1, got)
+		}
+	}
+
+	got, err := scraper.PullActivity("worker-a", worker.URL)
+	if err != nil {
+		t.Fatalf("recent duplicate PullActivity returned error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("recent duplicate PullActivity = %d, want 0", got)
+	}
+
+	got, err = scraper.PullActivity("worker-a", worker.URL)
+	if err != nil {
+		t.Fatalf("evicted row PullActivity returned error: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("evicted row PullActivity = %d, want 1", got)
+	}
+}
+
 func TestMetricsScraperReturnsErrorOnNon2xx(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)

@@ -9,16 +9,30 @@ import (
 	"time"
 )
 
+// llama-swap /api/metrics is historical; keep recent rows without retaining one key per request forever.
+const defaultMaxSeenActivityKeys = 10000
+
 type MetricsScraper struct {
-	client *http.Client
-	mu     sync.Mutex
-	seen   map[string]struct{}
+	client      *http.Client
+	mu          sync.Mutex
+	seen        map[string]struct{}
+	seenOrder   []string
+	maxSeenKeys int
 }
 
 func NewMetricsScraper() *MetricsScraper {
+	return newMetricsScraperWithMaxSeen(defaultMaxSeenActivityKeys)
+}
+
+func newMetricsScraperWithMaxSeen(maxSeenKeys int) *MetricsScraper {
+	if maxSeenKeys <= 0 {
+		maxSeenKeys = defaultMaxSeenActivityKeys
+	}
 	return &MetricsScraper{
-		client: &http.Client{Timeout: 3 * time.Second},
-		seen:   make(map[string]struct{}),
+		client:      &http.Client{Timeout: 3 * time.Second},
+		seen:        make(map[string]struct{}),
+		seenOrder:   make([]string, 0, maxSeenKeys),
+		maxSeenKeys: maxSeenKeys,
 	}
 }
 
@@ -42,15 +56,31 @@ func (s *MetricsScraper) PullActivity(workerID string, baseURL string) (int, err
 	defer s.mu.Unlock()
 
 	newRows := 0
+	pullSeen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
 		key := workerID + "\x00" + stableActivityKey(row)
+		if _, ok := pullSeen[key]; ok {
+			continue
+		}
+		pullSeen[key] = struct{}{}
 		if _, ok := s.seen[key]; ok {
 			continue
 		}
-		s.seen[key] = struct{}{}
+		s.rememberActivityKey(key)
 		newRows++
 	}
 	return newRows, nil
+}
+
+func (s *MetricsScraper) rememberActivityKey(key string) {
+	s.seen[key] = struct{}{}
+	s.seenOrder = append(s.seenOrder, key)
+	for len(s.seenOrder) > s.maxSeenKeys {
+		oldest := s.seenOrder[0]
+		delete(s.seen, oldest)
+		s.seenOrder[0] = ""
+		s.seenOrder = s.seenOrder[1:]
+	}
 }
 
 func stableActivityKey(row map[string]any) string {
