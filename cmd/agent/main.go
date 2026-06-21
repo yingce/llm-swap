@@ -31,13 +31,7 @@ func main() {
 
 	gatewayHTTP := &http.Client{Timeout: 30 * time.Second}
 	artifactHTTP := &http.Client{}
-	var service agent.Service
-	if cfg.Agent.LlamaSwapService == "" {
-		log.Println("agent.llama_swap_service is empty; restart requests will fail until configured")
-		service = agent.LoggingService{Logger: log.Default()}
-	} else {
-		service = agent.SystemdService{Name: cfg.Agent.LlamaSwapService}
-	}
+	service := restartService(cfg, log.Default())
 
 	reconciler := &agent.Reconciler{
 		AgentID:         cfg.Agent.ID,
@@ -62,4 +56,15 @@ func main() {
 	if err := reconciler.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+}
+
+func restartService(cfg config.AgentConfig, logger *log.Logger) agent.Service {
+	if cfg.Agent.RestartCommand != "" {
+		return agent.ShellCommandService{Command: cfg.Agent.RestartCommand}
+	}
+	if cfg.Agent.LlamaSwapService != "" {
+		return agent.SystemdService{Name: cfg.Agent.LlamaSwapService}
+	}
+	logger.Println("agent.llama_swap_service and agent.restart_command are empty; restart requests will fail until configured")
+	return agent.LoggingService{Logger: logger}
 }

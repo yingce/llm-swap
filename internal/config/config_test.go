@@ -216,6 +216,28 @@ agent:
 	}
 }
 
+func TestLoadAgentAcceptsRestartCommand(t *testing.T) {
+	raw := `
+agent:
+  id: gpu-01
+  tags: [gpu-4090]
+  model_root: /data/models
+  llama_swap_config: /etc/llama-swap/config.yaml
+  restart_command: docker restart llama-swap
+  llama_swap_url: http://worker
+  gateway_url: http://gateway
+  token: agent-token
+  llama_swap_token: worker-token
+`
+	cfg, err := LoadAgent(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadAgent returned error: %v", err)
+	}
+	if cfg.Agent.RestartCommand != "docker restart llama-swap" {
+		t.Fatalf("agent.restart_command = %q, want docker restart llama-swap", cfg.Agent.RestartCommand)
+	}
+}
+
 func TestLoadAgentRequiresLlamaSwapToken(t *testing.T) {
 	raw := `
 agent:

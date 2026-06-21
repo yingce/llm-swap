@@ -56,6 +56,7 @@ type AgentConfig struct {
 		ModelRoot        string   `yaml:"model_root" json:"model_root"`
 		LlamaSwapConfig  string   `yaml:"llama_swap_config" json:"llama_swap_config"`
 		LlamaSwapService string   `yaml:"llama_swap_service" json:"llama_swap_service"`
+		RestartCommand   string   `yaml:"restart_command" json:"restart_command"`
 		LlamaSwapURL     string   `yaml:"llama_swap_url" json:"llama_swap_url"`
 		GatewayURL       string   `yaml:"gateway_url" json:"gateway_url"`
 		Token            string   `yaml:"token" json:"token"`

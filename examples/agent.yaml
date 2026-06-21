@@ -5,6 +5,7 @@ agent:
   model_root: /var/lib/llm-swap/models
   llama_swap_config: /etc/llm-swap/llama-swap.yaml
   llama_swap_service: llama-swap
+  restart_command: docker restart llama-swap
   llama_swap_url: http://localhost:8081
   gateway_url: http://gateway.example.local:8080
   token: agent-token

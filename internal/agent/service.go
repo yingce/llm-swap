@@ -19,6 +19,14 @@ func (s SystemdService) Restart(ctx context.Context) error {
 	return exec.CommandContext(ctx, "systemctl", "restart", s.Name).Run()
 }
 
+type ShellCommandService struct {
+	Command string
+}
+
+func (s ShellCommandService) Restart(ctx context.Context) error {
+	return exec.CommandContext(ctx, "bash", "-lc", s.Command).Run()
+}
+
 type LoggingService struct {
 	Logger *log.Logger
 }
