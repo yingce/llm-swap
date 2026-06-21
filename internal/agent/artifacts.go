@@ -257,6 +257,10 @@ func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifa
 		return err
 	}
 
+	if err := flattenSingleTopLevelDir(extractDir); err != nil {
+		return err
+	}
+
 	if err := writeMarker(extractDir, modelDir, modelName, artifact); err != nil {
 		return err
 	}
@@ -266,6 +270,45 @@ func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifa
 	}
 	extractMoved = true
 	return nil
+}
+
+func flattenSingleTopLevelDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+
+	var rootDir os.DirEntry
+	for _, entry := range entries {
+		if entry.Name() == markerName {
+			continue
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if rootDir != nil {
+			return nil
+		}
+		rootDir = entry
+	}
+	if rootDir == nil {
+		return nil
+	}
+
+	rootPath := filepath.Join(dir, rootDir.Name())
+	rootEntries, err := os.ReadDir(rootPath)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(dir, markerName)); err != nil {
+		return err
+	}
+	for _, entry := range rootEntries {
+		if err := os.Rename(filepath.Join(rootPath, entry.Name()), filepath.Join(dir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return os.Remove(rootPath)
 }
 
 func extractTarGz(archivePath, destDir string) error {

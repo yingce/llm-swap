@@ -355,6 +355,89 @@ func TestInstallArtifactTarGzExtractsFiles(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactTarGzFlattensSingleTopLevelDirectory(t *testing.T) {
+	archive := tarGz(t, map[string]string{
+		"Qwen2.5-0.5B/config.json": `{"model_type":"qwen2"}`,
+	})
+	crc := crc64String(archive)
+	artifact := config.Artifact{
+		Object:    "archives/qwen2.5.tar.gz",
+		Kind:      "tar_gz",
+		CRC64ECMA: crc,
+	}
+	server := artifactServer(t, archive, crc)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen2.5", artifact)
+	if err != nil {
+		t.Fatalf("InstallArtifact() error = %v", err)
+	}
+	if !installed {
+		t.Fatalf("InstallArtifact() installed = false, want true")
+	}
+
+	modelDir := filepath.Join(modelRoot, "qwen2.5")
+	got, err := os.ReadFile(filepath.Join(modelDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read flattened config.json: %v", err)
+	}
+	if string(got) != `{"model_type":"qwen2"}` {
+		t.Fatalf("config.json = %q, want qwen config", got)
+	}
+	if _, err := os.Stat(filepath.Join(modelDir, "Qwen2.5-0.5B")); !os.IsNotExist(err) {
+		t.Fatalf("nested root dir exists or stat failed unexpectedly: %v", err)
+	}
+	matches, err := MarkerMatches(modelDir, "qwen2.5", artifact)
+	if err != nil {
+		t.Fatalf("MarkerMatches() error = %v", err)
+	}
+	if !matches {
+		t.Fatalf("marker does not match installed artifact")
+	}
+}
+
+func TestInstallArtifactTarGzPreservesMultipleTopLevelEntries(t *testing.T) {
+	archive := tarGz(t, map[string]string{
+		"Qwen2.5-0.5B/config.json": `{"model_type":"qwen2"}`,
+		"README.md":                "model notes",
+	})
+	crc := crc64String(archive)
+	artifact := config.Artifact{
+		Object:    "archives/qwen2.5.tar.gz",
+		Kind:      "tar_gz",
+		CRC64ECMA: crc,
+	}
+	server := artifactServer(t, archive, crc)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen2.5", artifact)
+	if err != nil {
+		t.Fatalf("InstallArtifact() error = %v", err)
+	}
+	if !installed {
+		t.Fatalf("InstallArtifact() installed = false, want true")
+	}
+
+	modelDir := filepath.Join(modelRoot, "qwen2.5")
+	for path, want := range map[string]string{
+		"Qwen2.5-0.5B/config.json": `{"model_type":"qwen2"}`,
+		"README.md":                "model notes",
+	} {
+		got, err := os.ReadFile(filepath.Join(modelDir, path))
+		if err != nil {
+			t.Fatalf("read extracted %s: %v", path, err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("flattened config exists or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestInstallArtifactTarGzMarkerFailurePreservesExistingTarget(t *testing.T) {
 	oldArtifact := config.Artifact{
 		Object:    "archives/old.tar.gz",
