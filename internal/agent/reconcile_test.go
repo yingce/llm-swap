@@ -113,6 +113,93 @@ func TestReconcileMarkerSkipStillReportsReady(t *testing.T) {
 	}
 }
 
+func TestReconcileConfigChangedRestartNotAllowedPersistsPendingRestart(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGateway(t, oss.URL, crc, &heartbeats, protocol.HeartbeatResponse{WorkerState: "active", RestartAllowed: false})
+	defer gateway.Close()
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if !heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeat needs_restart = false, want true")
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); err != nil {
+		t.Fatalf("pending restart marker missing: %v", err)
+	}
+}
+
+func TestReconcileLoadsPendingRestartMarkerWhenConfigUnchanged(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var firstHeartbeats []protocol.HeartbeatRequest
+	firstGateway := reconcileGateway(t, oss.URL, crc, &firstHeartbeats, protocol.HeartbeatResponse{WorkerState: "active", RestartAllowed: false})
+	defer firstGateway.Close()
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	modelRoot := t.TempDir()
+	first := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: firstGateway.URL, Token: "agent-token", HTTP: firstGateway.Client()},
+		HTTPClient:      firstGateway.Client(),
+		Service:         &FakeService{},
+	}
+	if _, err := first.Reconcile(context.Background()); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	}
+
+	var secondHeartbeats []protocol.HeartbeatRequest
+	secondGateway := reconcileGateway(t, oss.URL, crc, &secondHeartbeats, protocol.HeartbeatResponse{WorkerState: "active", RestartAllowed: false})
+	defer secondGateway.Close()
+
+	second := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: secondGateway.URL, Token: "agent-token", HTTP: secondGateway.Client()},
+		HTTPClient:      secondGateway.Client(),
+		Service:         &FakeService{},
+	}
+	if _, err := second.Reconcile(context.Background()); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+	if len(secondHeartbeats) != 1 {
+		t.Fatalf("second heartbeats = %d, want 1", len(secondHeartbeats))
+	}
+	if !secondHeartbeats[0].NeedsRestart {
+		t.Fatalf("second heartbeat needs_restart = false, want true from pending restart marker")
+	}
+}
+
 func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestart(t *testing.T) {
 	payload := []byte("model payload")
 	crc := crc64String(payload)
@@ -134,11 +221,12 @@ func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestar
 	defer gateway.Close()
 
 	svc := &FakeService{}
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
 	rec := Reconciler{
 		AgentID:         "gpu-01",
 		Tags:            []string{"gpu-4090"},
 		ModelRoot:       t.TempDir(),
-		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapConfig: configPath,
 		LlamaSwapURL:    "http://worker",
 		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
 		HTTPClient:      gateway.Client(),
@@ -153,6 +241,9 @@ func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestar
 	}
 	if len(heartbeats) != 1 || !heartbeats[0].NeedsRestart {
 		t.Fatalf("first heartbeat needs_restart = %v, want true", heartbeats)
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist after successful restart", err)
 	}
 
 	if _, err := rec.Reconcile(context.Background()); err != nil {

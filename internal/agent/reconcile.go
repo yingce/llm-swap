@@ -60,12 +60,20 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		return protocol.HeartbeatResponse{}, fmt.Errorf("agent gateway client is required")
 	}
 
+	var reconcileErr error
+	if pending, err := r.pendingRestart(); err != nil {
+		reconcileErr = errors.Join(reconcileErr, err)
+	} else if pending {
+		r.needsRestart = true
+	}
+
 	cfg, err := r.Gateway.GetConfigContext(ctx, r.Tags)
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
 
-	artifactStatus, reconcileErr := r.installAllowedArtifacts(ctx, cfg)
+	artifactStatus, err := r.installAllowedArtifacts(ctx, cfg)
+	reconcileErr = errors.Join(reconcileErr, err)
 
 	content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
 	if err != nil {
@@ -76,7 +84,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 			reconcileErr = errors.Join(reconcileErr, err)
 		}
 		if changed {
-			r.needsRestart = true
+			if err := r.markPendingRestart(); err != nil {
+				reconcileErr = errors.Join(reconcileErr, err)
+			} else {
+				r.needsRestart = true
+			}
 		}
 	}
 
@@ -92,6 +104,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	if resp.RestartAllowed && r.needsRestart {
 		if err := r.restart(ctx); err != nil {
+			return resp, errors.Join(reconcileErr, err)
+		}
+		if err := r.clearPendingRestart(); err != nil {
 			return resp, errors.Join(reconcileErr, err)
 		}
 		r.needsRestart = false
@@ -125,6 +140,37 @@ func (r *Reconciler) restart(ctx context.Context) error {
 		return LoggingService{}.Restart(ctx)
 	}
 	return r.Service.Restart(ctx)
+}
+
+func (r *Reconciler) pendingRestart() (bool, error) {
+	_, err := os.Stat(restartPendingMarkerPath(r.LlamaSwapConfig))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (r *Reconciler) markPendingRestart() error {
+	path := restartPendingMarkerPath(r.LlamaSwapConfig)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("pending\n"), 0o644)
+}
+
+func (r *Reconciler) clearPendingRestart() error {
+	err := os.Remove(restartPendingMarkerPath(r.LlamaSwapConfig))
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func restartPendingMarkerPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), filepath.Base(configPath)+".restart-pending")
 }
 
 func WriteConfigIfChanged(path string, content []byte, service Service) (bool, error) {
