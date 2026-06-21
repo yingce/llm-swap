@@ -1,18 +1,26 @@
 package agent
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/crc64"
 	"io"
+	"net/http"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"llm-swap/internal/config"
 )
 
 const markerName = ".llm-agent-artifact.json"
+const ossCRC64Header = "x-oss-hash-crc64ecma"
 
 type Marker struct {
 	Model         string `json:"model"`
@@ -75,4 +83,274 @@ func CRC64ECMAFile(path string) (string, error) {
 	}
 
 	return strconv.FormatUint(hash.Sum64(), 10), nil
+}
+
+func InstallArtifact(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName string, artifact config.Artifact) (bool, error) {
+	modelDir := filepath.Join(modelRoot, modelName)
+	matches, err := MarkerMatches(modelDir, modelName, artifact)
+	if err != nil {
+		return false, err
+	}
+	if matches {
+		return false, nil
+	}
+
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if err := os.MkdirAll(modelRoot, 0o755); err != nil {
+		return false, err
+	}
+
+	downloadURL := artifactURL(ossBaseURL, artifact.Object)
+	if err := checkRemoteCRC(ctx, httpClient, downloadURL, artifact.CRC64ECMA); err != nil {
+		return false, err
+	}
+
+	tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot)
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(tmpFile)
+
+	gotCRC, err := CRC64ECMAFile(tmpFile)
+	if err != nil {
+		return false, err
+	}
+	if gotCRC != artifact.CRC64ECMA {
+		return false, fmt.Errorf("downloaded artifact crc64ecma mismatch for %s: got %s, want %s", artifact.Object, gotCRC, artifact.CRC64ECMA)
+	}
+
+	switch artifact.Kind {
+	case "file":
+		if err := installFileArtifact(tmpFile, modelDir, modelName, artifact); err != nil {
+			return false, err
+		}
+	case "tar_gz":
+		if err := installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName, artifact); err != nil {
+			return false, err
+		}
+	default:
+		return false, fmt.Errorf("unsupported artifact kind %q", artifact.Kind)
+	}
+
+	return true, nil
+}
+
+func artifactURL(ossBaseURL, object string) string {
+	return strings.TrimRight(ossBaseURL, "/") + "/" + strings.TrimLeft(object, "/")
+}
+
+func checkRemoteCRC(ctx context.Context, httpClient *http.Client, downloadURL, wantCRC string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, downloadURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HEAD %s returned %s", downloadURL, resp.Status)
+	}
+	gotCRC := strings.TrimSpace(resp.Header.Get(ossCRC64Header))
+	if gotCRC != "" && gotCRC != wantCRC {
+		return fmt.Errorf("HEAD crc64ecma mismatch for %s: got %s, want %s", downloadURL, gotCRC, wantCRC)
+	}
+	return nil
+}
+
+func downloadArtifact(ctx context.Context, httpClient *http.Client, downloadURL, tempDir string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("GET %s returned %s", downloadURL, resp.Status)
+	}
+
+	tmp, err := os.CreateTemp(tempDir, ".llm-agent-artifact-*.download")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	ok = true
+	return tmpPath, nil
+}
+
+func installFileArtifact(tmpFile, modelDir, modelName string, artifact config.Artifact) error {
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		return err
+	}
+	filename := filepath.Base(filepath.FromSlash(artifact.Object))
+	if filename == "." || filename == string(filepath.Separator) || filename == "" {
+		return fmt.Errorf("artifact object %q has no base filename", artifact.Object)
+	}
+	targetPath := filepath.Join(modelDir, filename)
+	if err := os.Chmod(tmpFile, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpFile, targetPath); err != nil {
+		return err
+	}
+	return WriteMarker(modelDir, modelName, artifact)
+}
+
+func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifact config.Artifact) error {
+	extractDir, err := os.MkdirTemp(modelRoot, ".llm-agent-artifact-extract-*")
+	if err != nil {
+		return err
+	}
+	extractDir = filepath.Clean(extractDir)
+	extractMoved := false
+	defer func() {
+		if !extractMoved {
+			_ = os.RemoveAll(extractDir)
+		}
+	}()
+
+	if err := extractTarGz(tmpFile, extractDir); err != nil {
+		return err
+	}
+
+	if err := replaceDir(extractDir, modelDir); err != nil {
+		return err
+	}
+	extractMoved = true
+
+	if err := WriteMarker(modelDir, modelName, artifact); err != nil {
+		return err
+	}
+	return nil
+}
+
+func extractTarGz(archivePath, destDir string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := extractTarEntry(tr, header, destDir); err != nil {
+			return err
+		}
+	}
+}
+
+func extractTarEntry(reader io.Reader, header *tar.Header, destDir string) error {
+	cleanName := slashpath.Clean(header.Name)
+	if cleanName == "." {
+		return nil
+	}
+	if slashpath.IsAbs(header.Name) || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
+		return fmt.Errorf("tar entry %q escapes destination", header.Name)
+	}
+
+	targetPath := filepath.Join(destDir, filepath.FromSlash(cleanName))
+	rel, err := filepath.Rel(destDir, targetPath)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("tar entry %q escapes destination", header.Name)
+	}
+
+	switch header.Typeflag {
+	case tar.TypeDir:
+		return os.MkdirAll(targetPath, 0o755)
+	case tar.TypeReg, tar.TypeRegA:
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sanitizedFileMode(header.Mode))
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, reader); err != nil {
+			_ = out.Close()
+			return err
+		}
+		return out.Close()
+	default:
+		return fmt.Errorf("unsupported tar entry %q type %d", header.Name, header.Typeflag)
+	}
+}
+
+func sanitizedFileMode(mode int64) os.FileMode {
+	if mode&0o111 != 0 {
+		return 0o755
+	}
+	return 0o644
+}
+
+func replaceDir(newDir, targetDir string) error {
+	if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
+		return err
+	}
+
+	backupDir := ""
+	if _, err := os.Stat(targetDir); err == nil {
+		var mkErr error
+		backupDir, mkErr = os.MkdirTemp(filepath.Dir(targetDir), ".llm-agent-artifact-backup-*")
+		if mkErr != nil {
+			return mkErr
+		}
+		if rmErr := os.Remove(backupDir); rmErr != nil {
+			return rmErr
+		}
+		if err := os.Rename(targetDir, backupDir); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if err := os.Rename(newDir, targetDir); err != nil {
+		if backupDir != "" {
+			_ = os.Rename(backupDir, targetDir)
+		}
+		return err
+	}
+
+	if backupDir != "" {
+		return os.RemoveAll(backupDir)
+	}
+	return nil
 }
