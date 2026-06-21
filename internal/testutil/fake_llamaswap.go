@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 )
 
 type FakeLlamaSwap struct {
 	ExpectedChatAuthorization string
 	ExpectedChatModel         string
+	ExpectedChatMessages      []map[string]string
 
 	server *httptest.Server
 }
@@ -47,16 +49,18 @@ func (f *FakeLlamaSwap) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if f.ExpectedChatModel != "" {
-		var req struct {
-			Model string `json:"model"`
-		}
+	if f.ExpectedChatModel != "" || f.ExpectedChatMessages != nil {
+		var req chatCompletionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("decode request JSON: %v", err), http.StatusBadRequest)
 			return
 		}
-		if req.Model != f.ExpectedChatModel {
+		if f.ExpectedChatModel != "" && req.Model != f.ExpectedChatModel {
 			http.Error(w, fmt.Sprintf("model = %q, want %q", req.Model, f.ExpectedChatModel), http.StatusBadRequest)
+			return
+		}
+		if f.ExpectedChatMessages != nil && !reflect.DeepEqual(req.Messages, f.ExpectedChatMessages) {
+			http.Error(w, fmt.Sprintf("messages = %#v, want %#v", req.Messages, f.ExpectedChatMessages), http.StatusBadRequest)
 			return
 		}
 	}
@@ -76,6 +80,11 @@ func (f *FakeLlamaSwap) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			},
 		},
 	})
+}
+
+type chatCompletionRequest struct {
+	Model    string              `json:"model"`
+	Messages []map[string]string `json:"messages"`
 }
 
 func (f *FakeLlamaSwap) handleUnloadQwen(w http.ResponseWriter, r *http.Request) {

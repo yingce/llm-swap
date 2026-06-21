@@ -378,6 +378,9 @@ func TestGatewaySmokeProxiesChatCompletionToLlamaSwap(t *testing.T) {
 	defer fake.Close()
 	fake.ExpectedChatAuthorization = "Bearer llama-secret"
 	fake.ExpectedChatModel = "qwen"
+	fake.ExpectedChatMessages = []map[string]string{
+		{"role": "user", "content": "hi"},
+	}
 
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "gpu-01", fake.URL(), true)
@@ -398,6 +401,9 @@ func TestFakeLlamaSwapChatCompletionsRejectsUnexpectedForwardedRequest(t *testin
 	defer fake.Close()
 	fake.ExpectedChatAuthorization = "Bearer llama-secret"
 	fake.ExpectedChatModel = "qwen"
+	fake.ExpectedChatMessages = []map[string]string{
+		{"role": "user", "content": "hi"},
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -413,6 +419,16 @@ func TestFakeLlamaSwapChatCompletionsRejectsUnexpectedForwardedRequest(t *testin
 			name: "wrong model",
 			auth: "Bearer llama-secret",
 			body: `{"model":"wrong","messages":[]}`,
+		},
+		{
+			name: "missing messages",
+			auth: "Bearer llama-secret",
+			body: `{"model":"qwen"}`,
+		},
+		{
+			name: "wrong messages",
+			auth: "Bearer llama-secret",
+			body: `{"model":"qwen","messages":[{"role":"user","content":"bye"}]}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
