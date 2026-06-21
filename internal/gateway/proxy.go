@@ -145,6 +145,20 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, nil, err
+		}
+		if retryablePlatform404(resp.Header, respBody) {
+			return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil
+		}
+
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
+		return false, nil, nil
+	}
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -243,6 +257,18 @@ func retryableUpstreamStatus(status int) bool {
 	default:
 		return false
 	}
+}
+
+func retryablePlatform404(header http.Header, body []byte) bool {
+	contentType := strings.ToLower(strings.TrimSpace(header.Get("Content-Type")))
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	if strings.TrimSpace(mediaType) == "text/html" {
+		return true
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	lowerBody := bytes.ToLower(trimmed)
+	return bytes.HasPrefix(lowerBody, []byte("<!doctype html>")) || bytes.HasPrefix(lowerBody, []byte("<html"))
 }
 
 func retryableProxyError(err error, ctx context.Context) bool {

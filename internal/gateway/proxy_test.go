@@ -182,6 +182,87 @@ func TestProxyRetriesDifferentWorkerBeforeHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyRetriesHTML404FromWorkerPlatform(t *testing.T) {
+	var firstRequests atomic.Int32
+	var secondRequests atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstRequests.Add(1)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><body>404 Not Found</body></html>"))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "chatcmpl-second") {
+		t.Fatalf("body = %q, want second worker response", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "404 Not Found") {
+		t.Fatalf("body = %q, did not want platform 404 body", rr.Body.String())
+	}
+	if firstRequests.Load() != 1 {
+		t.Fatalf("first requests = %d, want 1", firstRequests.Load())
+	}
+	if secondRequests.Load() != 1 {
+		t.Fatalf("second requests = %d, want 1", secondRequests.Load())
+	}
+}
+
+func TestProxyForwardsJSON404WithoutRetry(t *testing.T) {
+	var firstRequests atomic.Int32
+	var secondRequests atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"missing"}}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests.Add(1)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	if rr.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rr.Body.String(), "model_not_found") {
+		t.Fatalf("body = %q, want upstream JSON 404", rr.Body.String())
+	}
+	if firstRequests.Load() != 1 {
+		t.Fatalf("first requests = %d, want 1", firstRequests.Load())
+	}
+	if secondRequests.Load() != 0 {
+		t.Fatalf("second requests = %d, want 0", secondRequests.Load())
+	}
+}
+
 func TestProxyAllWorkersReturn503ReportsUpstreamRetryExhausted(t *testing.T) {
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
