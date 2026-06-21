@@ -340,18 +340,20 @@ func TestReconcileInstallErrorReportsArtifactErrorAndDoesNotMarkReady(t *testing
 	defer oss.Close()
 
 	var heartbeats []protocol.HeartbeatRequest
-	gateway := reconcileGateway(t, oss.URL, "123456789", &heartbeats, protocol.HeartbeatResponse{})
+	gateway := reconcileGateway(t, oss.URL, "123456789", &heartbeats, protocol.HeartbeatResponse{RestartAllowed: true})
 	defer gateway.Close()
 
+	svc := &FakeService{}
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
 	rec := Reconciler{
 		AgentID:         "gpu-01",
 		Tags:            []string{"gpu-4090"},
 		ModelRoot:       t.TempDir(),
-		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapConfig: configPath,
 		LlamaSwapURL:    "http://worker",
 		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
 		HTTPClient:      gateway.Client(),
-		Service:         &FakeService{},
+		Service:         svc,
 	}
 
 	if _, err := rec.Reconcile(context.Background()); err == nil {
@@ -368,6 +370,74 @@ func TestReconcileInstallErrorReportsArtifactErrorAndDoesNotMarkReady(t *testing
 	}
 	if heartbeats[0].LastError == "" {
 		t.Fatalf("last_error is empty, want install error context")
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("llama-swap config stat err = %v, want not exist", err)
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist", err)
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0", svc.Restarts)
+	}
+	if heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeat needs_restart = true, want false")
+	}
+}
+
+func TestReconcileRunOnceInstallErrorSkipsConfigAndRestart(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected OSS request %s %s", r.Method, r.URL.Path)
+	}))
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, reconcileConfigWithArtifact(oss.URL, artifact), &heartbeats, protocol.HeartbeatResponse{RestartAllowed: true})
+	defer gateway.Close()
+
+	svc := &FakeService{}
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+	}
+	installs := map[string]*artifactInstallState{
+		"qwen": {
+			key: artifactKey("qwen", artifact.Object, artifact.Kind, artifact.CRC64ECMA),
+			err: errors.New("download failed"),
+		},
+	}
+
+	if _, err := rec.reconcileRunOnce(context.Background(), installs, make(chan artifactInstallResult, 1)); err == nil {
+		t.Fatalf("reconcileRunOnce() error = nil, want install error")
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if got := heartbeats[0].Artifacts["qwen"]; got != "error" {
+		t.Fatalf("artifact status = %q, want error", got)
+	}
+	if heartbeats[0].LastError == "" {
+		t.Fatalf("last_error is empty, want install error context")
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("llama-swap config stat err = %v, want not exist", err)
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist", err)
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0", svc.Restarts)
+	}
+	if heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeat needs_restart = true, want false")
 	}
 }
 

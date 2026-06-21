@@ -113,10 +113,10 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	}
 
 	r.drainInstallResults(installs, installDone)
-	artifactStatus, installing, err := r.installAllowedArtifactsAsync(ctx, cfg, installs, installDone)
+	artifactStatus, _, err := r.installAllowedArtifactsAsync(ctx, cfg, installs, installDone)
 	reconcileErr = errors.Join(reconcileErr, err)
 
-	if !installing {
+	if allAllowedArtifactsReady(cfg, artifactStatus) {
 		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
@@ -256,16 +256,18 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	artifactStatus, err := r.installAllowedArtifacts(ctx, cfg)
 	reconcileErr = errors.Join(reconcileErr, err)
 
-	content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
-	if err != nil {
-		reconcileErr = errors.Join(reconcileErr, err)
-	} else {
-		changed, err := writeConfigIfChangedAndMarkPending(r.LlamaSwapConfig, content, r.markPendingRestart)
+	if allAllowedArtifactsReady(cfg, artifactStatus) {
+		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
-		}
-		if changed {
-			r.needsRestart = true
+		} else {
+			changed, err := writeConfigIfChangedAndMarkPending(r.LlamaSwapConfig, content, r.markPendingRestart)
+			if err != nil {
+				reconcileErr = errors.Join(reconcileErr, err)
+			}
+			if changed {
+				r.needsRestart = true
+			}
 		}
 	}
 
@@ -310,6 +312,15 @@ func (r *Reconciler) installAllowedArtifacts(ctx context.Context, cfg protocol.A
 		status[modelName] = "ready"
 	}
 	return status, outErr
+}
+
+func allAllowedArtifactsReady(cfg protocol.AgentConfigResponse, artifactStatus map[string]string) bool {
+	for _, modelName := range cfg.TagPolicy.AllowedModels {
+		if artifactStatus[modelName] != "ready" {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Reconciler) restart(ctx context.Context) error {
