@@ -54,7 +54,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		tag := selectedWorkerTag(s.config, worker, model)
 		accountingRelease := s.accounting.Acquire(r.Header.Get("X-Request-ID"), model, tag, worker.ID)
-		release := releaseOnce(workerRelease, accountingRelease)
+		metricsRelease := s.metrics.AcquireActiveRequest(worker.ID, model)
+		release := releaseOnce(workerRelease, accountingRelease, metricsRelease)
 
 		retry, dispatchFailure, err := s.proxyAttempt(w, r, body, worker)
 		release()

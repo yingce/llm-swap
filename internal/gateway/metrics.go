@@ -20,11 +20,18 @@ func NewMetrics() *Metrics {
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(activeRequests)
-	activeRequests.WithLabelValues("", "").Set(0)
 
 	return &Metrics{
 		registry:       registry,
 		activeRequests: activeRequests,
+	}
+}
+
+func (m *Metrics) AcquireActiveRequest(workerID, model string) func() {
+	active := m.activeRequests.WithLabelValues(workerID, model)
+	active.Inc()
+	return func() {
+		active.Dec()
 	}
 }
 
