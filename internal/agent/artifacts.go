@@ -22,6 +22,8 @@ import (
 const markerName = ".llm-agent-artifact.json"
 const ossCRC64Header = "x-oss-hash-crc64ecma"
 
+var writeMarkerFile = os.WriteFile
+
 type Marker struct {
 	Model         string `json:"model"`
 	Object        string `json:"object"`
@@ -31,6 +33,10 @@ type Marker struct {
 }
 
 func WriteMarker(dir, model string, artifact config.Artifact) error {
+	return writeMarker(dir, dir, model, artifact)
+}
+
+func writeMarker(dir, installedPath, model string, artifact config.Artifact) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -40,14 +46,14 @@ func WriteMarker(dir, model string, artifact config.Artifact) error {
 		Object:        artifact.Object,
 		Kind:          artifact.Kind,
 		CRC64ECMA:     artifact.CRC64ECMA,
-		InstalledPath: dir,
+		InstalledPath: installedPath,
 	}
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(dir, markerName), append(data, '\n'), 0o644)
+	return writeMarkerFile(filepath.Join(dir, markerName), append(data, '\n'), 0o644)
 }
 
 func MarkerMatches(dir, model string, artifact config.Artifact) (bool, error) {
@@ -201,21 +207,37 @@ func downloadArtifact(ctx context.Context, httpClient *http.Client, downloadURL,
 }
 
 func installFileArtifact(tmpFile, modelDir, modelName string, artifact config.Artifact) error {
-	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+	stageDir, err := os.MkdirTemp(filepath.Dir(modelDir), ".llm-agent-artifact-stage-*")
+	if err != nil {
 		return err
 	}
+	stageDir = filepath.Clean(stageDir)
+	stageMoved := false
+	defer func() {
+		if !stageMoved {
+			_ = os.RemoveAll(stageDir)
+		}
+	}()
+
 	filename := filepath.Base(filepath.FromSlash(artifact.Object))
 	if filename == "." || filename == string(filepath.Separator) || filename == "" {
 		return fmt.Errorf("artifact object %q has no base filename", artifact.Object)
 	}
-	targetPath := filepath.Join(modelDir, filename)
+	targetPath := filepath.Join(stageDir, filename)
 	if err := os.Chmod(tmpFile, 0o644); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpFile, targetPath); err != nil {
 		return err
 	}
-	return WriteMarker(modelDir, modelName, artifact)
+	if err := writeMarker(stageDir, modelDir, modelName, artifact); err != nil {
+		return err
+	}
+	if err := replaceDir(stageDir, modelDir); err != nil {
+		return err
+	}
+	stageMoved = true
+	return nil
 }
 
 func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifact config.Artifact) error {
@@ -235,14 +257,14 @@ func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifa
 		return err
 	}
 
+	if err := writeMarker(extractDir, modelDir, modelName, artifact); err != nil {
+		return err
+	}
+
 	if err := replaceDir(extractDir, modelDir); err != nil {
 		return err
 	}
 	extractMoved = true
-
-	if err := WriteMarker(modelDir, modelName, artifact); err != nil {
-		return err
-	}
 	return nil
 }
 

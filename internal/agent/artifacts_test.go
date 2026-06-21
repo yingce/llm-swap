@@ -253,6 +253,63 @@ func TestInstallArtifactFileWritesBasenameAndMarker(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactFileMarkerFailurePreservesExistingTarget(t *testing.T) {
+	oldArtifact := config.Artifact{
+		Object:    "models/old.gguf",
+		Kind:      "file",
+		CRC64ECMA: "old-crc",
+	}
+	newPayload := []byte("new model payload")
+	newArtifact := config.Artifact{
+		Object:    "models/new.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc64String(newPayload),
+	}
+	server := artifactServer(t, newPayload, newArtifact.CRC64ECMA)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	modelName := "qwen"
+	modelDir := filepath.Join(modelRoot, modelName)
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create existing model dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "old.gguf"), []byte("old model payload"), 0o644); err != nil {
+		t.Fatalf("write existing payload: %v", err)
+	}
+	if err := WriteMarker(modelDir, modelName, oldArtifact); err != nil {
+		t.Fatalf("write existing marker: %v", err)
+	}
+
+	writeMarkerFile = func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() {
+		writeMarkerFile = os.WriteFile
+	})
+
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, modelName, newArtifact)
+	if err == nil {
+		t.Fatalf("InstallArtifact() error = nil, want marker write error")
+	}
+	if installed {
+		t.Fatalf("InstallArtifact() installed = true, want false")
+	}
+	if got, err := os.ReadFile(filepath.Join(modelDir, "old.gguf")); err != nil || string(got) != "old model payload" {
+		t.Fatalf("existing payload = %q, %v; want old payload", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(modelDir, "new.gguf")); !os.IsNotExist(err) {
+		t.Fatalf("new payload exists or stat failed unexpectedly: %v", err)
+	}
+	matches, err := MarkerMatches(modelDir, modelName, oldArtifact)
+	if err != nil {
+		t.Fatalf("MarkerMatches() error = %v", err)
+	}
+	if !matches {
+		t.Fatalf("existing marker was not preserved")
+	}
+}
+
 func TestInstallArtifactTarGzExtractsFiles(t *testing.T) {
 	archive := tarGz(t, map[string]string{
 		"config.json":       `{"ok":true}`,
@@ -295,6 +352,62 @@ func TestInstallArtifactTarGzExtractsFiles(t *testing.T) {
 	}
 	if !matches {
 		t.Fatalf("marker does not match installed artifact")
+	}
+}
+
+func TestInstallArtifactTarGzMarkerFailurePreservesExistingTarget(t *testing.T) {
+	oldArtifact := config.Artifact{
+		Object:    "archives/old.tar.gz",
+		Kind:      "tar_gz",
+		CRC64ECMA: "old-crc",
+	}
+	newArchive := tarGz(t, map[string]string{
+		"config.json": "new config",
+	})
+	newArtifact := config.Artifact{
+		Object:    "archives/new.tar.gz",
+		Kind:      "tar_gz",
+		CRC64ECMA: crc64String(newArchive),
+	}
+	server := artifactServer(t, newArchive, newArtifact.CRC64ECMA)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	modelName := "qwen"
+	modelDir := filepath.Join(modelRoot, modelName)
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create existing model dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "config.json"), []byte("old config"), 0o644); err != nil {
+		t.Fatalf("write existing config: %v", err)
+	}
+	if err := WriteMarker(modelDir, modelName, oldArtifact); err != nil {
+		t.Fatalf("write existing marker: %v", err)
+	}
+
+	writeMarkerFile = func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() {
+		writeMarkerFile = os.WriteFile
+	})
+
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, modelName, newArtifact)
+	if err == nil {
+		t.Fatalf("InstallArtifact() error = nil, want marker write error")
+	}
+	if installed {
+		t.Fatalf("InstallArtifact() installed = true, want false")
+	}
+	if got, err := os.ReadFile(filepath.Join(modelDir, "config.json")); err != nil || string(got) != "old config" {
+		t.Fatalf("existing config = %q, %v; want old config", got, err)
+	}
+	matches, err := MarkerMatches(modelDir, modelName, oldArtifact)
+	if err != nil {
+		t.Fatalf("MarkerMatches() error = %v", err)
+	}
+	if !matches {
+		t.Fatalf("existing marker was not preserved")
 	}
 }
 
