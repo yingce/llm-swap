@@ -117,6 +117,25 @@ func TestMetricsScraperReturnsErrorOnNon2xx(t *testing.T) {
 	}
 }
 
+func TestMetricsScraperSendsBearerToken(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("Authorization"), "Bearer llama-swap-token"; got != want {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":"request-1"}]`))
+	}))
+	defer worker.Close()
+
+	got, err := NewMetricsScraperWithToken("llama-swap-token").PullActivity("worker-a", worker.URL)
+	if err != nil {
+		t.Fatalf("PullActivity returned error: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("PullActivity = %d, want 1", got)
+	}
+}
+
 func TestMetricsScraperReturnsErrorOnInvalidJSON(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{`))

@@ -14,6 +14,7 @@ const defaultMaxSeenActivityKeys = 10000
 
 type MetricsScraper struct {
 	client      *http.Client
+	bearerToken string
 	mu          sync.Mutex
 	seen        map[string]struct{}
 	seenOrder   []string
@@ -24,12 +25,21 @@ func NewMetricsScraper() *MetricsScraper {
 	return newMetricsScraperWithMaxSeen(defaultMaxSeenActivityKeys)
 }
 
+func NewMetricsScraperWithToken(token string) *MetricsScraper {
+	return newMetricsScraperWithMaxSeenAndToken(defaultMaxSeenActivityKeys, token)
+}
+
 func newMetricsScraperWithMaxSeen(maxSeenKeys int) *MetricsScraper {
+	return newMetricsScraperWithMaxSeenAndToken(maxSeenKeys, "")
+}
+
+func newMetricsScraperWithMaxSeenAndToken(maxSeenKeys int, token string) *MetricsScraper {
 	if maxSeenKeys <= 0 {
 		maxSeenKeys = defaultMaxSeenActivityKeys
 	}
 	return &MetricsScraper{
 		client:      &http.Client{Timeout: 3 * time.Second},
+		bearerToken: token,
 		seen:        make(map[string]struct{}),
 		seenOrder:   make([]string, 0, maxSeenKeys),
 		maxSeenKeys: maxSeenKeys,
@@ -37,7 +47,15 @@ func newMetricsScraperWithMaxSeen(maxSeenKeys int) *MetricsScraper {
 }
 
 func (s *MetricsScraper) PullActivity(workerID string, baseURL string) (int, error) {
-	resp, err := s.client.Get(strings.TrimRight(baseURL, "/") + "/api/metrics")
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/metrics", nil)
+	if err != nil {
+		return 0, err
+	}
+	if s.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.bearerToken)
+	}
+
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return 0, err
 	}
