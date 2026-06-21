@@ -59,5 +59,6 @@ type AgentConfig struct {
 		LlamaSwapURL     string   `yaml:"llama_swap_url" json:"llama_swap_url"`
 		GatewayURL       string   `yaml:"gateway_url" json:"gateway_url"`
 		Token            string   `yaml:"token" json:"token"`
+		LlamaSwapToken   string   `yaml:"llama_swap_token" json:"llama_swap_token"`
 	} `yaml:"agent" json:"agent"`
 }

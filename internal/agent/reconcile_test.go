@@ -31,7 +31,7 @@ func TestReconcileInstallsAllowedArtifactAndHeartbeatReportsReady(t *testing.T) 
 		ModelRoot:       modelRoot,
 		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
 		LlamaSwapURL:    "http://worker",
-		LlamaSwapToken:  "llama-token",
+		LlamaSwapToken:  "worker-token",
 		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
 		HTTPClient:      gateway.Client(),
 		Service:         &FakeService{},
@@ -47,6 +47,16 @@ func TestReconcileInstallsAllowedArtifactAndHeartbeatReportsReady(t *testing.T) 
 	}
 	if string(got) != string(payload) {
 		t.Fatalf("installed artifact = %q, want %q", got, payload)
+	}
+	rendered, err := os.ReadFile(rec.LlamaSwapConfig)
+	if err != nil {
+		t.Fatalf("read rendered llama-swap config: %v", err)
+	}
+	if !strings.Contains(string(rendered), "apiKeys:\n    - worker-token") {
+		t.Fatalf("rendered llama-swap config did not use worker token:\n%s", rendered)
+	}
+	if strings.Contains(string(rendered), "agent-token") {
+		t.Fatalf("rendered llama-swap config used gateway token:\n%s", rendered)
 	}
 	if len(heartbeats) != 1 {
 		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))

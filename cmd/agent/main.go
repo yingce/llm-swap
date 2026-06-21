@@ -45,7 +45,7 @@ func main() {
 		ModelRoot:       cfg.Agent.ModelRoot,
 		LlamaSwapConfig: cfg.Agent.LlamaSwapConfig,
 		LlamaSwapURL:    cfg.Agent.LlamaSwapURL,
-		LlamaSwapToken:  cfg.Agent.Token,
+		LlamaSwapToken:  cfg.Agent.LlamaSwapToken,
 		Gateway: agent.ConfigClient{
 			BaseURL: cfg.Agent.GatewayURL,
 			Token:   cfg.Agent.Token,

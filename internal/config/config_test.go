@@ -191,3 +191,47 @@ agent:
 		t.Fatalf("error = %v, want llama_swap_url", err)
 	}
 }
+
+func TestLoadAgentAcceptsSeparateAgentAndLlamaSwapTokens(t *testing.T) {
+	raw := `
+agent:
+  id: gpu-01
+  tags: [gpu-4090]
+  model_root: /data/models
+  llama_swap_config: /etc/llama-swap/config.yaml
+  llama_swap_url: http://worker
+  gateway_url: http://gateway
+  token: agent-token
+  llama_swap_token: worker-token
+`
+	cfg, err := LoadAgent(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadAgent returned error: %v", err)
+	}
+	if cfg.Agent.Token != "agent-token" {
+		t.Fatalf("agent.token = %q, want agent-token", cfg.Agent.Token)
+	}
+	if cfg.Agent.LlamaSwapToken != "worker-token" {
+		t.Fatalf("agent.llama_swap_token = %q, want worker-token", cfg.Agent.LlamaSwapToken)
+	}
+}
+
+func TestLoadAgentRequiresLlamaSwapToken(t *testing.T) {
+	raw := `
+agent:
+  id: gpu-01
+  tags: [gpu-4090]
+  model_root: /data/models
+  llama_swap_config: /etc/llama-swap/config.yaml
+  llama_swap_url: http://worker
+  gateway_url: http://gateway
+  token: agent-token
+`
+	_, err := LoadAgent(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "llama_swap_token") {
+		t.Fatalf("error = %v, want llama_swap_token", err)
+	}
+}

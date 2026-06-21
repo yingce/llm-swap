@@ -28,8 +28,14 @@ func LoadAgent(r io.Reader) (AgentConfig, error) {
 	if len(cfg.Agent.Tags) == 0 {
 		return cfg, fmt.Errorf("agent.tags is required")
 	}
-	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.LlamaSwapURL == "" || cfg.Agent.GatewayURL == "" || cfg.Agent.Token == "" {
-		return cfg, fmt.Errorf("agent model_root, llama_swap_config, llama_swap_url, gateway_url, and token are required")
+	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.LlamaSwapURL == "" || cfg.Agent.GatewayURL == "" {
+		return cfg, fmt.Errorf("agent model_root, llama_swap_config, llama_swap_url, and gateway_url are required")
+	}
+	if cfg.Agent.Token == "" {
+		return cfg, fmt.Errorf("agent.token is required")
+	}
+	if cfg.Agent.LlamaSwapToken == "" {
+		return cfg, fmt.Errorf("agent.llama_swap_token is required")
 	}
 	return cfg, nil
 }

@@ -8,3 +8,4 @@ agent:
   llama_swap_url: http://localhost:8081
   gateway_url: http://gateway.example.local:8080
   token: agent-token
+  llama_swap_token: worker-token
