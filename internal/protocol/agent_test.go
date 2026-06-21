@@ -16,8 +16,8 @@ func TestAgentConfigResponseJSONUsesSnakeCaseConfigFields(t *testing.T) {
 				MaxConcurrency: 2,
 				QueueTimeoutMS: 30000,
 				Artifact: config.Artifact{
-					Object: "qwen.tar.gz",
-					Kind: "tar_gz",
+					Object:    "qwen.tar.gz",
+					Kind:      "tar_gz",
 					CRC64ECMA: "123",
 				},
 			},
