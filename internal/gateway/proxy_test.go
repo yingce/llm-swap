@@ -376,6 +376,8 @@ func TestProxyRouteRequiresClientBearerToken(t *testing.T) {
 func TestGatewaySmokeProxiesChatCompletionToLlamaSwap(t *testing.T) {
 	fake := testutil.NewFakeLlamaSwap()
 	defer fake.Close()
+	fake.ExpectedChatAuthorization = "Bearer llama-secret"
+	fake.ExpectedChatModel = "qwen"
 
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "gpu-01", fake.URL(), true)
@@ -385,6 +387,52 @@ func TestGatewaySmokeProxiesChatCompletionToLlamaSwap(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "chatcmpl-test") {
+		t.Fatalf("body = %q, want fake chat completion id", rr.Body.String())
+	}
+}
+
+func TestFakeLlamaSwapChatCompletionsRejectsUnexpectedForwardedRequest(t *testing.T) {
+	fake := testutil.NewFakeLlamaSwap()
+	defer fake.Close()
+	fake.ExpectedChatAuthorization = "Bearer llama-secret"
+	fake.ExpectedChatModel = "qwen"
+
+	for _, tc := range []struct {
+		name string
+		auth string
+		body string
+	}{
+		{
+			name: "wrong auth",
+			auth: "Bearer wrong",
+			body: `{"model":"qwen","messages":[]}`,
+		},
+		{
+			name: "wrong model",
+			auth: "Bearer llama-secret",
+			body: `{"model":"wrong","messages":[]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, fake.URL()+"/v1/chat/completions", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Authorization", tc.auth)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("post fake chat completions: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode < 400 {
+				t.Fatalf("status = %d, want non-2xx rejection", resp.StatusCode)
+			}
+		})
 	}
 }
 

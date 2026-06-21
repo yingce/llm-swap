@@ -2,11 +2,15 @@ package testutil
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 )
 
 type FakeLlamaSwap struct {
+	ExpectedChatAuthorization string
+	ExpectedChatModel         string
+
 	server *httptest.Server
 }
 
@@ -37,6 +41,25 @@ func (f *FakeLlamaSwap) handleRunning(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *FakeLlamaSwap) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if f.ExpectedChatAuthorization != "" {
+		if got := r.Header.Get("Authorization"); got != f.ExpectedChatAuthorization {
+			http.Error(w, fmt.Sprintf("authorization = %q, want %q", got, f.ExpectedChatAuthorization), http.StatusUnauthorized)
+			return
+		}
+	}
+	if f.ExpectedChatModel != "" {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("decode request JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Model != f.ExpectedChatModel {
+			http.Error(w, fmt.Sprintf("model = %q, want %q", req.Model, f.ExpectedChatModel), http.StatusBadRequest)
+			return
+		}
+	}
 	writeJSON(w, map[string]any{
 		"id":      "chatcmpl-test",
 		"object":  "chat.completion",
