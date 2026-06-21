@@ -188,7 +188,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 		}
 
 		key := artifactKey(modelName, model.Artifact.Object, model.Artifact.Kind, model.Artifact.CRC64ECMA)
-		if state, ok := installs[modelName]; ok && state.key == key && state.running {
+		if state, ok := installs[modelName]; ok && state.running {
 			status[modelName] = "installing"
 			installing = true
 			continue
@@ -203,7 +203,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 		}
 		if matches {
 			status[modelName] = "ready"
-			if state, ok := installs[modelName]; ok && state.key == key && !state.running {
+			if state, ok := installs[modelName]; ok && !state.running {
 				delete(installs, modelName)
 			}
 			continue
@@ -216,6 +216,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			} else {
 				outErr = errors.Join(outErr, fmt.Errorf("install artifact for %q completed without matching marker", modelName))
 			}
+			delete(installs, modelName)
 			continue
 		}
 

@@ -482,6 +482,300 @@ func TestRunHeartbeatsWhileArtifactInstallBlocked(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotStartNewArtifactInstallWhileSameModelRunning(t *testing.T) {
+	payloadA := []byte("model payload A")
+	payloadB := []byte("model payload B")
+	crcA := crc64String(payloadA)
+	crcB := crc64String(payloadB)
+	artifactA := config.Artifact{Object: "models/a.gguf", Kind: "file", CRC64ECMA: crcA}
+	artifactB := config.Artifact{Object: "models/b.gguf", Kind: "file", CRC64ECMA: crcB}
+
+	aGetStarted := make(chan struct{})
+	bGetStarted := make(chan struct{})
+	releaseA := make(chan struct{})
+	releaseB := make(chan struct{})
+	var closeAGetStarted sync.Once
+	var closeBGetStarted sync.Once
+	var closeReleaseA sync.Once
+	var closeReleaseB sync.Once
+	var getCount atomic.Int32
+	var activeGETs atomic.Int32
+	concurrentGET := make(chan int32, 1)
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload []byte
+		var crc string
+		var started chan struct{}
+		var closeStarted *sync.Once
+		var release <-chan struct{}
+		switch r.URL.Path {
+		case "/models/a.gguf":
+			payload = payloadA
+			crc = crcA
+			started = aGetStarted
+			closeStarted = &closeAGetStarted
+			release = releaseA
+		case "/models/b.gguf":
+			payload = payloadB
+			crc = crcB
+			started = bGetStarted
+			closeStarted = &closeBGetStarted
+			release = releaseB
+		default:
+			t.Fatalf("unexpected artifact path %s", r.URL.Path)
+		}
+
+		w.Header().Set("x-oss-hash-crc64ecma", crc)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			getCount.Add(1)
+			if got := activeGETs.Add(1); got > 1 {
+				select {
+				case concurrentGET <- got:
+				default:
+				}
+			}
+			defer activeGETs.Add(-1)
+			closeStarted.Do(func() { close(started) })
+			select {
+			case <-release:
+				_, _ = w.Write(payload)
+			case <-r.Context().Done():
+			}
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	t.Cleanup(func() {
+		closeReleaseA.Do(func() { close(releaseA) })
+		closeReleaseB.Do(func() { close(releaseB) })
+		oss.Close()
+	})
+
+	var cfgMu sync.RWMutex
+	cfg := reconcileConfigWithArtifact(oss.URL, artifactA)
+	bConfigServed := make(chan struct{})
+	postBHeartbeat := make(chan protocol.HeartbeatRequest, 16)
+	var closeBConfigServed sync.Once
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/agent/config":
+			cfgMu.RLock()
+			current := cfg
+			cfgMu.RUnlock()
+			if current.Models["qwen"].Artifact.Object == artifactB.Object {
+				closeBConfigServed.Do(func() { close(bConfigServed) })
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(current); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/agent/heartbeat":
+			var hb protocol.HeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-bConfigServed:
+				postBHeartbeat <- hb
+			default:
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(protocol.HeartbeatResponse{}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      oss.Client(),
+		Service:         &FakeService{},
+		RunInterval:     10 * time.Millisecond,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- rec.Run(ctx)
+	}()
+
+	select {
+	case <-aGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("artifact A GET did not start")
+	}
+
+	cfgMu.Lock()
+	cfg = reconcileConfigWithArtifact(oss.URL, artifactB)
+	cfgMu.Unlock()
+
+	select {
+	case hb := <-postBHeartbeat:
+		if got := hb.Artifacts["qwen"]; got != "installing" {
+			t.Fatalf("post-change artifact status = %q, want installing", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat after artifact B config was not observed")
+	}
+	select {
+	case <-bGetStarted:
+		t.Fatal("artifact B GET started while artifact A install was still running")
+	case got := <-concurrentGET:
+		t.Fatalf("concurrent artifact GETs = %d, want at most 1", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := getCount.Load(); got != 1 {
+		t.Fatalf("artifact GET count before releasing A = %d, want 1", got)
+	}
+
+	closeReleaseA.Do(func() { close(releaseA) })
+	select {
+	case <-bGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("artifact B GET did not start after artifact A finished")
+	}
+	closeReleaseB.Do(func() { close(releaseB) })
+
+	cancel()
+	closeReleaseA.Do(func() { close(releaseA) })
+	closeReleaseB.Do(func() { close(releaseB) })
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Fatalf("Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not stop after cancellation")
+	}
+}
+
+func TestRunRetriesAsyncInstallAfterTransientFailure(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	var getAttempts atomic.Int32
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-oss-hash-crc64ecma", crc)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			if attempt := getAttempts.Add(1); attempt == 1 {
+				http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	heartbeatCh := make(chan protocol.HeartbeatRequest, 32)
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/agent/config":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(reconcileConfig(oss.URL, crc)); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/agent/heartbeat":
+			var hb protocol.HeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
+				t.Fatal(err)
+			}
+			heartbeatCh <- hb
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(protocol.HeartbeatResponse{}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      oss.Client(),
+		Service:         &FakeService{},
+		RunInterval:     10 * time.Millisecond,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- rec.Run(ctx)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	sawError := false
+	for !sawError {
+		select {
+		case hb := <-heartbeatCh:
+			if hb.Artifacts["qwen"] == "error" {
+				if hb.LastError == "" {
+					t.Fatal("error heartbeat last_error is empty")
+				}
+				sawError = true
+			}
+		case <-deadline:
+			t.Fatal("did not observe async install error heartbeat")
+		}
+	}
+
+	readyDeadline := time.After(2 * time.Second)
+	for {
+		select {
+		case hb := <-heartbeatCh:
+			if hb.Artifacts["qwen"] == "ready" {
+				if got := getAttempts.Load(); got < 2 {
+					t.Fatalf("GET attempts = %d, want at least 2 after retry", got)
+				}
+				cancel()
+				select {
+				case err := <-errCh:
+					if err != context.Canceled {
+						t.Fatalf("Run() error = %v, want context.Canceled", err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("Run() did not stop after cancellation")
+				}
+				return
+			}
+		case <-readyDeadline:
+			t.Fatal("did not observe ready heartbeat after transient failure")
+		}
+	}
+}
+
 func TestWriteConfigSkipsRestartWhenUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "llama-swap.yaml")
@@ -736,11 +1030,19 @@ func reconcileGatewayWithDynamicHeartbeat(t *testing.T, cfg protocol.AgentConfig
 }
 
 func reconcileConfig(ossURL, crc string) protocol.AgentConfigResponse {
+	return reconcileConfigWithArtifact(ossURL, config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc,
+	})
+}
+
+func reconcileConfigWithArtifact(ossURL string, artifact config.Artifact) protocol.AgentConfigResponse {
 	return protocol.AgentConfigResponse{
 		OSS: ossConfig(ossURL),
 		Models: map[string]config.Model{
 			"qwen": {
-				Artifact: config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: crc},
+				Artifact: artifact,
 				Run:      "llama --model {{model_path}}",
 			},
 		},
