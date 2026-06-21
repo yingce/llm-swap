@@ -14,6 +14,7 @@ import (
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
+	"llm-swap/internal/testutil"
 )
 
 func TestLlamaSwapClientUnloadPostsModelWithBearerToken(t *testing.T) {
@@ -369,6 +370,21 @@ func TestProxyRouteRequiresClientBearerToken(t *testing.T) {
 	srv.ServeHTTP(withAuth, proxyRequest(`{"model":"qwen"}`))
 	if withAuth.Code != http.StatusOK {
 		t.Fatalf("authorized status = %d, want %d: %s", withAuth.Code, http.StatusOK, withAuth.Body.String())
+	}
+}
+
+func TestGatewaySmokeProxiesChatCompletionToLlamaSwap(t *testing.T) {
+	fake := testutil.NewFakeLlamaSwap()
+	defer fake.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "gpu-01", fake.URL(), true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[{"role":"user","content":"hi"}]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
 }
 
