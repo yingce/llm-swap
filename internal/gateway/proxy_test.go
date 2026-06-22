@@ -200,6 +200,53 @@ func TestProxyNormalizesTopKZeroForSGLangModels(t *testing.T) {
 	}
 }
 
+func TestProxyNormalizesTransformersImagePartsForSGLangModels(t *testing.T) {
+	var gotPart map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content []map[string]any `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if len(body.Messages) != 1 || len(body.Messages[0].Content) != 2 {
+			t.Fatalf("unexpected upstream messages: %+v", body.Messages)
+		}
+		gotPart = body.Messages[0].Content[0]
+		writeJSON(w, map[string]any{"ok": true})
+	}))
+	defer upstream.Close()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.Run = "PORT=${PORT} /opt/llmswap/bin/sglang.server {{model_path}} --sampling-defaults openai"
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"image","url":"https://example.com/dog.png"},{"type":"text","text":"图片中是什么"}]}]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if gotPart["type"] != "image_url" {
+		t.Fatalf("upstream image type = %v, want image_url; part=%+v", gotPart["type"], gotPart)
+	}
+	imageURL, ok := gotPart["image_url"].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream image_url = %T, want object; part=%+v", gotPart["image_url"], gotPart)
+	}
+	if imageURL["url"] != "https://example.com/dog.png" {
+		t.Fatalf("upstream image url = %v, want source url", imageURL["url"])
+	}
+	if _, ok := gotPart["url"]; ok {
+		t.Fatalf("upstream image part still has url field: %+v", gotPart)
+	}
+}
+
 func TestProxyUpstream400IsNotRetriedAndResponseForwarded(t *testing.T) {
 	var firstRequests atomic.Int32
 	var secondRequests atomic.Int32

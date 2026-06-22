@@ -73,6 +73,43 @@ func TestSchedulerUsesIdleColdWorkerWhenLoadedReplicasBelowMaxLoaded(t *testing.
 	}
 }
 
+func TestSchedulerUsesLowLoadWorkerWithOtherModelWhenReplicasBelowMaxLoaded(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen":  {MaxLoaded: 2},
+			"other": {},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen", "other"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "loaded-qwen",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://loaded-qwen",
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		Artifacts:     map[string]string{"qwen": "ready", "other": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "loaded-other",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://loaded-other",
+		RunningModels: []protocol.RunningModel{{Model: "other", State: "ready"}},
+		Artifacts:     map[string]string{"qwen": "ready", "other": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	pick, err := s.Pick("qwen", now, nil)
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if pick.ID != "loaded-other" {
+		t.Fatalf("picked %s, want low-load worker with other model to grow qwen replicas", pick.ID)
+	}
+}
+
 func TestSchedulerDoesNotUseColdWorkerWhenMaxLoadedAlreadySatisfied(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{"qwen": {MaxLoaded: 1}},

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"llm-swap/internal/protocol"
 )
 
@@ -131,12 +133,14 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
-			changed, err := writeConfigIfChangedAndMarkPending(r.LlamaSwapConfig, content, r.markPendingRestart)
+			changed, restartNeeded, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
 			if err != nil {
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
 			if changed {
 				r.recordEvent(protocol.AgentEvent{Event: "llama_swap_config_changed"})
+			}
+			if restartNeeded {
 				r.needsRestart = true
 			}
 		}
@@ -381,11 +385,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
-			changed, err := writeConfigIfChangedAndMarkPending(r.LlamaSwapConfig, content, r.markPendingRestart)
+			changed, restartNeeded, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
 			if err != nil {
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
-			if changed {
+			if changed && restartNeeded {
 				r.needsRestart = true
 			}
 		}
@@ -597,6 +601,98 @@ func writeConfigIfChangedAndMarkPending(path string, content []byte, markPending
 		return false, err
 	}
 	if err := markPendingRestart(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return false, err
+	}
+	cleanup = false
+	return true, nil
+}
+
+func writeConfigIfChangedAndMarkPendingForRunningModels(path string, content []byte, runningModels []protocol.RunningModel, markPendingRestart func() error) (bool, bool, error) {
+	old, err := os.ReadFile(path)
+	if err == nil {
+		if bytes.Equal(old, content) {
+			return false, false, nil
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		changed, err := writeConfigIfChangedAndMarkPending(path, content, markPendingRestart)
+		return changed, changed, err
+	} else {
+		return false, false, err
+	}
+
+	restartNeeded := loadedModelConfigChanged(old, content, runningModels)
+	if restartNeeded {
+		changed, err := writeConfigIfChangedAndMarkPending(path, content, markPendingRestart)
+		return changed, changed, err
+	}
+	changed, err := writeConfigIfChangedWithoutMarkingPending(path, content)
+	return changed, false, err
+}
+
+func loadedModelConfigChanged(oldContent []byte, newContent []byte, runningModels []protocol.RunningModel) bool {
+	if len(runningModels) == 0 {
+		return false
+	}
+	var oldConfig llamaSwapConfig
+	var newConfig llamaSwapConfig
+	if err := yaml.Unmarshal(oldContent, &oldConfig); err != nil {
+		return true
+	}
+	if err := yaml.Unmarshal(newContent, &newConfig); err != nil {
+		return true
+	}
+	for _, running := range runningModels {
+		if running.Model == "" {
+			continue
+		}
+		oldModel, oldOK := oldConfig.Models[running.Model]
+		newModel, newOK := newConfig.Models[running.Model]
+		if oldOK != newOK || oldModel != newModel {
+			return true
+		}
+	}
+	return false
+}
+
+func writeConfigIfChangedWithoutMarkingPending(path string, content []byte) (bool, error) {
+	old, err := os.ReadFile(path)
+	if err == nil {
+		if bytes.Equal(old, content) {
+			return false, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
 		return false, err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {

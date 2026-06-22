@@ -12,6 +12,7 @@ import (
 type Scheduler struct {
 	Config  config.GatewayConfig
 	Workers *WorkerRegistry
+	Access  *AccessTracker
 }
 
 func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (Worker, error) {
@@ -81,8 +82,14 @@ type scoredWorker struct {
 }
 
 func workerScore(worker Worker, running bool, shouldLoadIdleReplica bool, activeRequests int) int {
-	if shouldLoadIdleReplica && !running && activeRequests == 0 && len(worker.RunningModels) == 0 {
-		return 200
+	if shouldLoadIdleReplica {
+		if !running && len(worker.RunningModels) == 0 {
+			return 300 - activeRequests
+		}
+		if !running {
+			return 250 - activeRequests
+		}
+		return 200 - activeRequests
 	}
 	if running {
 		return 100 - activeRequests

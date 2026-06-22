@@ -194,6 +194,117 @@ func TestReconcileConfigChangedRestartNotAllowedPersistsPendingRestart(t *testin
 	}
 }
 
+func TestReconcileConfigChangedForUnloadedModelDoesNotRequestRestart(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	for _, modelName := range []string{"qwen", "cold"} {
+		if err := WriteMarker(filepath.Join(modelRoot, modelName), modelName, artifact); err != nil {
+			t.Fatalf("WriteMarker(%s) error = %v", modelName, err)
+		}
+	}
+
+	oldCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "llama --model {{model_path}}", "cold-old --model {{model_path}}")
+	newCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "llama --model {{model_path}}", "cold-new --model {{model_path}}")
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	oldRendered, err := RenderLlamaSwapConfig(oldCfg, modelRoot, "worker-token")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig(old) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, oldRendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, newCfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "active", RestartAllowed: true})
+	defer gateway.Close()
+	svc := &FakeService{}
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+		RunningModels:   &fakeRunningModelsClient{models: []protocol.RunningModel{{Model: "qwen", State: "ready"}}},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeat needs_restart = true, want false for unloaded model config change")
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0", svc.Restarts)
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist", err)
+	}
+	rendered, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rendered), "cold-new") {
+		t.Fatalf("config was not updated with unloaded model change:\n%s", rendered)
+	}
+}
+
+func TestReconcileConfigChangedForLoadedModelRequestsRestart(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	for _, modelName := range []string{"qwen", "cold"} {
+		if err := WriteMarker(filepath.Join(modelRoot, modelName), modelName, artifact); err != nil {
+			t.Fatalf("WriteMarker(%s) error = %v", modelName, err)
+		}
+	}
+
+	oldCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "qwen-old --model {{model_path}}", "cold --model {{model_path}}")
+	newCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "qwen-new --model {{model_path}}", "cold --model {{model_path}}")
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	oldRendered, err := RenderLlamaSwapConfig(oldCfg, modelRoot, "worker-token")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig(old) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, oldRendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, newCfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "active", RestartAllowed: false})
+	defer gateway.Close()
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+		RunningModels:   &fakeRunningModelsClient{models: []protocol.RunningModel{{Model: "qwen", State: "ready"}}},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if !heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeat needs_restart = false, want true for loaded model config change")
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); err != nil {
+		t.Fatalf("pending restart marker missing: %v", err)
+	}
+}
+
 func TestReconcileLoadsPendingRestartMarkerWhenConfigUnchanged(t *testing.T) {
 	payload := []byte("model payload")
 	crc := crc64String(payload)
@@ -1332,6 +1443,30 @@ func reconcileConfigWithArtifact(ossURL string, artifact config.Artifact) protoc
 		TagPolicy: protocol.AgentTagPolicy{
 			Tag:           "gpu-4090",
 			AllowedModels: []string{"qwen"},
+			WorkerDefaults: config.WorkerDefaults{
+				MaxConcurrency: 2,
+				MaxQueue:       4,
+			},
+		},
+	}
+}
+
+func reconcileConfigWithTwoModels(ossURL string, artifact config.Artifact, qwenRun string, coldRun string) protocol.AgentConfigResponse {
+	return protocol.AgentConfigResponse{
+		OSS: ossConfig(ossURL),
+		Models: map[string]config.Model{
+			"qwen": {
+				Artifact: artifact,
+				Run:      qwenRun,
+			},
+			"cold": {
+				Artifact: artifact,
+				Run:      coldRun,
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			Tag:           "gpu-4090",
+			AllowedModels: []string{"qwen", "cold"},
 			WorkerDefaults: config.WorkerDefaults{
 				MaxConcurrency: 2,
 				MaxQueue:       4,

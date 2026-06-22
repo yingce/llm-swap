@@ -61,7 +61,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		worker, err := (Scheduler{Config: s.config, Workers: s.workers}).Pick(model, time.Now(), exclude)
+		now := time.Now()
+		worker, err := (Scheduler{Config: s.config, Workers: s.workers, Access: s.access}).Pick(model, now, exclude)
 		if err != nil {
 			break
 		}
@@ -96,6 +97,9 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			workerLimitRelease()
 			tagLimitRelease()
 			continue
+		}
+		if s.access != nil {
+			s.access.Record(model, worker.ID, now)
 		}
 		s.logEvent("scheduler_decision", map[string]any{
 			"request_id": requestID,
@@ -173,32 +177,100 @@ func normalizeProxyRequestBody(body []byte, modelCfg config.Model) []byte {
 		return body
 	}
 
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return body
-	}
-	rawTopK, ok := payload["top_k"]
-	if !ok {
-		return body
-	}
-
-	var topK json.Number
-	decoder := json.NewDecoder(bytes.NewReader(rawTopK))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	if err := decoder.Decode(&topK); err != nil {
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
 		return body
 	}
-	value, err := topK.Float64()
-	if err != nil || value != 0 {
-		return body
-	}
+	changed := normalizeTopK(payload)
+	changed = normalizeTransformersMediaParts(payload) || changed
 
-	payload["top_k"] = json.RawMessage("-1")
+	if !changed {
+		return body
+	}
 	normalized, err := json.Marshal(payload)
 	if err != nil {
 		return body
 	}
 	return normalized
+}
+
+func normalizeTopK(payload map[string]any) bool {
+	rawTopK, ok := payload["top_k"]
+	if !ok {
+		return false
+	}
+	if !jsonNumberIsZero(rawTopK) {
+		return false
+	}
+	payload["top_k"] = -1
+	return true
+}
+
+func jsonNumberIsZero(value any) bool {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		return err == nil && number == 0
+	case float64:
+		return typed == 0
+	default:
+		return false
+	}
+}
+
+func normalizeTransformersMediaParts(payload map[string]any) bool {
+	messages, ok := payload["messages"].([]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawPart := range content {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			if normalizeTransformersMediaPart(part) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func normalizeTransformersMediaPart(part map[string]any) bool {
+	partType, _ := part["type"].(string)
+	url, _ := part["url"].(string)
+	if url == "" {
+		return false
+	}
+
+	switch partType {
+	case "image":
+		part["type"] = "image_url"
+		part["image_url"] = map[string]any{"url": url}
+	case "video":
+		part["type"] = "video_url"
+		part["video_url"] = map[string]any{"url": url}
+	case "audio":
+		part["type"] = "audio_url"
+		part["audio_url"] = map[string]any{"url": url}
+	default:
+		return false
+	}
+	delete(part, "url")
+	return true
 }
 
 func isSGLangModel(modelCfg config.Model) bool {

@@ -21,6 +21,7 @@ type Server struct {
 	limiter       *QueueLimiter
 	metrics       *Metrics
 	scraper       *MetricsScraper
+	access        *AccessTracker
 	proxyAttempts int
 	logger        *log.Logger
 	eventMu       sync.Mutex
@@ -36,6 +37,7 @@ func NewServer(cfg config.GatewayConfig) *Server {
 		limiter:       NewQueueLimiter(),
 		metrics:       NewMetrics(),
 		scraper:       NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
+		access:        NewAccessTracker(),
 		proxyAttempts: configuredProxyAttempts(cfg),
 		logger:        log.New(os.Stdout, "", log.LstdFlags),
 		mux:           http.NewServeMux(),
