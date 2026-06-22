@@ -15,53 +15,67 @@ import (
 )
 
 type Server struct {
-	config         config.GatewayConfig
-	workers        *WorkerRegistry
-	accounting     *Accounting
-	limiter        *QueueLimiter
-	metrics        *Metrics
-	scraper        *MetricsScraper
-	access         *AccessTracker
-	requestLogPath string
-	proxyAttempts  int
-	logger         *log.Logger
-	eventMu        sync.Mutex
-	recentEvents   []uiAgentEvent
-	mux            *http.ServeMux
+	config             config.GatewayConfig
+	workers            *WorkerRegistry
+	accounting         *Accounting
+	limiter            *QueueLimiter
+	metrics            *Metrics
+	scraper            *MetricsScraper
+	access             *AccessTracker
+	requestLogPath     string
+	workerEventLogPath string
+	proxyAttempts      int
+	logger             *log.Logger
+	eventMu            sync.Mutex
+	recentEvents       []uiAgentEvent
+	mux                *http.ServeMux
 }
 
 func NewServer(cfg config.GatewayConfig) *Server {
-	return newServer(cfg, "")
+	return newServer(cfg, "", "")
 }
 
 func NewServerWithGatewayPersistence(cfg config.GatewayConfig, requestLogPath string) *Server {
-	return newServer(cfg, requestLogPath)
+	return newServer(cfg, requestLogPath, "")
 }
 
-func newServer(cfg config.GatewayConfig, requestLogPath string) *Server {
+func NewServerWithGatewayPersistencePaths(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string) *Server {
+	return newServer(cfg, requestLogPath, workerEventLogPath)
+}
+
+func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string) *Server {
 	access := NewAccessTracker()
 	if requestLogPath != "" {
 		if loaded, err := LoadAccessTrackerFromRequestLog(requestLogPath); err == nil {
 			access = loaded
 		}
 	}
+	recentEvents := []uiAgentEvent{}
+	if workerEventLogPath != "" {
+		if loaded, err := loadRecentWorkerEvents(workerEventLogPath, uiEventLimit); err == nil {
+			recentEvents = loaded
+		}
+	}
 	s := &Server{
-		config:         cfg,
-		workers:        NewWorkerRegistry(6 * time.Second),
-		accounting:     NewAccounting(),
-		limiter:        NewQueueLimiter(),
-		metrics:        NewMetrics(),
-		scraper:        NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
-		access:         access,
-		requestLogPath: requestLogPath,
-		proxyAttempts:  configuredProxyAttempts(cfg),
-		logger:         log.New(os.Stdout, "", log.LstdFlags),
-		mux:            http.NewServeMux(),
+		config:             cfg,
+		workers:            NewWorkerRegistry(6 * time.Second),
+		accounting:         NewAccounting(),
+		limiter:            NewQueueLimiter(),
+		metrics:            NewMetrics(),
+		scraper:            NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
+		access:             access,
+		requestLogPath:     requestLogPath,
+		workerEventLogPath: workerEventLogPath,
+		proxyAttempts:      configuredProxyAttempts(cfg),
+		logger:             log.New(os.Stdout, "", log.LstdFlags),
+		recentEvents:       recentEvents,
+		mux:                http.NewServeMux(),
 	}
 
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
 	s.mux.Handle("GET /ui", http.HandlerFunc(s.handleUI))
 	s.mux.Handle("GET /ui/status", http.HandlerFunc(s.handleUIStatus))
+	s.mux.Handle("GET /ui/events", http.HandlerFunc(s.handleUIEvents))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))
@@ -208,7 +222,16 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	resp := s.workers.UpsertHeartbeat(hb, time.Now())
 	for _, event := range hb.Events {
-		s.recordAgentEvent(hb.AgentID, event, time.Now())
+		cached := s.recordAgentEvent(hb.AgentID, event, time.Now())
+		if cached.Event == "" {
+			continue
+		}
+		if err := appendWorkerEventLog(s.workerEventLogPath, cached); err != nil {
+			s.logEvent("worker_event_log_error", map[string]any{
+				"worker_id": hb.AgentID,
+				"error":     err.Error(),
+			})
+		}
 		s.logAgentEvent(hb.AgentID, event)
 	}
 	writeJSON(w, resp)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,26 @@ import (
 
 func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
+	now := time.Unix(300, 0).UTC()
+	srv.access.RecordRequest(RequestLogEntry{
+		Time:             now,
+		Model:            "qwen",
+		WorkerID:         "gpu-01",
+		StatusCode:       200,
+		DurationMS:       100,
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+		CacheTokens:      3,
+	})
+	srv.access.RecordRequest(RequestLogEntry{
+		Time:        now.Add(time.Second),
+		Model:       "qwen",
+		WorkerID:    "gpu-01",
+		StatusCode:  500,
+		DurationMS:  300,
+		TotalTokens: 7,
+	})
 
 	postHeartbeat(t, srv, protocol.HeartbeatRequest{
 		AgentID:       "gpu-01",
@@ -56,12 +77,66 @@ func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	if model.Name != "qwen" || model.ReadyWorkers != 1 || model.RunningWorkers != 1 || !model.Available {
 		t.Fatalf("model status = %+v, want qwen ready/running/available", model)
 	}
+	if model.Traffic.Requests != 2 || model.Traffic.TotalTokens != 22 || model.Traffic.AvgDurationMS != 200 || model.Traffic.MaxDurationMS != 300 {
+		t.Fatalf("model traffic = %+v, want requests/tokens/duration stats", model.Traffic)
+	}
+	if model.Traffic.Status2xx != 1 || model.Traffic.Status5xx != 1 || !model.Traffic.LastAccess.Equal(now.Add(time.Second)) {
+		t.Fatalf("model traffic status/last = %+v, want status counts and last access", model.Traffic)
+	}
 	if len(status.Workers) != 1 || status.Workers[0].ID != "gpu-01" || status.Workers[0].Health != "healthy" {
 		t.Fatalf("workers = %+v, want healthy gpu-01", status.Workers)
 	}
 	if len(status.Events) != 1 || status.Events[0].WorkerID != "gpu-01" || status.Events[0].Event != "artifact_download_progress" {
 		t.Fatalf("events = %+v, want cached progress event", status.Events)
 	}
+}
+
+func TestUIEventsEndpointPaginatesPersistedWorkerEvents(t *testing.T) {
+	eventLogPath := filepath.Join(t.TempDir(), "worker-events.jsonl")
+	srv := NewServerWithGatewayPersistencePaths(testGatewayConfig(), "", eventLogPath)
+	for i, event := range []string{"artifact_download_start", "artifact_download_progress", "artifact_download_complete"} {
+		postHeartbeat(t, srv, protocol.HeartbeatRequest{
+			AgentID:      "gpu-01",
+			Tags:         []string{"gpu-4090"},
+			LlamaSwapURL: "http://worker",
+			Events: []protocol.AgentEvent{{
+				Time:  time.Unix(int64(100+i), 0).UTC(),
+				Event: event,
+				Model: "qwen",
+			}},
+		})
+	}
+
+	first := getUIEvents(t, srv, "/ui/events?limit=2")
+	if len(first.Events) != 2 || first.Events[0].Event != "artifact_download_complete" || first.Events[1].Event != "artifact_download_progress" {
+		t.Fatalf("first events = %+v, want newest two", first.Events)
+	}
+	if !first.HasMore || first.NextOffset != 2 {
+		t.Fatalf("first page = %+v, want has_more next_offset=2", first)
+	}
+
+	second := getUIEvents(t, srv, "/ui/events?limit=2&offset=2")
+	if len(second.Events) != 1 || second.Events[0].Event != "artifact_download_start" {
+		t.Fatalf("second events = %+v, want oldest event", second.Events)
+	}
+	if second.HasMore || second.NextOffset != 3 {
+		t.Fatalf("second page = %+v, want no more next_offset=3", second)
+	}
+}
+
+func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp uiEventsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	return resp
 }
 
 func findUIModel(models []uiModelStatus, name string) (uiModelStatus, bool) {

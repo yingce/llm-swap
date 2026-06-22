@@ -213,6 +213,15 @@ func (a *AccessTracker) ModelTotalTokens(model string) uint64 {
 	return a.models[model].TotalTokens
 }
 
+func (a *AccessTracker) ModelRecord(model string) AccessRecord {
+	if a == nil {
+		return AccessRecord{}
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return cloneAccessRecord(a.models[model])
+}
+
 func (a *AccessTracker) WorkerModelStatusCount(workerID string, model string, statusCode int) uint64 {
 	if a == nil {
 		return 0
@@ -220,6 +229,18 @@ func (a *AccessTracker) WorkerModelStatusCount(workerID string, model string, st
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.workerModel[workerID][model].StatusCounts[fmt.Sprintf("%d", statusCode)]
+}
+
+func cloneAccessRecord(record AccessRecord) AccessRecord {
+	if record.StatusCounts == nil {
+		return record
+	}
+	statusCounts := make(map[string]uint64, len(record.StatusCounts))
+	for status, count := range record.StatusCounts {
+		statusCounts[status] = count
+	}
+	record.StatusCounts = statusCounts
+	return record
 }
 
 func maxInt(value int, floor int) int {

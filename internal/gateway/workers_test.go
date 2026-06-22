@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +173,44 @@ func TestHeartbeatEndpointLogsAgentEvents(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log = %s, want substring %s", got, want)
 		}
+	}
+}
+
+func TestHeartbeatEndpointPersistsAgentEvents(t *testing.T) {
+	eventLogPath := filepath.Join(t.TempDir(), "worker-events.jsonl")
+	srv := NewServerWithGatewayPersistencePaths(testGatewayConfig(), "", eventLogPath)
+
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+		Events: []protocol.AgentEvent{
+			{
+				Time:            time.Unix(100, 0).UTC(),
+				Event:           "artifact_download_progress",
+				Model:           "qwen",
+				Object:          "models/qwen.tar.gz",
+				DownloadedBytes: 50,
+				TotalBytes:      100,
+				Percent:         50,
+			},
+		},
+	})
+
+	data, err := os.ReadFile(eventLogPath)
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	if len(lines) != 1 {
+		t.Fatalf("event log lines = %d, want 1:\n%s", len(lines), string(data))
+	}
+	var entry uiAgentEvent
+	if err := json.Unmarshal(lines[0], &entry); err != nil {
+		t.Fatalf("decode event log: %v", err)
+	}
+	if entry.WorkerID != "gpu-01" || entry.Event != "artifact_download_progress" || entry.Model != "qwen" || entry.Percent != 50 {
+		t.Fatalf("event log entry = %+v, want persisted worker event", entry)
 	}
 }
 
