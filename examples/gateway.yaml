@@ -24,8 +24,19 @@ models:
       kind: tar_gz
       crc64ecma: sample-crc64ecma
     check_endpoint: /model_info
-    run: llama-swap run qwen3-32b-awq
-    cmd_stop: llama-swap stop qwen3-32b-awq
+    run: >-
+      PORT=${PORT} /opt/llmswap/bin/sglang.server {{model_path}}
+      --served-model-name qwen3-32b-awq
+      --trust-remote-code
+      --tp-size 1
+      --dtype bfloat16
+      --max-total-tokens 2048
+      --disable-cuda-graph
+      --attention-backend triton
+      --sampling-backend pytorch
+      --sampling-defaults openai
+      --max-running-requests 1
+      --max-queued-requests 8
 
 tag_policies:
   gpu-sample:
