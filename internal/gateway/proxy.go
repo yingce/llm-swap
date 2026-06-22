@@ -100,6 +100,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.access != nil {
 			s.access.Record(model, worker.ID, now)
+			s.persistAccessStats()
 		}
 		s.logEvent("scheduler_decision", map[string]any{
 			"request_id": requestID,
@@ -156,6 +157,15 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	protocol.WriteOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_worker", "no healthy worker is available for the requested model")
+}
+
+func (s *Server) persistAccessStats() {
+	if s == nil || s.access == nil || s.accessPath == "" {
+		return
+	}
+	if err := s.access.Save(s.accessPath); err != nil {
+		s.logEvent("access_stats_persist_error", map[string]any{"error": err.Error()})
+	}
 }
 
 func queueContext(parent context.Context, timeoutMS int) (context.Context, context.CancelFunc) {

@@ -22,6 +22,7 @@ type Server struct {
 	metrics       *Metrics
 	scraper       *MetricsScraper
 	access        *AccessTracker
+	accessPath    string
 	proxyAttempts int
 	logger        *log.Logger
 	eventMu       sync.Mutex
@@ -30,6 +31,20 @@ type Server struct {
 }
 
 func NewServer(cfg config.GatewayConfig) *Server {
+	return newServer(cfg, "")
+}
+
+func NewServerWithAccessPersistence(cfg config.GatewayConfig, accessPath string) *Server {
+	return newServer(cfg, accessPath)
+}
+
+func newServer(cfg config.GatewayConfig, accessPath string) *Server {
+	access := NewAccessTracker()
+	if accessPath != "" {
+		if loaded, err := LoadAccessTracker(accessPath); err == nil {
+			access = loaded
+		}
+	}
 	s := &Server{
 		config:        cfg,
 		workers:       NewWorkerRegistry(6 * time.Second),
@@ -37,7 +52,8 @@ func NewServer(cfg config.GatewayConfig) *Server {
 		limiter:       NewQueueLimiter(),
 		metrics:       NewMetrics(),
 		scraper:       NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
-		access:        NewAccessTracker(),
+		access:        access,
+		accessPath:    accessPath,
 		proxyAttempts: configuredProxyAttempts(cfg),
 		logger:        log.New(os.Stdout, "", log.LstdFlags),
 		mux:           http.NewServeMux(),
