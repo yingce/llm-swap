@@ -59,6 +59,45 @@ func TestLoadAccessTrackerFromRequestLogReplaysStats(t *testing.T) {
 	}
 }
 
+func TestLoadAccessTrackerFromRequestLogReplaysRecentEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
+	writeRequestLogEntry(t, path, RequestLogEntry{
+		Time:        time.Unix(1, 0).UTC(),
+		Model:       "old",
+		WorkerID:    "worker-old",
+		StatusCode:  200,
+		TotalTokens: 99,
+	})
+	base := time.Unix(1000, 0).UTC()
+	for i := 0; i < 1000; i++ {
+		writeRequestLogEntry(t, path, RequestLogEntry{
+			Time:        base.Add(time.Duration(i) * time.Second),
+			Model:       "qwen",
+			WorkerID:    "worker-a",
+			StatusCode:  200,
+			TotalTokens: 1,
+		})
+	}
+
+	loaded, err := LoadAccessTrackerFromRequestLog(path)
+	if err != nil {
+		t.Fatalf("LoadAccessTrackerFromRequestLog() error = %v", err)
+	}
+
+	if got := loaded.ModelCount("old"); got != 0 {
+		t.Fatalf("old model count = %d, want 0", got)
+	}
+	if got := loaded.ModelCount("qwen"); got != 1000 {
+		t.Fatalf("recent model count = %d, want 1000", got)
+	}
+	if got := loaded.WorkerModelCount("worker-a", "qwen"); got != 1000 {
+		t.Fatalf("recent worker model count = %d, want 1000", got)
+	}
+	if got := loaded.ModelTotalTokens("qwen"); got != 1000 {
+		t.Fatalf("recent model total tokens = %d, want 1000", got)
+	}
+}
+
 func TestNewServerWithGatewayPersistenceReplaysRequestLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
 	now := time.Unix(300, 0).UTC()

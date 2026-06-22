@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"time"
 )
+
+const defaultReplayRequestLogLines = 1000
 
 type AccessTracker struct {
 	mu          sync.RWMutex
@@ -50,23 +53,52 @@ func LoadAccessTrackerFromRequestLog(path string) (*AccessTracker, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+	lines, err := recentRequestLogLines(file, defaultReplayRequestLogLines)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range lines {
 		var entry RequestLogEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
 		}
 		tracker.RecordRequest(entry)
 	}
+	return tracker, nil
+}
+
+func recentRequestLogLines(file *os.File, limit int) ([][]byte, error) {
+	if limit <= 0 {
+		limit = defaultReplayRequestLogLines
+	}
+	ring := make([][]byte, limit)
+	count := 0
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		ring[count%limit] = append([]byte(nil), line...)
+		count++
+	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return tracker, nil
+	total := count
+	if total > limit {
+		total = limit
+	}
+	start := 0
+	if count > limit {
+		start = count % limit
+	}
+	lines := make([][]byte, 0, total)
+	for i := 0; i < total; i++ {
+		lines = append(lines, ring[(start+i)%limit])
+	}
+	return lines, nil
 }
 
 func (a *AccessTracker) Record(model string, workerID string, now time.Time) {
