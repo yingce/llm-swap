@@ -43,6 +43,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	modelCfg := s.config.Models[model]
 	body = normalizeProxyRequestBody(body, modelCfg)
+	baseLogEntry := requestLogEntryFromBody(requestID, model, body)
 	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
 	defer cancelLimit()
 	modelLimitRelease, err := s.acquireLimit(limitCtx, "model:"+model, modelCfg.MaxConcurrency, modelCfg.MaxQueue)
@@ -98,10 +99,6 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			tagLimitRelease()
 			continue
 		}
-		if s.access != nil {
-			s.access.Record(model, worker.ID, now)
-			s.persistAccessStats()
-		}
 		s.logEvent("scheduler_decision", map[string]any{
 			"request_id": requestID,
 			"model":      model,
@@ -113,7 +110,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		release := releaseOnce(workerRelease, accountingRelease, metricsRelease, workerLimitRelease, tagLimitRelease)
 
 		dispatchAttempts++
-		retry, dispatchFailure, err, statusCode := s.proxyAttempt(w, r, body, model, worker)
+		retry, dispatchFailure, err, statusCode, responseEntry := s.proxyAttempt(w, r, body, model, worker)
 		release()
 		if dispatchFailure != nil {
 			lastDispatchFailure = dispatchFailure
@@ -131,6 +128,14 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			protocol.WriteOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream request failed")
 			statusCode = http.StatusBadGateway
 		}
+		entry := mergeRequestLogEntry(baseLogEntry, responseEntry)
+		entry.Time = time.Now()
+		entry.WorkerID = worker.ID
+		entry.Tag = tag
+		entry.StatusCode = statusCode
+		entry.DurationMS = time.Since(start).Milliseconds()
+		entry.RetryCount = dispatchAttempts - 1
+		s.recordRequestStats(entry)
 		s.metrics.ObserveRequest(model, worker.ID, statusCode, time.Since(start))
 		s.logEvent("request", map[string]any{
 			"request_id":  requestID,
@@ -157,6 +162,21 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	protocol.WriteOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_worker", "no healthy worker is available for the requested model")
+}
+
+func (s *Server) recordRequestStats(entry RequestLogEntry) {
+	if s == nil {
+		return
+	}
+	if s.access != nil {
+		s.access.RecordRequest(entry)
+		s.persistAccessStats()
+	}
+	if s.requestLogPath != "" {
+		if err := appendRequestLog(s.requestLogPath, entry); err != nil {
+			s.logEvent("request_log_write_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})
+		}
+	}
 }
 
 func (s *Server) persistAccessStats() {
@@ -371,15 +391,16 @@ func upstreamRetryExhaustedFailure(status int) *proxyDispatchFailure {
 	}
 }
 
-func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker) (bool, *proxyDispatchFailure, error, int) {
+func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker) (bool, *proxyDispatchFailure, error, int, RequestLogEntry) {
 	upstreamURL, err := upstreamRequestURL(worker.LlamaSwapURL, r.URL)
 	if err != nil {
-		return true, workerUnavailableFailure(), err, 0
+		return true, workerUnavailableFailure(), err, 0, RequestLogEntry{}
 	}
+	entry := RequestLogEntry{UpstreamURL: upstreamURL}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		return true, workerUnavailableFailure(), err, 0
+		return true, workerUnavailableFailure(), err, 0, entry
 	}
 	copyRequestHeaders(req.Header, r.Header)
 	req.Header.Set("X-Request-Id", requestIDFromHeader(r))
@@ -395,37 +416,42 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 	resp, err := defaultProxyHTTPClient.Do(req)
 	if err != nil {
 		if retryableProxyError(err, r.Context()) {
-			return true, workerUnavailableFailure(), err, 0
+			return true, workerUnavailableFailure(), err, 0, entry
 		}
-		return false, nil, err, 0
+		return false, nil, err, 0, entry
 	}
 	defer resp.Body.Close()
 
 	if retryableUpstreamStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode
+		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode, entry
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return false, nil, err, resp.StatusCode
+			return false, nil, err, resp.StatusCode, entry
 		}
 		if retryablePlatform404(resp.Header, respBody) {
-			return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode
+			return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode, entry
 		}
 
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
-		return false, nil, nil, resp.StatusCode
+		entry.ResponseBytes = int64(len(respBody))
+		parseOpenAIResponseLog(respBody, &entry)
+		return false, nil, nil, resp.StatusCode, entry
 	}
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	if err := copyResponseBody(w, resp.Body); err != nil {
-		return false, nil, nil, resp.StatusCode
+	respBody, err := copyResponseBody(w, resp.Body)
+	if err != nil {
+		return false, nil, nil, resp.StatusCode, entry
 	}
-	return false, nil, nil, resp.StatusCode
+	entry.ResponseBytes = int64(len(respBody))
+	parseOpenAIResponseLog(respBody, &entry)
+	return false, nil, nil, resp.StatusCode, entry
 }
 
 func upstreamRequestURL(baseURL string, requestURL *url.URL) (string, error) {
@@ -538,14 +564,16 @@ func retryableProxyError(err error, ctx context.Context) bool {
 	return err != nil
 }
 
-func copyResponseBody(w http.ResponseWriter, body io.Reader) error {
+func copyResponseBody(w http.ResponseWriter, body io.Reader) ([]byte, error) {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 32*1024)
+	var captured bytes.Buffer
 	for {
 		n, readErr := body.Read(buf)
 		if n > 0 {
+			_, _ = captured.Write(buf[:n])
 			if _, err := w.Write(buf[:n]); err != nil {
-				return err
+				return captured.Bytes(), err
 			}
 			if flusher != nil {
 				flusher.Flush()
@@ -553,9 +581,9 @@ func copyResponseBody(w http.ResponseWriter, body io.Reader) error {
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
-				return nil
+				return captured.Bytes(), nil
 			}
-			return readErr
+			return captured.Bytes(), readErr
 		}
 	}
 }

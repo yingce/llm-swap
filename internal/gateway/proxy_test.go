@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -244,6 +246,87 @@ func TestProxyNormalizesTransformersImagePartsForSGLangModels(t *testing.T) {
 	}
 	if _, ok := gotPart["url"]; ok {
 		t.Fatalf("upstream image part still has url field: %+v", gotPart)
+	}
+}
+
+func TestProxyWritesRequestLogAndAggregatesUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"id":     "chatcmpl-test",
+			"object": "chat.completion",
+			"model":  "qwen",
+			"choices": []map[string]any{{
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "hello"},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     7,
+				"completion_tokens": 3,
+				"total_tokens":      10,
+				"reasoning_tokens":  2,
+				"prompt_tokens_details": map[string]any{
+					"cached_tokens": 4,
+				},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	statsPath := filepath.Join(t.TempDir(), "gateway-stats.json")
+	logPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
+	srv := NewServerWithGatewayPersistence(testProxyConfig(), statsPath, logPath)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}],"max_tokens":32,"temperature":0.2,"top_p":0.9}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	entry := readSingleRequestLogEntry(t, logPath)
+	if entry.Model != "qwen" || entry.WorkerID != "worker-a" || entry.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected log entry: %+v", entry)
+	}
+	if entry.PromptTokens != 7 || entry.CompletionTokens != 3 || entry.TotalTokens != 10 || entry.CacheTokens != 4 || entry.ReasoningTokens != 2 {
+		t.Fatalf("log tokens = prompt:%d completion:%d total:%d cache:%d reasoning:%d", entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens, entry.CacheTokens, entry.ReasoningTokens)
+	}
+	if entry.MessageCount != 1 || entry.ImageCount != 1 || entry.MaxTokens != 32 || entry.FinishReason != "stop" {
+		t.Fatalf("log request metadata = %+v", entry)
+	}
+	loaded, err := LoadAccessTracker(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.ModelTotalTokens("qwen"); got != 10 {
+		t.Fatalf("persisted total tokens = %d, want 10", got)
+	}
+}
+
+func TestProxyWritesStreamingRequestLogUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	logPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
+	srv := NewServerWithGatewayPersistence(testProxyConfig(), "", logPath)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[],"stream":true,"stream_options":{"include_usage":true}}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	entry := readSingleRequestLogEntry(t, logPath)
+	if !entry.Stream {
+		t.Fatalf("stream = false, want true: %+v", entry)
+	}
+	if entry.PromptTokens != 5 || entry.CompletionTokens != 2 || entry.TotalTokens != 7 || entry.FinishReason != "stop" {
+		t.Fatalf("stream log entry = %+v", entry)
 	}
 }
 
@@ -966,4 +1049,21 @@ func registryActive(reg *WorkerRegistry, workerID string) int {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
 	return reg.active[workerID]
+}
+
+func readSingleRequestLogEntry(t *testing.T, path string) RequestLogEntry {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read request log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("request log lines = %d, want 1:\n%s", len(lines), string(data))
+	}
+	var entry RequestLogEntry
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("decode request log entry: %v; line=%s", err, lines[0])
+	}
+	return entry
 }

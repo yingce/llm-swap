@@ -19,7 +19,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	srv := gateway.NewServerWithAccessPersistence(runtime.Config, gateway.DefaultGatewayStatsPath)
+	srv := gateway.NewServerWithGatewayPersistence(runtime.Config, gateway.DefaultGatewayStatsPath, gateway.DefaultGatewayRequestLogPath)
 	go srv.RunLoadedReconciler(context.Background(), 30*time.Second)
 
 	log.Fatal(http.ListenAndServe(runtime.ListenAddr, srv))

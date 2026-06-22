@@ -12,7 +12,17 @@ func TestAccessTrackerPersistsLastAccessAndCounts(t *testing.T) {
 	first := time.Unix(100, 0).UTC()
 	second := time.Unix(200, 0).UTC()
 	tracker.Record("qwen", "worker-a", first)
-	tracker.Record("qwen", "worker-a", second)
+	tracker.RecordRequest(RequestLogEntry{
+		Time:             second,
+		Model:            "qwen",
+		WorkerID:         "worker-a",
+		StatusCode:       200,
+		DurationMS:       1500,
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+		CacheTokens:      3,
+	})
 
 	if err := tracker.Save(path); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -33,6 +43,12 @@ func TestAccessTrackerPersistsLastAccessAndCounts(t *testing.T) {
 	}
 	if got := loaded.WorkerModelCount("worker-a", "qwen"); got != 2 {
 		t.Fatalf("worker model count = %d, want 2", got)
+	}
+	if got := loaded.ModelTotalTokens("qwen"); got != 15 {
+		t.Fatalf("model total tokens = %d, want 15", got)
+	}
+	if got := loaded.WorkerModelStatusCount("worker-a", "qwen", 200); got != 1 {
+		t.Fatalf("worker model 200 count = %d, want 1", got)
 	}
 }
 

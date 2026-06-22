@@ -15,30 +15,35 @@ import (
 )
 
 type Server struct {
-	config        config.GatewayConfig
-	workers       *WorkerRegistry
-	accounting    *Accounting
-	limiter       *QueueLimiter
-	metrics       *Metrics
-	scraper       *MetricsScraper
-	access        *AccessTracker
-	accessPath    string
-	proxyAttempts int
-	logger        *log.Logger
-	eventMu       sync.Mutex
-	recentEvents  []uiAgentEvent
-	mux           *http.ServeMux
+	config         config.GatewayConfig
+	workers        *WorkerRegistry
+	accounting     *Accounting
+	limiter        *QueueLimiter
+	metrics        *Metrics
+	scraper        *MetricsScraper
+	access         *AccessTracker
+	accessPath     string
+	requestLogPath string
+	proxyAttempts  int
+	logger         *log.Logger
+	eventMu        sync.Mutex
+	recentEvents   []uiAgentEvent
+	mux            *http.ServeMux
 }
 
 func NewServer(cfg config.GatewayConfig) *Server {
-	return newServer(cfg, "")
+	return newServer(cfg, "", "")
 }
 
 func NewServerWithAccessPersistence(cfg config.GatewayConfig, accessPath string) *Server {
-	return newServer(cfg, accessPath)
+	return newServer(cfg, accessPath, "")
 }
 
-func newServer(cfg config.GatewayConfig, accessPath string) *Server {
+func NewServerWithGatewayPersistence(cfg config.GatewayConfig, accessPath string, requestLogPath string) *Server {
+	return newServer(cfg, accessPath, requestLogPath)
+}
+
+func newServer(cfg config.GatewayConfig, accessPath string, requestLogPath string) *Server {
 	access := NewAccessTracker()
 	if accessPath != "" {
 		if loaded, err := LoadAccessTracker(accessPath); err == nil {
@@ -46,17 +51,18 @@ func newServer(cfg config.GatewayConfig, accessPath string) *Server {
 		}
 	}
 	s := &Server{
-		config:        cfg,
-		workers:       NewWorkerRegistry(6 * time.Second),
-		accounting:    NewAccounting(),
-		limiter:       NewQueueLimiter(),
-		metrics:       NewMetrics(),
-		scraper:       NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
-		access:        access,
-		accessPath:    accessPath,
-		proxyAttempts: configuredProxyAttempts(cfg),
-		logger:        log.New(os.Stdout, "", log.LstdFlags),
-		mux:           http.NewServeMux(),
+		config:         cfg,
+		workers:        NewWorkerRegistry(6 * time.Second),
+		accounting:     NewAccounting(),
+		limiter:        NewQueueLimiter(),
+		metrics:        NewMetrics(),
+		scraper:        NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
+		access:         access,
+		accessPath:     accessPath,
+		requestLogPath: requestLogPath,
+		proxyAttempts:  configuredProxyAttempts(cfg),
+		logger:         log.New(os.Stdout, "", log.LstdFlags),
+		mux:            http.NewServeMux(),
 	}
 
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
