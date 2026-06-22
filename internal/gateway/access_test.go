@@ -1,18 +1,25 @@
 package gateway
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestAccessTrackerPersistsLastAccessAndCounts(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gateway-stats.json")
-	tracker := NewAccessTracker()
+func TestLoadAccessTrackerFromRequestLogReplaysStats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
 	first := time.Unix(100, 0).UTC()
 	second := time.Unix(200, 0).UTC()
-	tracker.Record("qwen", "worker-a", first)
-	tracker.RecordRequest(RequestLogEntry{
+	writeRequestLogEntry(t, path, RequestLogEntry{
+		Time:       first,
+		Model:      "qwen",
+		WorkerID:   "worker-a",
+		StatusCode: 429,
+		DurationMS: 50,
+	})
+	writeRequestLogEntry(t, path, RequestLogEntry{
 		Time:             second,
 		Model:            "qwen",
 		WorkerID:         "worker-a",
@@ -24,12 +31,9 @@ func TestAccessTrackerPersistsLastAccessAndCounts(t *testing.T) {
 		CacheTokens:      3,
 	})
 
-	if err := tracker.Save(path); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-	loaded, err := LoadAccessTracker(path)
+	loaded, err := LoadAccessTrackerFromRequestLog(path)
 	if err != nil {
-		t.Fatalf("LoadAccessTracker() error = %v", err)
+		t.Fatalf("LoadAccessTrackerFromRequestLog() error = %v", err)
 	}
 
 	if got := loaded.ModelLastAccess("qwen"); !got.Equal(second) {
@@ -50,23 +54,41 @@ func TestAccessTrackerPersistsLastAccessAndCounts(t *testing.T) {
 	if got := loaded.WorkerModelStatusCount("worker-a", "qwen", 200); got != 1 {
 		t.Fatalf("worker model 200 count = %d, want 1", got)
 	}
+	if got := loaded.WorkerModelStatusCount("worker-a", "qwen", 429); got != 1 {
+		t.Fatalf("worker model 429 count = %d, want 1", got)
+	}
 }
 
-func TestNewServerWithAccessPersistenceLoadsStats(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gateway-stats.json")
-	tracker := NewAccessTracker()
+func TestNewServerWithGatewayPersistenceReplaysRequestLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
 	now := time.Unix(300, 0).UTC()
-	tracker.Record("qwen", "worker-a", now)
-	if err := tracker.Save(path); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
+	writeRequestLogEntry(t, path, RequestLogEntry{Time: now, Model: "qwen", WorkerID: "worker-a", StatusCode: 200, TotalTokens: 9})
 
-	srv := NewServerWithAccessPersistence(testProxyConfig(), path)
+	srv := NewServerWithGatewayPersistence(testProxyConfig(), path)
 
 	if got := srv.access.ModelLastAccess("qwen"); !got.Equal(now) {
 		t.Fatalf("loaded model last access = %s, want %s", got, now)
 	}
 	if got := srv.access.WorkerModelCount("worker-a", "qwen"); got != 1 {
 		t.Fatalf("loaded worker model count = %d, want 1", got)
+	}
+}
+
+func writeRequestLogEntry(t *testing.T, path string, entry RequestLogEntry) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
 	}
 }

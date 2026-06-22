@@ -22,7 +22,6 @@ type Server struct {
 	metrics        *Metrics
 	scraper        *MetricsScraper
 	access         *AccessTracker
-	accessPath     string
 	requestLogPath string
 	proxyAttempts  int
 	logger         *log.Logger
@@ -32,21 +31,17 @@ type Server struct {
 }
 
 func NewServer(cfg config.GatewayConfig) *Server {
-	return newServer(cfg, "", "")
+	return newServer(cfg, "")
 }
 
-func NewServerWithAccessPersistence(cfg config.GatewayConfig, accessPath string) *Server {
-	return newServer(cfg, accessPath, "")
+func NewServerWithGatewayPersistence(cfg config.GatewayConfig, requestLogPath string) *Server {
+	return newServer(cfg, requestLogPath)
 }
 
-func NewServerWithGatewayPersistence(cfg config.GatewayConfig, accessPath string, requestLogPath string) *Server {
-	return newServer(cfg, accessPath, requestLogPath)
-}
-
-func newServer(cfg config.GatewayConfig, accessPath string, requestLogPath string) *Server {
+func newServer(cfg config.GatewayConfig, requestLogPath string) *Server {
 	access := NewAccessTracker()
-	if accessPath != "" {
-		if loaded, err := LoadAccessTracker(accessPath); err == nil {
+	if requestLogPath != "" {
+		if loaded, err := LoadAccessTrackerFromRequestLog(requestLogPath); err == nil {
 			access = loaded
 		}
 	}
@@ -58,7 +53,6 @@ func newServer(cfg config.GatewayConfig, accessPath string, requestLogPath strin
 		metrics:        NewMetrics(),
 		scraper:        NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
 		access:         access,
-		accessPath:     accessPath,
 		requestLogPath: requestLogPath,
 		proxyAttempts:  configuredProxyAttempts(cfg),
 		logger:         log.New(os.Stdout, "", log.LstdFlags),

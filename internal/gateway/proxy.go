@@ -170,21 +170,11 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 	}
 	if s.access != nil {
 		s.access.RecordRequest(entry)
-		s.persistAccessStats()
 	}
 	if s.requestLogPath != "" {
 		if err := appendRequestLog(s.requestLogPath, entry); err != nil {
 			s.logEvent("request_log_write_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})
 		}
-	}
-}
-
-func (s *Server) persistAccessStats() {
-	if s == nil || s.access == nil || s.accessPath == "" {
-		return
-	}
-	if err := s.access.Save(s.accessPath); err != nil {
-		s.logEvent("access_stats_persist_error", map[string]any{"error": err.Error()})
 	}
 }
 

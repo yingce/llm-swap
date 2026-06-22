@@ -272,9 +272,8 @@ func TestProxyWritesRequestLogAndAggregatesUsage(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	statsPath := filepath.Join(t.TempDir(), "gateway-stats.json")
 	logPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
-	srv := NewServerWithGatewayPersistence(testProxyConfig(), statsPath, logPath)
+	srv := NewServerWithGatewayPersistence(testProxyConfig(), logPath)
 	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
 
 	rr := httptest.NewRecorder()
@@ -293,11 +292,7 @@ func TestProxyWritesRequestLogAndAggregatesUsage(t *testing.T) {
 	if entry.MessageCount != 1 || entry.ImageCount != 1 || entry.MaxTokens != 32 || entry.FinishReason != "stop" {
 		t.Fatalf("log request metadata = %+v", entry)
 	}
-	loaded, err := LoadAccessTracker(statsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.ModelTotalTokens("qwen"); got != 10 {
+	if got := srv.access.ModelTotalTokens("qwen"); got != 10 {
 		t.Fatalf("persisted total tokens = %d, want 10", got)
 	}
 }
@@ -312,7 +307,7 @@ func TestProxyWritesStreamingRequestLogUsage(t *testing.T) {
 	defer upstream.Close()
 
 	logPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
-	srv := NewServerWithGatewayPersistence(testProxyConfig(), "", logPath)
+	srv := NewServerWithGatewayPersistence(testProxyConfig(), logPath)
 	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
 
 	rr := httptest.NewRecorder()
