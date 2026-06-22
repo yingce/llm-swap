@@ -170,6 +170,36 @@ func TestProxyGeneratesRequestIDForwardsGatewayHeadersAndLogs(t *testing.T) {
 	}
 }
 
+func TestProxyNormalizesTopKZeroForSGLangModels(t *testing.T) {
+	var gotTopK float64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		gotTopK, _ = body["top_k"].(float64)
+		writeJSON(w, map[string]any{"ok": true})
+	}))
+	defer upstream.Close()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.Run = "PORT=${PORT} /opt/llmswap/bin/sglang.server {{model_path}} --sampling-defaults openai"
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[],"top_k":0}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if gotTopK != -1 {
+		t.Fatalf("upstream top_k = %v, want -1", gotTopK)
+	}
+}
+
 func TestProxyUpstream400IsNotRetriedAndResponseForwarded(t *testing.T) {
 	var firstRequests atomic.Int32
 	var secondRequests atomic.Int32

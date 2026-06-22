@@ -42,6 +42,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelCfg := s.config.Models[model]
+	body = normalizeProxyRequestBody(body, modelCfg)
 	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
 	defer cancelLimit()
 	modelLimitRelease, err := s.acquireLimit(limitCtx, "model:"+model, modelCfg.MaxConcurrency, modelCfg.MaxQueue)
@@ -165,6 +166,43 @@ func (s *Server) acquireLimit(ctx context.Context, key string, maxActive, maxQue
 		return func() {}, nil
 	}
 	return s.limiter.Acquire(ctx, key, maxActive, maxQueue)
+}
+
+func normalizeProxyRequestBody(body []byte, modelCfg config.Model) []byte {
+	if !isSGLangModel(modelCfg) {
+		return body
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	rawTopK, ok := payload["top_k"]
+	if !ok {
+		return body
+	}
+
+	var topK json.Number
+	decoder := json.NewDecoder(bytes.NewReader(rawTopK))
+	decoder.UseNumber()
+	if err := decoder.Decode(&topK); err != nil {
+		return body
+	}
+	value, err := topK.Float64()
+	if err != nil || value != 0 {
+		return body
+	}
+
+	payload["top_k"] = json.RawMessage("-1")
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return normalized
+}
+
+func isSGLangModel(modelCfg config.Model) bool {
+	return strings.Contains(strings.ToLower(modelCfg.Run), "sglang")
 }
 
 func writeQueueError(w http.ResponseWriter, err error) {
