@@ -2,23 +2,44 @@ package gateway
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"llm-swap/internal/config"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Metrics struct {
-	registry            *prometheus.Registry
-	activeRequests      *prometheus.GaugeVec
-	workerUp            *prometheus.GaugeVec
-	workerActive        *prometheus.GaugeVec
-	workerLastHeartbeat *prometheus.GaugeVec
-	workerModelReady    *prometheus.GaugeVec
-	workerModelRunning  *prometheus.GaugeVec
-	workerActivityRows  *prometheus.CounterVec
-	workerScrapeErrors  *prometheus.CounterVec
+	registry                     *prometheus.Registry
+	activeRequests               *prometheus.GaugeVec
+	workerUp                     *prometheus.GaugeVec
+	workerActive                 *prometheus.GaugeVec
+	workerLastHeartbeat          *prometheus.GaugeVec
+	workerState                  *prometheus.GaugeVec
+	workerNeedsRestart           *prometheus.GaugeVec
+	workerLastErrorPresent       *prometheus.GaugeVec
+	workerCapacityMaxConcurrency *prometheus.GaugeVec
+	workerCapacityMaxQueue       *prometheus.GaugeVec
+	workerRunningModels          *prometheus.GaugeVec
+	workerModelReady             *prometheus.GaugeVec
+	workerModelRunning           *prometheus.GaugeVec
+	workerModelState             *prometheus.GaugeVec
+	workerActivityRows           *prometheus.CounterVec
+	workerRequests               *prometheus.CounterVec
+	workerRequestTokens          *prometheus.CounterVec
+	workerRequestDuration        *prometheus.HistogramVec
+	workerTokensPerSecond        *prometheus.GaugeVec
+	workerPerformanceSamples     *prometheus.CounterVec
+	workerScrapeErrors           *prometheus.CounterVec
+	requests                     *prometheus.CounterVec
+	requestDuration              *prometheus.HistogramVec
+	queueEvents                  *prometheus.CounterVec
+	dispatchFailures             *prometheus.CounterVec
+	modelLoadedReplicas          *prometheus.GaugeVec
+	modelUnderprovisioned        *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -38,6 +59,30 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_worker_last_heartbeat_seconds",
 		Help: "Unix timestamp of the latest worker heartbeat observed by the gateway.",
 	}, []string{"worker_id"})
+	workerState := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_state",
+		Help: "Worker state reported by the gateway registry as a one-hot gauge.",
+	}, []string{"worker_id", "state"})
+	workerNeedsRestart := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_needs_restart",
+		Help: "Whether a worker reports that llama-swap needs a restart.",
+	}, []string{"worker_id"})
+	workerLastErrorPresent := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_last_error_present",
+		Help: "Whether a worker heartbeat includes a non-empty last_error.",
+	}, []string{"worker_id"})
+	workerCapacityMaxConcurrency := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_capacity_max_concurrency",
+		Help: "Worker-reported default maximum concurrency.",
+	}, []string{"worker_id"})
+	workerCapacityMaxQueue := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_capacity_max_queue",
+		Help: "Worker-reported default maximum queue length.",
+	}, []string{"worker_id"})
+	workerRunningModels := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_running_models",
+		Help: "Number of running model entries reported by a worker.",
+	}, []string{"worker_id"})
 	workerModelReady := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_swap_gateway_worker_model_ready",
 		Help: "Whether a worker reports a model artifact as ready.",
@@ -46,28 +91,96 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_worker_model_running",
 		Help: "Whether llama-swap reports a model running and ready on a worker.",
 	}, []string{"worker_id", "model"})
+	workerModelState := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_model_state",
+		Help: "Running model state reported by llama-swap as a one-hot gauge.",
+	}, []string{"worker_id", "model", "state"})
 	workerActivityRows := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_swap_gateway_worker_activity_rows_total",
 		Help: "Unique llama-swap activity rows scraped from workers.",
+	}, []string{"worker_id"})
+	workerRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_worker_requests_total",
+		Help: "Unique worker llama-swap request rows scraped by the gateway.",
+	}, []string{"worker_id", "model", "path", "status_code"})
+	workerRequestTokens := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_worker_request_tokens_total",
+		Help: "Tokens reported by worker llama-swap request rows.",
+	}, []string{"worker_id", "model", "type"})
+	workerRequestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_swap_gateway_worker_request_duration_seconds",
+		Help:    "Worker llama-swap request duration from scraped activity rows.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"worker_id", "model"})
+	workerTokensPerSecond := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_tokens_per_second",
+		Help: "Latest token throughput reported by worker llama-swap activity rows.",
+	}, []string{"worker_id", "model", "type"})
+	workerPerformanceSamples := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_worker_performance_samples_total",
+		Help: "Unique llama-swap performance samples scraped from workers.",
 	}, []string{"worker_id"})
 	workerScrapeErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_swap_gateway_worker_metrics_scrape_errors_total",
 		Help: "Worker llama-swap metrics scrape errors observed by the gateway.",
 	}, []string{"worker_id"})
+	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_requests_total",
+		Help: "Requests handled by the gateway.",
+	}, []string{"model", "worker_id", "status_code"})
+	requestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_swap_gateway_request_duration_seconds",
+		Help:    "End-to-end gateway request duration.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"model", "worker_id"})
+	queueEvents := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_queue_events_total",
+		Help: "Gateway queue outcomes.",
+	}, []string{"model", "result"})
+	dispatchFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_dispatch_failures_total",
+		Help: "Gateway dispatch failures by selected worker and reason.",
+	}, []string{"model", "worker_id", "reason"})
+	modelLoadedReplicas := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_model_loaded_replicas",
+		Help: "Number of healthy workers reporting a model as loaded and ready.",
+	}, []string{"model"})
+	modelUnderprovisioned := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_model_underprovisioned",
+		Help: "Whether a model is below its configured min_loaded target.",
+	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerModelReady, workerModelRunning, workerActivityRows, workerScrapeErrors)
+	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, requestDuration, queueEvents, dispatchFailures, modelLoadedReplicas, modelUnderprovisioned)
 
 	return &Metrics{
-		registry:            registry,
-		activeRequests:      activeRequests,
-		workerUp:            workerUp,
-		workerActive:        workerActive,
-		workerLastHeartbeat: workerLastHeartbeat,
-		workerModelReady:    workerModelReady,
-		workerModelRunning:  workerModelRunning,
-		workerActivityRows:  workerActivityRows,
-		workerScrapeErrors:  workerScrapeErrors,
+		registry:                     registry,
+		activeRequests:               activeRequests,
+		workerUp:                     workerUp,
+		workerActive:                 workerActive,
+		workerLastHeartbeat:          workerLastHeartbeat,
+		workerState:                  workerState,
+		workerNeedsRestart:           workerNeedsRestart,
+		workerLastErrorPresent:       workerLastErrorPresent,
+		workerCapacityMaxConcurrency: workerCapacityMaxConcurrency,
+		workerCapacityMaxQueue:       workerCapacityMaxQueue,
+		workerRunningModels:          workerRunningModels,
+		workerModelReady:             workerModelReady,
+		workerModelRunning:           workerModelRunning,
+		workerModelState:             workerModelState,
+		workerActivityRows:           workerActivityRows,
+		workerRequests:               workerRequests,
+		workerRequestTokens:          workerRequestTokens,
+		workerRequestDuration:        workerRequestDuration,
+		workerTokensPerSecond:        workerTokensPerSecond,
+		workerPerformanceSamples:     workerPerformanceSamples,
+		workerScrapeErrors:           workerScrapeErrors,
+		requests:                     requests,
+		requestDuration:              requestDuration,
+		queueEvents:                  queueEvents,
+		dispatchFailures:             dispatchFailures,
+		modelLoadedReplicas:          modelLoadedReplicas,
+		modelUnderprovisioned:        modelUnderprovisioned,
 	}
 }
 
@@ -83,15 +196,54 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
-func (m *Metrics) ObserveWorkers(workers []Worker, active map[string]int, now time.Time, pullActivity func(Worker) (int, error)) {
+func (m *Metrics) ObserveRequest(model, workerID string, statusCode int, duration time.Duration) {
+	if statusCode <= 0 {
+		statusCode = 0
+	}
+	m.requests.WithLabelValues(model, workerID, strconv.Itoa(statusCode)).Inc()
+	m.requestDuration.WithLabelValues(model, workerID).Observe(duration.Seconds())
+}
+
+func (m *Metrics) ObserveQueueEvent(model, result string) {
+	m.queueEvents.WithLabelValues(model, result).Inc()
+}
+
+func (m *Metrics) ObserveDispatchFailure(model, workerID, reason string) {
+	m.dispatchFailures.WithLabelValues(model, workerID, reason).Inc()
+}
+
+func (m *Metrics) ObserveModelProvisioning(cfg config.GatewayConfig, workers []Worker, now time.Time) {
+	for modelName, model := range cfg.Models {
+		loaded := 0
+		for _, worker := range workers {
+			if !workerAvailableForProvisioning(worker, now) {
+				continue
+			}
+			if runningModelReady(worker, modelName) {
+				loaded++
+			}
+		}
+
+		m.modelLoadedReplicas.WithLabelValues(modelName).Set(float64(loaded))
+		underprovisioned := 0.0
+		if model.MinLoaded > 0 && loaded < model.MinLoaded {
+			underprovisioned = 1
+		}
+		m.modelUnderprovisioned.WithLabelValues(modelName).Set(underprovisioned)
+	}
+}
+
+func (m *Metrics) ObserveWorkers(workers []Worker, active map[string]int, now time.Time, pullActivity func(Worker) (ActivityStats, error), pullPerformance func(Worker) (int, error)) {
 	for _, worker := range workers {
+		freshActive := now.Sub(worker.LastHeartbeat) < 6*time.Second && worker.State == WorkerActive
 		up := 0.0
-		if now.Sub(worker.LastHeartbeat) < 6*time.Second && worker.State == WorkerActive {
+		if freshActive && !now.Before(worker.ScrapeBackoffUntil) {
 			up = 1
 		}
 		m.workerUp.WithLabelValues(worker.ID).Set(up)
 		m.workerActive.WithLabelValues(worker.ID).Set(float64(active[worker.ID]))
 		m.workerLastHeartbeat.WithLabelValues(worker.ID).Set(float64(worker.LastHeartbeat.Unix()))
+		m.observeWorkerState(worker)
 
 		for model, status := range worker.Artifacts {
 			ready := 0.0
@@ -106,18 +258,94 @@ func (m *Metrics) ObserveWorkers(workers []Worker, active map[string]int, now ti
 				value = 1
 			}
 			m.workerModelRunning.WithLabelValues(worker.ID, running.Model).Set(value)
+			if strings.TrimSpace(running.State) != "" {
+				m.workerModelState.WithLabelValues(worker.ID, running.Model, running.State).Set(1)
+			}
 		}
-		if pullActivity != nil && up == 1 {
-			rows, err := pullActivity(worker)
+		if pullActivity != nil && freshActive {
+			activity, err := pullActivity(worker)
 			if err != nil {
 				m.workerScrapeErrors.WithLabelValues(worker.ID).Inc()
-				continue
-			}
-			if rows > 0 {
-				m.workerActivityRows.WithLabelValues(worker.ID).Add(float64(rows))
 			} else {
-				m.workerActivityRows.WithLabelValues(worker.ID).Add(0)
+				m.workerActivityRows.WithLabelValues(worker.ID).Add(float64(activity.Rows))
+				for _, request := range activity.Requests {
+					m.ObserveWorkerActivity(worker.ID, request)
+				}
+			}
+		}
+		if pullPerformance != nil && freshActive {
+			samples, err := pullPerformance(worker)
+			if err != nil {
+				m.workerScrapeErrors.WithLabelValues(worker.ID).Inc()
+			} else if samples > 0 {
+				m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(float64(samples))
+			} else {
+				m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(0)
 			}
 		}
 	}
+}
+
+func (m *Metrics) observeWorkerState(worker Worker) {
+	active := 0.0
+	draining := 0.0
+	switch worker.State {
+	case WorkerDraining:
+		draining = 1
+	default:
+		active = 1
+	}
+	m.workerState.WithLabelValues(worker.ID, string(WorkerActive)).Set(active)
+	m.workerState.WithLabelValues(worker.ID, string(WorkerDraining)).Set(draining)
+	m.workerRunningModels.WithLabelValues(worker.ID).Set(float64(len(worker.RunningModels)))
+	m.workerCapacityMaxConcurrency.WithLabelValues(worker.ID).Set(float64(worker.Capacity.MaxConcurrency))
+	m.workerCapacityMaxQueue.WithLabelValues(worker.ID).Set(float64(worker.Capacity.MaxQueue))
+	if worker.NeedsRestart {
+		m.workerNeedsRestart.WithLabelValues(worker.ID).Set(1)
+	} else {
+		m.workerNeedsRestart.WithLabelValues(worker.ID).Set(0)
+	}
+	if strings.TrimSpace(worker.LastError) != "" {
+		m.workerLastErrorPresent.WithLabelValues(worker.ID).Set(1)
+	} else {
+		m.workerLastErrorPresent.WithLabelValues(worker.ID).Set(0)
+	}
+}
+
+func (m *Metrics) ObserveWorkerActivity(workerID string, request ActivityRequestStats) {
+	model := request.Model
+	if model == "" {
+		model = "unknown"
+	}
+	path := request.Path
+	if path == "" {
+		path = "unknown"
+	}
+	statusCode := request.StatusCode
+	m.workerRequests.WithLabelValues(workerID, model, path, strconv.Itoa(statusCode)).Inc()
+	if request.DurationMS > 0 {
+		m.workerRequestDuration.WithLabelValues(workerID, model).Observe(request.DurationMS / 1000)
+	}
+	for tokenType, value := range request.Tokens {
+		if value < 0 {
+			continue
+		}
+		m.workerRequestTokens.WithLabelValues(workerID, model, tokenType).Add(value)
+	}
+	if request.PromptTokensPerSec > 0 {
+		m.workerTokensPerSecond.WithLabelValues(workerID, model, "prompt").Set(request.PromptTokensPerSec)
+	}
+	if request.CompletionTokensPerSec > 0 {
+		m.workerTokensPerSecond.WithLabelValues(workerID, model, "completion").Set(request.CompletionTokensPerSec)
+	}
+}
+
+func workerAvailableForProvisioning(worker Worker, now time.Time) bool {
+	if now.Sub(worker.LastHeartbeat) >= 6*time.Second {
+		return false
+	}
+	if worker.State != WorkerActive {
+		return false
+	}
+	return !now.Before(worker.ScrapeBackoffUntil)
 }

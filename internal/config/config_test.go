@@ -187,8 +187,8 @@ agent:
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "llama_swap_url") {
-		t.Fatalf("error = %v, want llama_swap_url", err)
+	if !strings.Contains(err.Error(), "swap_url") {
+		t.Fatalf("error = %v, want swap_url", err)
 	}
 }
 
@@ -199,7 +199,7 @@ agent:
   tags: [gpu-4090]
   model_root: /data/models
   llama_swap_config: /etc/llama-swap/config.yaml
-  llama_swap_url: http://worker
+  swap_url: http://worker
   gateway_url: http://gateway
   token: agent-token
   llama_swap_token: worker-token
@@ -213,6 +213,9 @@ agent:
 	}
 	if cfg.Agent.LlamaSwapToken != "worker-token" {
 		t.Fatalf("agent.llama_swap_token = %q, want worker-token", cfg.Agent.LlamaSwapToken)
+	}
+	if cfg.Agent.LlamaSwapURL != "http://worker" {
+		t.Fatalf("agent.llama_swap_url = %q, want swap_url alias", cfg.Agent.LlamaSwapURL)
 	}
 }
 

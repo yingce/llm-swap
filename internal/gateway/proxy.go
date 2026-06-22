@@ -3,22 +3,29 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
 
-const maxProxyAttempts = 3
-
 var defaultProxyHTTPClient = http.DefaultClient
+var requestIDSequence uint64
 
 func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	requestID := ensureRequestID(r)
+	w.Header().Set("X-Request-Id", requestID)
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		protocol.WriteOpenAIError(w, http.StatusBadRequest, "invalid_request", "failed to read request body")
@@ -34,10 +41,21 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteOpenAIError(w, http.StatusNotFound, "model_not_available", "model is not available")
 		return
 	}
+	modelCfg := s.config.Models[model]
+	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
+	defer cancelLimit()
+	modelLimitRelease, err := s.acquireLimit(limitCtx, "model:"+model, modelCfg.MaxConcurrency, modelCfg.MaxQueue)
+	if err != nil {
+		s.observeQueueError(model, err)
+		writeQueueError(w, err)
+		return
+	}
+	defer modelLimitRelease()
 
 	exclude := make(map[string]bool)
 	var lastDispatchFailure *proxyDispatchFailure
-	for attempt := 0; attempt < maxProxyAttempts; attempt++ {
+	var lastQueueErr error
+	for dispatchAttempts := 0; dispatchAttempts < s.proxyAttempts; {
 		if err := r.Context().Err(); err != nil {
 			return
 		}
@@ -48,16 +66,48 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		exclude[worker.ID] = true
 
+		tag := selectedWorkerTag(s.config, worker, model)
+		policy, _ := tagPolicy(s.config, tag)
+		tagLimitRelease, err := s.acquireLimit(limitCtx, "tag:"+tag, policy.MaxConcurrency, policy.MaxQueue)
+		if err != nil {
+			if errors.Is(err, ErrQueueFull) {
+				lastQueueErr = err
+				continue
+			}
+			s.observeQueueError(model, err)
+			writeQueueError(w, err)
+			return
+		}
+		workerLimitRelease, err := s.acquireLimit(limitCtx, "worker:"+worker.ID, policy.WorkerDefaults.MaxConcurrency, policy.WorkerDefaults.MaxQueue)
+		if err != nil {
+			tagLimitRelease()
+			if errors.Is(err, ErrQueueFull) {
+				lastQueueErr = err
+				continue
+			}
+			s.observeQueueError(model, err)
+			writeQueueError(w, err)
+			return
+		}
+
 		workerRelease, ok := s.workers.Acquire(worker.ID, time.Now())
 		if !ok {
+			workerLimitRelease()
+			tagLimitRelease()
 			continue
 		}
-		tag := selectedWorkerTag(s.config, worker, model)
-		accountingRelease := s.accounting.Acquire(r.Header.Get("X-Request-ID"), model, tag, worker.ID)
+		s.logEvent("scheduler_decision", map[string]any{
+			"request_id": requestID,
+			"model":      model,
+			"worker_id":  worker.ID,
+			"tag":        tag,
+		})
+		accountingRelease := s.accounting.Acquire(requestID, model, tag, worker.ID)
 		metricsRelease := s.metrics.AcquireActiveRequest(worker.ID, model)
-		release := releaseOnce(workerRelease, accountingRelease, metricsRelease)
+		release := releaseOnce(workerRelease, accountingRelease, metricsRelease, workerLimitRelease, tagLimitRelease)
 
-		retry, dispatchFailure, err := s.proxyAttempt(w, r, body, worker)
+		dispatchAttempts++
+		retry, dispatchFailure, err, statusCode := s.proxyAttempt(w, r, body, model, worker)
 		release()
 		if dispatchFailure != nil {
 			lastDispatchFailure = dispatchFailure
@@ -66,11 +116,24 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if retry {
+			if dispatchFailure != nil {
+				s.metrics.ObserveDispatchFailure(model, worker.ID, dispatchFailure.code)
+			}
 			continue
 		}
 		if err != nil {
 			protocol.WriteOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream request failed")
+			statusCode = http.StatusBadGateway
 		}
+		s.metrics.ObserveRequest(model, worker.ID, statusCode, time.Since(start))
+		s.logEvent("request", map[string]any{
+			"request_id":  requestID,
+			"model":       model,
+			"worker_id":   worker.ID,
+			"tag":         tag,
+			"status_code": statusCode,
+			"latency_ms":  time.Since(start).Milliseconds(),
+		})
 		return
 	}
 
@@ -78,10 +141,84 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if lastDispatchFailure != nil {
+		s.metrics.ObserveDispatchFailure(model, "", lastDispatchFailure.code)
 		lastDispatchFailure.write(w)
 		return
 	}
+	if lastQueueErr != nil {
+		s.observeQueueError(model, lastQueueErr)
+		writeQueueError(w, lastQueueErr)
+		return
+	}
 	protocol.WriteOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_worker", "no healthy worker is available for the requested model")
+}
+
+func queueContext(parent context.Context, timeoutMS int) (context.Context, context.CancelFunc) {
+	if timeoutMS <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, time.Duration(timeoutMS)*time.Millisecond)
+}
+
+func (s *Server) acquireLimit(ctx context.Context, key string, maxActive, maxQueue int) (func(), error) {
+	if s.limiter == nil {
+		return func() {}, nil
+	}
+	return s.limiter.Acquire(ctx, key, maxActive, maxQueue)
+}
+
+func writeQueueError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrQueueTimeout):
+		protocol.WriteOpenAIError(w, http.StatusTooManyRequests, "queue_timeout", "request waited longer than the configured queue timeout")
+	default:
+		protocol.WriteOpenAIError(w, http.StatusTooManyRequests, "queue_full", "request queue is full")
+	}
+}
+
+func ensureRequestID(r *http.Request) string {
+	requestID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if requestID == "" {
+		requestID = nextRequestID()
+		r.Header.Set("X-Request-Id", requestID)
+	}
+	return requestID
+}
+
+func requestIDFromHeader(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Request-Id"))
+}
+
+func nextRequestID() string {
+	seq := atomic.AddUint64(&requestIDSequence, 1)
+	return fmt.Sprintf("req-%d-%d", time.Now().UnixNano(), seq)
+}
+
+func (s *Server) observeQueueError(model string, err error) {
+	if s.metrics == nil {
+		return
+	}
+	if errors.Is(err, ErrQueueTimeout) {
+		s.metrics.ObserveQueueEvent(model, "queue_timeout")
+		return
+	}
+	s.metrics.ObserveQueueEvent(model, "queue_full")
+}
+
+func (s *Server) logEvent(event string, fields map[string]any) {
+	if s.logger == nil {
+		return
+	}
+	if fields == nil {
+		fields = make(map[string]any)
+	}
+	fields["event"] = event
+	data, err := json.Marshal(fields)
+	if err != nil {
+		s.logger.Printf(`{"event":"%s","log_error":%q}`, event, err.Error())
+		return
+	}
+	s.logger.Println(string(data))
 }
 
 type proxyDispatchFailure struct {
@@ -114,17 +251,20 @@ func upstreamRetryExhaustedFailure(status int) *proxyDispatchFailure {
 	}
 }
 
-func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, worker Worker) (bool, *proxyDispatchFailure, error) {
+func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker) (bool, *proxyDispatchFailure, error, int) {
 	upstreamURL, err := upstreamRequestURL(worker.LlamaSwapURL, r.URL)
 	if err != nil {
-		return true, workerUnavailableFailure(), err
+		return true, workerUnavailableFailure(), err, 0
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		return true, workerUnavailableFailure(), err
+		return true, workerUnavailableFailure(), err, 0
 	}
 	copyRequestHeaders(req.Header, r.Header)
+	req.Header.Set("X-Request-Id", requestIDFromHeader(r))
+	req.Header.Set("X-Gateway-Model", model)
+	req.Header.Set("X-Gateway-Worker", worker.ID)
 	if s.config.Tokens.LlamaSwap != "" {
 		req.Header.Set("Authorization", "Bearer "+s.config.Tokens.LlamaSwap)
 	} else {
@@ -135,37 +275,37 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 	resp, err := defaultProxyHTTPClient.Do(req)
 	if err != nil {
 		if retryableProxyError(err, r.Context()) {
-			return true, workerUnavailableFailure(), err
+			return true, workerUnavailableFailure(), err, 0
 		}
-		return false, nil, err
+		return false, nil, err, 0
 	}
 	defer resp.Body.Close()
 
 	if retryableUpstreamStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil
+		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return false, nil, err
+			return false, nil, err, resp.StatusCode
 		}
 		if retryablePlatform404(resp.Header, respBody) {
-			return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil
+			return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode
 		}
 
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
-		return false, nil, nil
+		return false, nil, nil, resp.StatusCode
 	}
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if err := copyResponseBody(w, resp.Body); err != nil {
-		return false, nil, nil
+		return false, nil, nil, resp.StatusCode
 	}
-	return false, nil, nil
+	return false, nil, nil, resp.StatusCode
 }
 
 func upstreamRequestURL(baseURL string, requestURL *url.URL) (string, error) {

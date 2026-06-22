@@ -1,30 +1,26 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/gateway"
 )
 
 func main() {
-	configPath := flag.String("config", "examples/gateway.yaml", "gateway config path")
-	addr := flag.String("addr", ":8080", "listen address")
-	flag.Parse()
-
-	f, err := os.Open(*configPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	cfg, err := config.LoadGateway(f)
+	runtime, err := config.LoadGatewayRuntime(context.Background(), config.GatewayRuntimeOptions{
+		Args: os.Args[1:],
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Fatal(http.ListenAndServe(*addr, gateway.NewServer(cfg)))
+	srv := gateway.NewServer(runtime.Config)
+	go srv.RunLoadedReconciler(context.Background(), 30*time.Second)
+
+	log.Fatal(http.ListenAndServe(runtime.ListenAddr, srv))
 }

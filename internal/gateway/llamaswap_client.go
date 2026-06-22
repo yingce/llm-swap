@@ -31,6 +31,15 @@ func (e HTTPStatusError) Error() string {
 
 func (c LlamaSwapClient) Unload(ctx context.Context, baseURL, model string) error {
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/models/unload/" + url.PathEscape(model)
+	return c.post(ctx, endpoint)
+}
+
+func (c LlamaSwapClient) UnloadAll(ctx context.Context, baseURL string) error {
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/models/unload"
+	return c.post(ctx, endpoint)
+}
+
+func (c LlamaSwapClient) post(ctx context.Context, endpoint string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return err

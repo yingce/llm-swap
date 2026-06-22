@@ -3,8 +3,10 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,41 @@ func TestHeartbeatEndpointRegistersWorkerAndReturnsActiveState(t *testing.T) {
 	}
 	if !srv.workers.Healthy("gpu-01", time.Now()) {
 		t.Fatal("worker should be registered as healthy")
+	}
+}
+
+func TestHeartbeatEndpointLogsAgentEvents(t *testing.T) {
+	var logs bytes.Buffer
+	srv := NewServer(testGatewayConfig())
+	srv.logger = log.New(&logs, "", 0)
+
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+		Events: []protocol.AgentEvent{
+			{
+				Event:           "artifact_download_progress",
+				Model:           "qwen",
+				Object:          "models/qwen.tar.gz",
+				DownloadedBytes: 50,
+				TotalBytes:      100,
+				Percent:         50,
+			},
+		},
+	})
+
+	got := logs.String()
+	for _, want := range []string{
+		`"event":"agent_event"`,
+		`"worker_id":"gpu-01"`,
+		`"agent_event":"artifact_download_progress"`,
+		`"model":"qwen"`,
+		`"percent":50`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log = %s, want substring %s", got, want)
+		}
 	}
 }
 

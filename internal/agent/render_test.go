@@ -37,6 +37,9 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	}
 
 	doc := parseYAML(t, out)
+	if got := doc["healthCheckTimeout"]; got != 300 {
+		t.Fatalf("healthCheckTimeout = %#v, want 300", got)
+	}
 	if got := doc["startPort"]; got != 10001 {
 		t.Fatalf("startPort = %#v, want 10001", got)
 	}
@@ -73,7 +76,7 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	}
 
 	qwen := models["qwen"].(map[string]any)
-	wantCmd := "llama-server -m /models/qwen/model.gguf --port ${PORT} --alias /models/qwen"
+	wantCmd := "/bin/sh -c 'llama-server -m /models/qwen/model.gguf --port ${PORT} --alias /models/qwen'"
 	if qwen["cmd"] != wantCmd {
 		t.Fatalf("qwen cmd = %q, want %q", qwen["cmd"], wantCmd)
 	}
@@ -86,11 +89,11 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	if qwen["ttl"] != 30 {
 		t.Fatalf("qwen ttl = %#v, want 30", qwen["ttl"])
 	}
-	if qwen["cmdStop"] != "pkill -f qwen" {
-		t.Fatalf("qwen cmdStop = %#v, want pkill -f qwen", qwen["cmdStop"])
+	if qwen["cmdStop"] != "/bin/sh -c 'pkill -f qwen'" {
+		t.Fatalf("qwen cmdStop = %#v, want shell-wrapped pkill -f qwen", qwen["cmdStop"])
 	}
-	if qwen["concurrencyLimit"] != 2 {
-		t.Fatalf("qwen concurrencyLimit = %#v, want 2", qwen["concurrencyLimit"])
+	if _, ok := qwen["concurrencyLimit"]; ok {
+		t.Fatalf("qwen rendered worker-side concurrencyLimit: %#v", qwen["concurrencyLimit"])
 	}
 }
 
@@ -172,9 +175,32 @@ func TestRenderLlamaSwapConfigQwen36GGUFPath(t *testing.T) {
 
 	models := parseYAML(t, out)["models"].(map[string]any)
 	qwen := models["qwen3.6"].(map[string]any)
-	wantCmd := "llama-server -m /opt/llmfly/models/qwen3.6/Qwen3.6-35B-A3B-RP-NSFW-q4_K_M.gguf --port ${PORT}"
+	wantCmd := "/bin/sh -c 'llama-server -m /opt/llmfly/models/qwen3.6/Qwen3.6-35B-A3B-RP-NSFW-q4_K_M.gguf --port ${PORT}'"
 	if qwen["cmd"] != wantCmd {
 		t.Fatalf("qwen3.6 cmd = %q, want %q", qwen["cmd"], wantCmd)
+	}
+}
+
+func TestRenderLlamaSwapConfigShellEscapesSingleQuotes(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"qwen": {Run: "python -c 'print({{model_path}})'"},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"qwen"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	qwen := models["qwen"].(map[string]any)
+	wantCmd := "/bin/sh -c 'python -c '\"'\"'print(/models/qwen)'\"'\"''"
+	if qwen["cmd"] != wantCmd {
+		t.Fatalf("qwen cmd = %q, want %q", qwen["cmd"], wantCmd)
 	}
 }
 

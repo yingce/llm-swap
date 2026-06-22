@@ -14,6 +14,7 @@ func LoadGateway(r io.Reader) (GatewayConfig, error) {
 	if err := yaml.NewDecoder(r).Decode(&cfg); err != nil {
 		return cfg, err
 	}
+	applyGatewayDefaults(&cfg)
 	return cfg, validateGateway(cfg)
 }
 
@@ -28,8 +29,11 @@ func LoadAgent(r io.Reader) (AgentConfig, error) {
 	if len(cfg.Agent.Tags) == 0 {
 		return cfg, fmt.Errorf("agent.tags is required")
 	}
+	if cfg.Agent.LlamaSwapURL == "" && cfg.Agent.SwapURL != "" {
+		cfg.Agent.LlamaSwapURL = cfg.Agent.SwapURL
+	}
 	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.LlamaSwapURL == "" || cfg.Agent.GatewayURL == "" {
-		return cfg, fmt.Errorf("agent model_root, llama_swap_config, llama_swap_url, and gateway_url are required")
+		return cfg, fmt.Errorf("agent model_root, llama_swap_config, swap_url, and gateway_url are required")
 	}
 	if cfg.Agent.Token == "" {
 		return cfg, fmt.Errorf("agent.token is required")
@@ -41,6 +45,9 @@ func LoadAgent(r io.Reader) (AgentConfig, error) {
 }
 
 func validateGateway(cfg GatewayConfig) error {
+	if cfg.Gateway.ProxyAttempts < 0 {
+		return fmt.Errorf("gateway.proxy_attempts must be non-negative")
+	}
 	if strings.TrimSpace(cfg.OSS.BaseURL) == "" {
 		return fmt.Errorf("oss.base_url is required")
 	}
@@ -87,4 +94,10 @@ func validateGateway(cfg GatewayConfig) error {
 		}
 	}
 	return nil
+}
+
+func applyGatewayDefaults(cfg *GatewayConfig) {
+	if cfg.Gateway.ProxyAttempts == 0 {
+		cfg.Gateway.ProxyAttempts = DefaultProxyAttempts
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"hash/crc64"
 	"io"
 	"net/http"
@@ -14,9 +15,50 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"llm-swap/internal/config"
 )
+
+func TestArtifactProgressTrackerReportsEveryFivePercentOrMinute(t *testing.T) {
+	now := time.Unix(100, 0)
+	var reports []ArtifactProgress
+	tracker := newArtifactProgressTracker(100, func(progress ArtifactProgress) {
+		reports = append(reports, progress)
+	})
+	tracker.now = func() time.Time { return now }
+
+	tracker.Observe(4)
+	if len(reports) != 0 {
+		t.Fatalf("reports after 4%% = %d, want 0", len(reports))
+	}
+
+	tracker.Observe(5)
+	if len(reports) != 1 || reports[0].DownloadedBytes != 5 || reports[0].Percent != 5 {
+		t.Fatalf("first report = %+v, want 5 bytes / 5%%", reports)
+	}
+
+	tracker.Observe(9)
+	if len(reports) != 1 {
+		t.Fatalf("reports after 9%% = %d, want 1", len(reports))
+	}
+
+	now = now.Add(time.Minute)
+	tracker.Observe(10)
+	if len(reports) != 2 || reports[1].DownloadedBytes != 10 || reports[1].Percent != 10 {
+		t.Fatalf("minute report = %+v, want 10 bytes / 10%%", reports)
+	}
+
+	tracker.Observe(14)
+	if len(reports) != 2 {
+		t.Fatalf("reports after 14%% = %d, want 2", len(reports))
+	}
+
+	tracker.Observe(15)
+	if len(reports) != 3 || reports[2].DownloadedBytes != 15 || reports[2].Percent != 15 {
+		t.Fatalf("threshold report = %+v, want 15 bytes / 15%%", reports)
+	}
+}
 
 func TestMarkerMatchSkipsDownload(t *testing.T) {
 	dir := t.TempDir()
@@ -553,7 +595,7 @@ func TestInstallArtifactHeadCRCMismatchErrorsBeforeGET(t *testing.T) {
 	}
 }
 
-func TestInstallArtifactAbsentHeadCRCVerifiesGETBody(t *testing.T) {
+func TestInstallArtifactMissingHeadCRCErrorsBeforeGET(t *testing.T) {
 	payload := []byte("payload without head crc")
 	artifact := config.Artifact{
 		Object:    "models/model.gguf",
@@ -577,17 +619,49 @@ func TestInstallArtifactAbsentHeadCRCVerifiesGETBody(t *testing.T) {
 
 	modelRoot := t.TempDir()
 	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen", artifact)
+	if err == nil {
+		t.Fatalf("InstallArtifact() error = nil, want missing HEAD crc error")
+	}
+	if installed {
+		t.Fatalf("InstallArtifact() installed = true, want false")
+	}
+	if !sawHead {
+		t.Fatalf("saw HEAD=false, want true")
+	}
+	if sawGet {
+		t.Fatalf("GET was called after missing HEAD CRC")
+	}
+}
+
+func TestInstallArtifactWritesInstalledAtMarker(t *testing.T) {
+	payload := []byte("model payload")
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc64String(payload),
+	}
+	server := artifactServer(t, payload, artifact.CRC64ECMA)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen", artifact)
 	if err != nil {
 		t.Fatalf("InstallArtifact() error = %v", err)
 	}
 	if !installed {
 		t.Fatalf("InstallArtifact() installed = false, want true")
 	}
-	if !sawHead || !sawGet {
-		t.Fatalf("saw HEAD=%v GET=%v, want both", sawHead, sawGet)
+
+	var marker Marker
+	data, err := os.ReadFile(filepath.Join(modelRoot, "qwen", markerName))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
 	}
-	if got, err := CRC64ECMAFile(filepath.Join(modelRoot, "qwen", "model.gguf")); err != nil || got != artifact.CRC64ECMA {
-		t.Fatalf("installed CRC = %q, %v; want %q", got, err, artifact.CRC64ECMA)
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatalf("unmarshal marker: %v", err)
+	}
+	if marker.InstalledAt.IsZero() {
+		t.Fatalf("marker installed_at is zero: %+v", marker)
 	}
 }
 

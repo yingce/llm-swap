@@ -2,11 +2,14 @@ agent:
   id: sample-worker-01
   tags:
     - gpu-sample
-  model_root: /var/lib/llm-swap/models
-  llama_swap_config: /etc/llm-swap/llama-swap.yaml
+  model_root: /opt/llmswap/models
+  llama_swap_config: /opt/llmswap/llama-swap.yaml
   llama_swap_service: llama-swap
   restart_command: docker restart llama-swap
-  llama_swap_url: http://localhost:8081
+  swap_port: 8081
+  # Optional. When omitted, the agent advertises http://<tailscale-ip>:swap_port,
+  # falling back to http://<local-ip>:swap_port.
+  # swap_url: http://worker.example.local:8081
   gateway_url: http://gateway.example.local:8080
   token: agent-token
   llama_swap_token: worker-token

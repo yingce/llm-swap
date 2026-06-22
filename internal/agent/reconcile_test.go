@@ -70,6 +70,47 @@ func TestReconcileInstallsAllowedArtifactAndHeartbeatReportsReady(t *testing.T) 
 	}
 }
 
+func TestReconcileHeartbeatIncludesRunningModels(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected OSS request %s %s", r.Method, r.URL.Path)
+	}))
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, reconcileConfigWithArtifact(oss.URL, artifact), &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+		RunningModels: &fakeRunningModelsClient{
+			models: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if got := heartbeats[0].RunningModels; len(got) != 1 || got[0].Model != "qwen" || got[0].State != "ready" {
+		t.Fatalf("running models = %+v, want qwen ready", got)
+	}
+}
+
 func TestReconcileMarkerSkipStillReportsReady(t *testing.T) {
 	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
 	modelRoot := t.TempDir()
@@ -292,6 +333,83 @@ func TestReconcileConfigChangedRestartAllowedRestartsServiceAndClearsNeedsRestar
 	}
 	if heartbeats[1].NeedsRestart {
 		t.Fatalf("second heartbeat needs_restart = true, want false after successful restart")
+	}
+}
+
+func TestReconcileRestartAllowedVerifiesLlamaSwapHealthAndRunningBeforeClearingPending(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGateway(t, oss.URL, crc, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+
+	svc := &FakeService{}
+	checker := &fakeLlamaSwapHealthChecker{}
+	running := &fakeRunningModelsClient{models: []protocol.RunningModel{{Model: "qwen", State: "ready"}}}
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+		Health:          checker,
+		RunningModels:   running,
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if svc.Restarts != 1 {
+		t.Fatalf("restarts = %d, want 1", svc.Restarts)
+	}
+	if checker.calls != 1 {
+		t.Fatalf("health checks = %d, want 1", checker.calls)
+	}
+	if running.calls != 2 {
+		t.Fatalf("running calls = %d, want pre-heartbeat and post-restart checks", running.calls)
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist after verified restart", err)
+	}
+}
+
+func TestReconcileRestartHealthFailureKeepsPendingMarker(t *testing.T) {
+	payload := []byte("model payload")
+	crc := crc64String(payload)
+	oss := artifactServer(t, payload, crc)
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGateway(t, oss.URL, crc, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+		Health:          &fakeLlamaSwapHealthChecker{err: errors.New("health not ready")},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err == nil {
+		t.Fatalf("Reconcile() error = nil, want health check error")
+	} else if !strings.Contains(err.Error(), "verify llama-swap health") {
+		t.Fatalf("Reconcile() error = %q, want health context", err)
+	}
+	if _, err := os.Stat(configPath + ".restart-pending"); err != nil {
+		t.Fatalf("pending restart marker missing after failed health check: %v", err)
 	}
 }
 
@@ -524,6 +642,7 @@ func TestRunHeartbeatsWhileArtifactInstallBlocked(t *testing.T) {
 	}
 
 	installingHeartbeats := 0
+	sawInstallStartEvent := false
 	for installingHeartbeats < 2 {
 		select {
 		case hb := <-heartbeatCh:
@@ -532,9 +651,17 @@ func TestRunHeartbeatsWhileArtifactInstallBlocked(t *testing.T) {
 			} else if got == "installing" {
 				installingHeartbeats++
 			}
+			for _, event := range hb.Events {
+				if event.Event == "artifact_install_start" && event.Model == "qwen" {
+					sawInstallStartEvent = true
+				}
+			}
 		case <-time.After(time.Second):
 			t.Fatalf("observed %d installing heartbeats, want at least 2", installingHeartbeats)
 		}
+	}
+	if !sawInstallStartEvent {
+		t.Fatal("heartbeat did not include artifact_install_start event")
 	}
 	if got := getCount.Load(); got != 1 {
 		t.Fatalf("artifact GET count = %d, want 1 while install is blocked", got)
@@ -733,6 +860,92 @@ func TestRunDoesNotStartNewArtifactInstallWhileSameModelRunning(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Run() did not stop after cancellation")
+	}
+}
+
+func TestInstallAllowedArtifactsAsyncStartsOnlyOneNewInstall(t *testing.T) {
+	artifactA := config.Artifact{Object: "models/a.gguf", Kind: "file", CRC64ECMA: "111"}
+	artifactB := config.Artifact{Object: "models/b.gguf", Kind: "file", CRC64ECMA: "222"}
+	getStarted := make(chan struct{})
+	releaseDownload := make(chan struct{})
+	var closeGetStarted sync.Once
+	var closeRelease sync.Once
+	var getCount atomic.Int32
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models/a.gguf":
+			w.Header().Set("x-oss-hash-crc64ecma", artifactA.CRC64ECMA)
+		case "/models/b.gguf":
+			w.Header().Set("x-oss-hash-crc64ecma", artifactB.CRC64ECMA)
+		default:
+			t.Fatalf("unexpected artifact path %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			getCount.Add(1)
+			closeGetStarted.Do(func() { close(getStarted) })
+			select {
+			case <-releaseDownload:
+			case <-r.Context().Done():
+			}
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	t.Cleanup(func() {
+		closeRelease.Do(func() { close(releaseDownload) })
+		oss.Close()
+	})
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		ModelRoot:       t.TempDir(),
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		HTTPClient:      oss.Client(),
+	}
+	cfg := protocol.AgentConfigResponse{
+		OSS: ossConfig(oss.URL),
+		Models: map[string]config.Model{
+			"a": {Artifact: artifactA, Run: "serve a"},
+			"b": {Artifact: artifactB, Run: "serve b"},
+		},
+		TagPolicy: protocol.AgentTagPolicy{AllowedModels: []string{"a", "b"}},
+	}
+	installs := make(map[string]*artifactInstallState)
+	installDone := make(chan artifactInstallResult, 2)
+
+	status, installing, err := rec.installAllowedArtifactsAsync(context.Background(), cfg, installs, installDone)
+	if err != nil {
+		t.Fatalf("installAllowedArtifactsAsync() error = %v", err)
+	}
+	if !installing {
+		t.Fatal("installing = false, want true")
+	}
+	if status["a"] != "installing" || status["b"] != "pending" {
+		t.Fatalf("status = %#v, want a installing and b pending", status)
+	}
+
+	select {
+	case <-getStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first artifact GET did not start")
+	}
+
+	status, installing, err = rec.installAllowedArtifactsAsync(context.Background(), cfg, installs, installDone)
+	if err != nil {
+		t.Fatalf("second installAllowedArtifactsAsync() error = %v", err)
+	}
+	if !installing {
+		t.Fatal("second installing = false, want true")
+	}
+	if status["a"] != "installing" || status["b"] != "pending" {
+		t.Fatalf("second status = %#v, want a installing and b pending", status)
+	}
+	if got := getCount.Load(); got != 1 {
+		t.Fatalf("artifact GET count = %d, want 1", got)
 	}
 }
 
@@ -1129,4 +1342,25 @@ func reconcileConfigWithArtifact(ossURL string, artifact config.Artifact) protoc
 
 func ossConfig(baseURL string) config.OSSConfig {
 	return config.OSSConfig{BaseURL: baseURL}
+}
+
+type fakeRunningModelsClient struct {
+	models []protocol.RunningModel
+	err    error
+	calls  int
+}
+
+func (f *fakeRunningModelsClient) RunningModelsContext(context.Context) ([]protocol.RunningModel, error) {
+	f.calls++
+	return f.models, f.err
+}
+
+type fakeLlamaSwapHealthChecker struct {
+	calls int
+	err   error
+}
+
+func (f *fakeLlamaSwapHealthChecker) HealthContext(context.Context) error {
+	f.calls++
+	return f.err
 }

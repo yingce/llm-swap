@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,6 +60,29 @@ func TestLlamaSwapClientUnloadReturnsHTTPStatusError(t *testing.T) {
 	}
 }
 
+func TestLlamaSwapClientUnloadAllPostsWithBearerToken(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	client := LlamaSwapClient{BearerToken: "llama-secret"}
+
+	if err := client.UnloadAll(context.Background(), upstream.URL); err != nil {
+		t.Fatalf("UnloadAll returned error: %v", err)
+	}
+	if gotPath != "/api/models/unload" {
+		t.Fatalf("path = %q, want unload-all path", gotPath)
+	}
+	if gotAuth != "Bearer llama-secret" {
+		t.Fatalf("authorization = %q, want bearer token", gotAuth)
+	}
+}
+
 func TestExtractModel(t *testing.T) {
 	if got := ExtractModel([]byte(`{"model":"qwen","messages":[]}`)); got != "qwen" {
 		t.Fatalf("ExtractModel = %q, want qwen", got)
@@ -97,6 +122,52 @@ func TestProxyUnknownModelReturnsOpenAIError(t *testing.T) {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusNotFound, rr.Body.String())
 	}
 	assertOpenAIErrorCode(t, rr.Body.Bytes(), "model_not_available")
+}
+
+func TestProxyGeneratesRequestIDForwardsGatewayHeadersAndLogs(t *testing.T) {
+	var gotRequestID string
+	var gotGatewayModel string
+	var gotGatewayWorker string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRequestID = r.Header.Get("X-Request-Id")
+		gotGatewayModel = r.Header.Get("X-Gateway-Model")
+		gotGatewayWorker = r.Header.Get("X-Gateway-Worker")
+		writeJSON(w, map[string]any{"ok": true})
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(testProxyConfig())
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	req := proxyRequest(`{"model":"qwen","messages":[]}`)
+	req.Header.Del("X-Request-ID")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if gotRequestID == "" {
+		t.Fatal("upstream X-Request-Id is empty")
+	}
+	if rr.Header().Get("X-Request-Id") != gotRequestID {
+		t.Fatalf("response X-Request-Id = %q, want forwarded %q", rr.Header().Get("X-Request-Id"), gotRequestID)
+	}
+	if gotGatewayModel != "qwen" {
+		t.Fatalf("X-Gateway-Model = %q, want qwen", gotGatewayModel)
+	}
+	if gotGatewayWorker != "worker-a" {
+		t.Fatalf("X-Gateway-Worker = %q, want worker-a", gotGatewayWorker)
+	}
+	logText := logs.String()
+	for _, want := range []string{`"event":"request"`, `"event":"scheduler_decision"`, `"request_id":"` + gotRequestID + `"`, `"model":"qwen"`, `"worker_id":"worker-a"`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %s:\n%s", want, logText)
+		}
+	}
 }
 
 func TestProxyUpstream400IsNotRetriedAndResponseForwarded(t *testing.T) {
@@ -179,6 +250,41 @@ func TestProxyRetriesDifferentWorkerBeforeHeaders(t *testing.T) {
 	}
 	if got := len(srv.accounting.RequestSnapshot()); got != 0 {
 		t.Fatalf("accounting snapshot length = %d, want 0", got)
+	}
+}
+
+func TestProxyHonorsConfiguredProxyAttempts(t *testing.T) {
+	var firstRequests atomic.Int32
+	var secondRequests atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstRequests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests.Add(1)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	cfg := testProxyConfig()
+	cfg.Gateway.ProxyAttempts = 1
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "upstream_retry_exhausted")
+	if firstRequests.Load() != 1 {
+		t.Fatalf("first requests = %d, want 1", firstRequests.Load())
+	}
+	if secondRequests.Load() != 0 {
+		t.Fatalf("second requests = %d, want 0 when proxy_attempts=1", secondRequests.Load())
 	}
 }
 
@@ -428,6 +534,178 @@ func TestProxyStreamingKeepsWorkerAndAccountingActiveUntilBodyCopyFinishes(t *te
 	}
 	if got := registryActive(srv.workers, "streamer"); got != 0 {
 		t.Fatalf("registry active after stream = %d, want 0", got)
+	}
+}
+
+func TestProxyReturnsQueueFullWhenModelLimitIsFull(t *testing.T) {
+	started := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseUpstream) })
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-releaseUpstream
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer func() {
+		release()
+		upstream.Close()
+	}()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.MaxConcurrency = 1
+	model.MaxQueue = 0
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "worker", upstream.URL, true)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+		done <- rr
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first upstream request did not start")
+	}
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "queue_full")
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first proxy request did not finish")
+	}
+}
+
+func TestProxyWorkerLimitComesFromGatewayTagPolicy(t *testing.T) {
+	started := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseUpstream) })
+	}
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamRequests.Add(1) > 1 {
+			_, _ = w.Write([]byte(`{"choices":[]}`))
+			return
+		}
+		close(started)
+		<-releaseUpstream
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer func() {
+		release()
+		upstream.Close()
+	}()
+
+	cfg := testProxyConfig()
+	policy := cfg.TagPolicies["gpu-4090"]
+	policy.WorkerDefaults = config.WorkerDefaults{MaxConcurrency: 1, MaxQueue: 0}
+	cfg.TagPolicies["gpu-4090"] = policy
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "worker", upstream.URL, true)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+		done <- rr
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first upstream request did not start")
+	}
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "queue_full")
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first proxy request did not finish")
+	}
+}
+
+func TestProxySkipsFullWorkerQueueWhenAnotherWorkerAvailable(t *testing.T) {
+	holdStarted := make(chan struct{})
+	releaseHeld := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseHeld) })
+	}
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(holdStarted)
+		<-releaseHeld
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer func() {
+		release()
+		first.Close()
+	}()
+
+	var secondRequests atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests.Add(1)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	cfg := testProxyConfig()
+	policy := cfg.TagPolicies["gpu-4090"]
+	policy.WorkerDefaults = config.WorkerDefaults{MaxConcurrency: 1, MaxQueue: 0}
+	cfg.TagPolicies["gpu-4090"] = policy
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "gpu-a", first.URL, true)
+	registerProxyWorker(t, srv, "gpu-b", second.URL, false)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+		done <- rr
+	}()
+
+	select {
+	case <-holdStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first upstream request did not start")
+	}
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if secondRequests.Load() != 1 {
+		t.Fatalf("second requests = %d, want 1", secondRequests.Load())
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first proxy request did not finish")
 	}
 }
 

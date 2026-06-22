@@ -3,18 +3,22 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"llm-swap/internal/protocol"
 )
 
 const ReconcileInterval = 3 * time.Second
+const agentEventBufferLimit = 256
+const agentEventHeartbeatLimit = 64
 
 type GatewayClient interface {
 	GetConfigContext(context.Context, []string) (protocol.AgentConfigResponse, error)
@@ -31,9 +35,13 @@ type Reconciler struct {
 	Gateway         GatewayClient
 	HTTPClient      *http.Client
 	Service         Service
+	Health          HealthClient
+	RunningModels   RunningModelsClient
 	RunInterval     time.Duration
 
 	needsRestart bool
+	eventMu      sync.Mutex
+	events       []protocol.AgentEvent
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -115,6 +123,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	r.drainInstallResults(installs, installDone)
 	artifactStatus, _, err := r.installAllowedArtifactsAsync(ctx, cfg, installs, installDone)
 	reconcileErr = errors.Join(reconcileErr, err)
+	runningModels, err := r.fetchRunningModels(ctx)
+	reconcileErr = errors.Join(reconcileErr, err)
 
 	if allAllowedArtifactsReady(cfg, artifactStatus) {
 		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
@@ -126,12 +136,15 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
 			if changed {
+				r.recordEvent(protocol.AgentEvent{Event: "llama_swap_config_changed"})
 				r.needsRestart = true
 			}
 		}
 	}
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
+	hb.RunningModels = runningModels
+	hb.Events = r.snapshotEventsForHeartbeat(agentEventHeartbeatLimit)
 	if reconcileErr != nil {
 		hb.LastError = reconcileErr.Error()
 	}
@@ -140,14 +153,23 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	if err != nil {
 		return resp, errors.Join(reconcileErr, err)
 	}
+	r.dropReportedEvents(len(hb.Events))
 
 	if resp.RestartAllowed && r.needsRestart {
+		r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_start"})
 		if err := r.restart(ctx); err != nil {
+			r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
+			return resp, errors.Join(reconcileErr, err)
+		}
+		if err := r.verifyRestart(ctx); err != nil {
+			r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
 			return resp, errors.Join(reconcileErr, err)
 		}
 		if err := r.clearPendingRestart(); err != nil {
+			r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
 			return resp, errors.Join(reconcileErr, err)
 		}
+		r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_done"})
 		r.needsRestart = false
 	}
 
@@ -178,6 +200,14 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 	status := make(map[string]string, len(cfg.TagPolicy.AllowedModels))
 	var outErr error
 	var installing bool
+	installRunning := false
+	startedNewInstall := false
+	for _, state := range installs {
+		if state.running {
+			installRunning = true
+			break
+		}
+	}
 
 	for _, modelName := range cfg.TagPolicy.AllowedModels {
 		model, ok := cfg.Models[modelName]
@@ -220,11 +250,55 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			continue
 		}
 
+		if installRunning || startedNewInstall {
+			status[modelName] = "pending"
+			installing = true
+			continue
+		}
+
 		installs[modelName] = &artifactInstallState{key: key, running: true}
 		status[modelName] = "installing"
 		installing = true
+		startedNewInstall = true
 		go func(modelName string, key artifactInstallKey) {
-			_, err := InstallArtifact(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, model.Artifact)
+			started := time.Now()
+			r.recordEvent(protocol.AgentEvent{
+				Event:     "artifact_install_start",
+				Model:     modelName,
+				Object:    model.Artifact.Object,
+				Kind:      model.Artifact.Kind,
+				CRC64ECMA: model.Artifact.CRC64ECMA,
+			})
+			_, err := InstallArtifactWithProgress(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, model.Artifact, func(progress ArtifactProgress) {
+				r.recordEvent(protocol.AgentEvent{
+					Event:           "artifact_download_progress",
+					Model:           modelName,
+					Object:          model.Artifact.Object,
+					Kind:            model.Artifact.Kind,
+					DownloadedBytes: progress.DownloadedBytes,
+					TotalBytes:      progress.TotalBytes,
+					Percent:         progress.Percent,
+				})
+			})
+			durationMS := time.Since(started).Milliseconds()
+			if err != nil {
+				r.recordEvent(protocol.AgentEvent{
+					Event:      "artifact_install_error",
+					Model:      modelName,
+					Object:     model.Artifact.Object,
+					Kind:       model.Artifact.Kind,
+					DurationMS: durationMS,
+					Error:      err.Error(),
+				})
+			} else {
+				r.recordEvent(protocol.AgentEvent{
+					Event:      "artifact_install_done",
+					Model:      modelName,
+					Object:     model.Artifact.Object,
+					Kind:       model.Artifact.Kind,
+					DurationMS: durationMS,
+				})
+			}
 			result := artifactInstallResult{model: modelName, key: key, err: err}
 			select {
 			case installDone <- result:
@@ -234,6 +308,50 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 	}
 
 	return status, installing, outErr
+}
+
+func (r *Reconciler) recordEvent(event protocol.AgentEvent) {
+	if event.Event == "" {
+		return
+	}
+	if event.Time.IsZero() {
+		event.Time = time.Now().UTC()
+	}
+	if data, err := json.Marshal(event); err == nil {
+		log.Printf("%s", data)
+	}
+
+	r.eventMu.Lock()
+	defer r.eventMu.Unlock()
+	r.events = append(r.events, event)
+	if len(r.events) > agentEventBufferLimit {
+		r.events = append([]protocol.AgentEvent(nil), r.events[len(r.events)-agentEventBufferLimit:]...)
+	}
+}
+
+func (r *Reconciler) snapshotEventsForHeartbeat(limit int) []protocol.AgentEvent {
+	r.eventMu.Lock()
+	defer r.eventMu.Unlock()
+	if limit <= 0 || limit > len(r.events) {
+		limit = len(r.events)
+	}
+	if limit == 0 {
+		return nil
+	}
+	return append([]protocol.AgentEvent(nil), r.events[:limit]...)
+}
+
+func (r *Reconciler) dropReportedEvents(count int) {
+	if count <= 0 {
+		return
+	}
+	r.eventMu.Lock()
+	defer r.eventMu.Unlock()
+	if count >= len(r.events) {
+		r.events = nil
+		return
+	}
+	r.events = append([]protocol.AgentEvent(nil), r.events[count:]...)
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse, error) {
@@ -255,6 +373,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	artifactStatus, err := r.installAllowedArtifacts(ctx, cfg)
 	reconcileErr = errors.Join(reconcileErr, err)
+	runningModels, err := r.fetchRunningModels(ctx)
+	reconcileErr = errors.Join(reconcileErr, err)
 
 	if allAllowedArtifactsReady(cfg, artifactStatus) {
 		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
@@ -272,6 +392,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	}
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
+	hb.RunningModels = runningModels
 	if reconcileErr != nil {
 		hb.LastError = reconcileErr.Error()
 	}
@@ -283,6 +404,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	if resp.RestartAllowed && r.needsRestart {
 		if err := r.restart(ctx); err != nil {
+			return resp, errors.Join(reconcileErr, err)
+		}
+		if err := r.verifyRestart(ctx); err != nil {
 			return resp, errors.Join(reconcileErr, err)
 		}
 		if err := r.clearPendingRestart(); err != nil {
@@ -314,6 +438,17 @@ func (r *Reconciler) installAllowedArtifacts(ctx context.Context, cfg protocol.A
 	return status, outErr
 }
 
+func (r *Reconciler) fetchRunningModels(ctx context.Context) ([]protocol.RunningModel, error) {
+	if r.RunningModels == nil {
+		return nil, nil
+	}
+	models, err := r.RunningModels.RunningModelsContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fetch llama-swap running models: %w", err)
+	}
+	return models, nil
+}
+
 func allAllowedArtifactsReady(cfg protocol.AgentConfigResponse, artifactStatus map[string]string) bool {
 	for _, modelName := range cfg.TagPolicy.AllowedModels {
 		if artifactStatus[modelName] != "ready" {
@@ -328,6 +463,20 @@ func (r *Reconciler) restart(ctx context.Context) error {
 		return LoggingService{}.Restart(ctx)
 	}
 	return r.Service.Restart(ctx)
+}
+
+func (r *Reconciler) verifyRestart(ctx context.Context) error {
+	if r.Health != nil {
+		if err := r.Health.HealthContext(ctx); err != nil {
+			return fmt.Errorf("verify llama-swap health: %w", err)
+		}
+	}
+	if r.RunningModels != nil {
+		if _, err := r.RunningModels.RunningModelsContext(ctx); err != nil {
+			return fmt.Errorf("verify llama-swap running models: %w", err)
+		}
+	}
+	return nil
 }
 
 func (r *Reconciler) pendingRestart() (bool, error) {

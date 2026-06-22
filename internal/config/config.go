@@ -1,10 +1,16 @@
 package config
 
 type GatewayConfig struct {
+	Gateway     GatewaySettings      `yaml:"gateway" json:"gateway"`
 	OSS         OSSConfig            `yaml:"oss" json:"oss"`
 	Tokens      TokenConfig          `yaml:"tokens" json:"tokens"`
 	Models      map[string]Model     `yaml:"models" json:"models"`
 	TagPolicies map[string]TagPolicy `yaml:"tag_policies" json:"tag_policies"`
+}
+
+type GatewaySettings struct {
+	ListenAddr    string `yaml:"listen_addr" json:"listen_addr"`
+	ProxyAttempts int    `yaml:"proxy_attempts" json:"proxy_attempts"`
 }
 
 type OSSConfig struct {
@@ -57,6 +63,8 @@ type AgentConfig struct {
 		LlamaSwapConfig  string   `yaml:"llama_swap_config" json:"llama_swap_config"`
 		LlamaSwapService string   `yaml:"llama_swap_service" json:"llama_swap_service"`
 		RestartCommand   string   `yaml:"restart_command" json:"restart_command"`
+		SwapURL          string   `yaml:"swap_url" json:"swap_url"`
+		SwapPort         int      `yaml:"swap_port" json:"swap_port"`
 		LlamaSwapURL     string   `yaml:"llama_swap_url" json:"llama_swap_url"`
 		GatewayURL       string   `yaml:"gateway_url" json:"gateway_url"`
 		Token            string   `yaml:"token" json:"token"`

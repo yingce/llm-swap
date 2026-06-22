@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"llm-swap/internal/config"
 )
@@ -25,11 +26,92 @@ const ossCRC64Header = "x-oss-hash-crc64ecma"
 var writeMarkerFile = os.WriteFile
 
 type Marker struct {
-	Model         string `json:"model"`
-	Object        string `json:"object"`
-	Kind          string `json:"kind"`
-	CRC64ECMA     string `json:"crc64ecma"`
-	InstalledPath string `json:"installed_path"`
+	Model         string    `json:"model"`
+	Object        string    `json:"object"`
+	Kind          string    `json:"kind"`
+	CRC64ECMA     string    `json:"crc64ecma"`
+	InstalledPath string    `json:"installed_path"`
+	InstalledAt   time.Time `json:"installed_at"`
+}
+
+type ArtifactProgress struct {
+	DownloadedBytes int64
+	TotalBytes      int64
+	Percent         float64
+}
+
+type ArtifactProgressFunc func(ArtifactProgress)
+
+type artifactProgressTracker struct {
+	total      int64
+	nextPct    float64
+	lastEmit   time.Time
+	now        func() time.Time
+	onProgress ArtifactProgressFunc
+}
+
+func newArtifactProgressTracker(total int64, onProgress ArtifactProgressFunc) *artifactProgressTracker {
+	return &artifactProgressTracker{
+		total:      total,
+		nextPct:    5,
+		now:        time.Now,
+		onProgress: onProgress,
+	}
+}
+
+func (t *artifactProgressTracker) Observe(downloaded int64) {
+	if t == nil || t.onProgress == nil || downloaded <= 0 {
+		return
+	}
+
+	now := t.now()
+	percent := float64(0)
+	if t.total > 0 {
+		percent = float64(downloaded) * 100 / float64(t.total)
+	}
+	if t.total > 0 && percent > 100 {
+		percent = 100
+	}
+
+	shouldEmit := false
+	if t.total > 0 && percent >= t.nextPct {
+		shouldEmit = true
+		for t.nextPct <= percent {
+			t.nextPct += 5
+		}
+	}
+	if t.total <= 0 && t.lastEmit.IsZero() {
+		shouldEmit = true
+	}
+	if !t.lastEmit.IsZero() && now.Sub(t.lastEmit) >= time.Minute {
+		shouldEmit = true
+	}
+
+	if !shouldEmit {
+		return
+	}
+
+	t.lastEmit = now
+	t.onProgress(ArtifactProgress{
+		DownloadedBytes: downloaded,
+		TotalBytes:      t.total,
+		Percent:         percent,
+	})
+}
+
+type artifactProgressReader struct {
+	reader     io.Reader
+	downloaded int64
+	tracker    *artifactProgressTracker
+}
+
+func (r *artifactProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.downloaded += int64(n)
+		r.tracker.Observe(r.downloaded)
+	}
+	return n, err
 }
 
 func WriteMarker(dir, model string, artifact config.Artifact) error {
@@ -47,6 +129,7 @@ func writeMarker(dir, installedPath, model string, artifact config.Artifact) err
 		Kind:          artifact.Kind,
 		CRC64ECMA:     artifact.CRC64ECMA,
 		InstalledPath: installedPath,
+		InstalledAt:   time.Now().UTC(),
 	}
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
@@ -92,6 +175,10 @@ func CRC64ECMAFile(path string) (string, error) {
 }
 
 func InstallArtifact(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName string, artifact config.Artifact) (bool, error) {
+	return InstallArtifactWithProgress(ctx, httpClient, ossBaseURL, modelRoot, modelName, artifact, nil)
+}
+
+func InstallArtifactWithProgress(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName string, artifact config.Artifact, onProgress ArtifactProgressFunc) (bool, error) {
 	modelDir := filepath.Join(modelRoot, modelName)
 	matches, err := MarkerMatches(modelDir, modelName, artifact)
 	if err != nil {
@@ -113,7 +200,7 @@ func InstallArtifact(ctx context.Context, httpClient *http.Client, ossBaseURL, m
 		return false, err
 	}
 
-	tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot)
+	tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot, onProgress)
 	if err != nil {
 		return false, err
 	}
@@ -162,13 +249,16 @@ func checkRemoteCRC(ctx context.Context, httpClient *http.Client, downloadURL, w
 		return fmt.Errorf("HEAD %s returned %s", downloadURL, resp.Status)
 	}
 	gotCRC := strings.TrimSpace(resp.Header.Get(ossCRC64Header))
-	if gotCRC != "" && gotCRC != wantCRC {
+	if gotCRC == "" {
+		return fmt.Errorf("HEAD %s missing %s", downloadURL, ossCRC64Header)
+	}
+	if gotCRC != wantCRC {
 		return fmt.Errorf("HEAD crc64ecma mismatch for %s: got %s, want %s", downloadURL, gotCRC, wantCRC)
 	}
 	return nil
 }
 
-func downloadArtifact(ctx context.Context, httpClient *http.Client, downloadURL, tempDir string) (string, error) {
+func downloadArtifact(ctx context.Context, httpClient *http.Client, downloadURL, tempDir string, onProgress ArtifactProgressFunc) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return "", err
@@ -195,7 +285,14 @@ func downloadArtifact(ctx context.Context, httpClient *http.Client, downloadURL,
 		}
 	}()
 
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
+	reader := io.Reader(resp.Body)
+	if onProgress != nil {
+		reader = &artifactProgressReader{
+			reader:  resp.Body,
+			tracker: newArtifactProgressTracker(resp.ContentLength, onProgress),
+		}
+	}
+	if _, err := io.Copy(tmp, reader); err != nil {
 		_ = tmp.Close()
 		return "", err
 	}

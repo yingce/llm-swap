@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,22 +14,28 @@ import (
 )
 
 type Server struct {
-	config     config.GatewayConfig
-	workers    *WorkerRegistry
-	accounting *Accounting
-	metrics    *Metrics
-	scraper    *MetricsScraper
-	mux        *http.ServeMux
+	config        config.GatewayConfig
+	workers       *WorkerRegistry
+	accounting    *Accounting
+	limiter       *QueueLimiter
+	metrics       *Metrics
+	scraper       *MetricsScraper
+	proxyAttempts int
+	logger        *log.Logger
+	mux           *http.ServeMux
 }
 
 func NewServer(cfg config.GatewayConfig) *Server {
 	s := &Server{
-		config:     cfg,
-		workers:    NewWorkerRegistry(6 * time.Second),
-		accounting: NewAccounting(),
-		metrics:    NewMetrics(),
-		scraper:    NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
-		mux:        http.NewServeMux(),
+		config:        cfg,
+		workers:       NewWorkerRegistry(6 * time.Second),
+		accounting:    NewAccounting(),
+		limiter:       NewQueueLimiter(),
+		metrics:       NewMetrics(),
+		scraper:       NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
+		proxyAttempts: configuredProxyAttempts(cfg),
+		logger:        log.New(os.Stdout, "", log.LstdFlags),
+		mux:           http.NewServeMux(),
 	}
 
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
@@ -39,17 +47,45 @@ func NewServer(cfg config.GatewayConfig) *Server {
 	return s
 }
 
+func configuredProxyAttempts(cfg config.GatewayConfig) int {
+	if cfg.Gateway.ProxyAttempts > 0 {
+		return cfg.Gateway.ProxyAttempts
+	}
+	return config.DefaultProxyAttempts
+}
+
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	workers := s.workers.Snapshot(now)
 	active := s.workers.ActiveSnapshot()
-	s.metrics.ObserveWorkers(workers, active, now, func(worker Worker) (int, error) {
+	s.metrics.ObserveWorkers(workers, active, now, func(worker Worker) (ActivityStats, error) {
+		if s.scraper == nil || worker.LlamaSwapURL == "" {
+			return ActivityStats{}, nil
+		}
+		activity, err := s.scraper.PullActivity(worker.ID, worker.LlamaSwapURL)
+		s.recordScrapeResult(worker.ID, err, time.Now())
+		return activity, err
+	}, func(worker Worker) (int, error) {
 		if s.scraper == nil || worker.LlamaSwapURL == "" {
 			return 0, nil
 		}
-		return s.scraper.PullActivity(worker.ID, worker.LlamaSwapURL)
+		samples, err := s.scraper.PullPerformance(worker.ID, worker.LlamaSwapURL)
+		s.recordScrapeResult(worker.ID, err, time.Now())
+		return samples, err
 	})
+	s.metrics.ObserveModelProvisioning(s.config, workers, now)
 	s.metrics.Handler().ServeHTTP(w, r)
+}
+
+func (s *Server) recordScrapeResult(workerID string, err error, now time.Time) {
+	if s.workers == nil {
+		return
+	}
+	if err != nil {
+		s.workers.RecordScrapeFailure(workerID, now)
+		return
+	}
+	s.workers.RecordScrapeSuccess(workerID)
 }
 
 type modelsResponse struct {
@@ -148,7 +184,48 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := s.workers.UpsertHeartbeat(hb, time.Now())
+	for _, event := range hb.Events {
+		s.logAgentEvent(hb.AgentID, event)
+	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) logAgentEvent(workerID string, event protocol.AgentEvent) {
+	fields := map[string]any{
+		"worker_id":   workerID,
+		"agent_event": event.Event,
+	}
+	if !event.Time.IsZero() {
+		fields["time"] = event.Time.Format(time.RFC3339Nano)
+	}
+	if event.Model != "" {
+		fields["model"] = event.Model
+	}
+	if event.Object != "" {
+		fields["object"] = event.Object
+	}
+	if event.Kind != "" {
+		fields["kind"] = event.Kind
+	}
+	if event.CRC64ECMA != "" {
+		fields["crc64ecma"] = event.CRC64ECMA
+	}
+	if event.DownloadedBytes > 0 {
+		fields["downloaded_bytes"] = event.DownloadedBytes
+	}
+	if event.TotalBytes > 0 {
+		fields["total_bytes"] = event.TotalBytes
+	}
+	if event.Percent > 0 {
+		fields["percent"] = event.Percent
+	}
+	if event.DurationMS > 0 {
+		fields["duration_ms"] = event.DurationMS
+	}
+	if event.Error != "" {
+		fields["error"] = event.Error
+	}
+	s.logEvent("agent_event", fields)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {

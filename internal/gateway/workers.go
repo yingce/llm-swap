@@ -15,17 +15,22 @@ const (
 	WorkerDraining WorkerState = "draining"
 )
 
+const workerScrapeFailureBackoffThreshold = 3
+const workerScrapeFailureBackoff = 30 * time.Second
+
 type Worker struct {
-	ID            string
-	Tags          []string
-	LlamaSwapURL  string
-	RunningModels []protocol.RunningModel
-	Artifacts     map[string]string
-	Capacity      config.WorkerDefaults
-	NeedsRestart  bool
-	LastError     string
-	LastHeartbeat time.Time
-	State         WorkerState
+	ID                 string
+	Tags               []string
+	LlamaSwapURL       string
+	RunningModels      []protocol.RunningModel
+	Artifacts          map[string]string
+	Capacity           config.WorkerDefaults
+	NeedsRestart       bool
+	LastError          string
+	LastHeartbeat      time.Time
+	State              WorkerState
+	ScrapeFailures     int
+	ScrapeBackoffUntil time.Time
 }
 
 type WorkerRegistry struct {
@@ -47,6 +52,7 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	prev := r.workers[hb.AgentID]
 	w := &Worker{
 		ID:            hb.AgentID,
 		Tags:          append([]string(nil), hb.Tags...),
@@ -58,6 +64,10 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 		LastError:     hb.LastError,
 		LastHeartbeat: now,
 		State:         WorkerActive,
+	}
+	if prev != nil {
+		w.ScrapeFailures = prev.ScrapeFailures
+		w.ScrapeBackoffUntil = prev.ScrapeBackoffUntil
 	}
 	if hb.NeedsRestart {
 		w.State = WorkerDraining
@@ -77,6 +87,9 @@ func (r *WorkerRegistry) Healthy(id string, now time.Time) bool {
 		return false
 	}
 	if now.Sub(w.LastHeartbeat) >= r.staleAfter {
+		return false
+	}
+	if now.Before(w.ScrapeBackoffUntil) {
 		return false
 	}
 	return w.State == WorkerActive
@@ -120,6 +133,9 @@ func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) 
 	if now.Sub(w.LastHeartbeat) >= r.staleAfter {
 		return nil, false
 	}
+	if now.Before(w.ScrapeBackoffUntil) {
+		return nil, false
+	}
 	if w.State != WorkerActive {
 		return nil, false
 	}
@@ -141,6 +157,32 @@ func (r *WorkerRegistry) Acquire(workerID string, now time.Time) (func(), bool) 
 	}
 
 	return release, true
+}
+
+func (r *WorkerRegistry) RecordScrapeSuccess(workerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	worker := r.workers[workerID]
+	if worker == nil {
+		return
+	}
+	worker.ScrapeFailures = 0
+	worker.ScrapeBackoffUntil = time.Time{}
+}
+
+func (r *WorkerRegistry) RecordScrapeFailure(workerID string, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	worker := r.workers[workerID]
+	if worker == nil {
+		return
+	}
+	worker.ScrapeFailures++
+	if worker.ScrapeFailures >= workerScrapeFailureBackoffThreshold {
+		worker.ScrapeBackoffUntil = now.Add(workerScrapeFailureBackoff)
+	}
 }
 
 func copyStringMap(in map[string]string) map[string]string {

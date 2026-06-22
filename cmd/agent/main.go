@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -15,16 +14,9 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "examples/agent.yaml", "agent config path")
-	flag.Parse()
-
-	f, err := os.Open(*configPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	cfg, err := config.LoadAgent(f)
+	cfg, err := config.LoadAgentRuntime(context.Background(), config.AgentRuntimeOptions{
+		Args: os.Args[1:],
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,6 +24,11 @@ func main() {
 	gatewayHTTP := &http.Client{Timeout: 30 * time.Second}
 	artifactHTTP := &http.Client{}
 	service := restartService(cfg, log.Default())
+	llamaSwapState := agent.LlamaSwapStateClient{
+		BaseURL:     cfg.Agent.LlamaSwapURL,
+		BearerToken: cfg.Agent.LlamaSwapToken,
+		HTTP:        gatewayHTTP,
+	}
 
 	reconciler := &agent.Reconciler{
 		AgentID:         cfg.Agent.ID,
@@ -45,8 +42,10 @@ func main() {
 			Token:   cfg.Agent.Token,
 			HTTP:    gatewayHTTP,
 		},
-		HTTPClient: artifactHTTP,
-		Service:    service,
+		HTTPClient:    artifactHTTP,
+		Service:       service,
+		Health:        llamaSwapState,
+		RunningModels: llamaSwapState,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

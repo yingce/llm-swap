@@ -98,7 +98,7 @@ The design uses existing llama-swap capabilities:
 - `${PORT}` macro for per-model local ports.
 - `cmd` and `cmdStop` for runtime startup and shutdown.
 - `ttl` for local idle unload behavior.
-- `concurrencyLimit` as local per-model safety limit.
+- Optional local runtime safeguards configured outside gateway policy.
 - `hooks.on_startup.preload` for worker startup warm model.
 - `GET /running` for local running model state.
 - `POST /api/models/unload` to unload all local models.
@@ -113,6 +113,12 @@ Gateway should unload models through llama-swap APIs instead of asking the agent
 ## Configuration Model
 
 V1 uses YAML for gateway configuration.
+
+```yaml
+gateway:
+  listen_addr: :8080
+  proxy_attempts: 3
+```
 
 ### Model Config
 
@@ -220,10 +226,11 @@ agent:
   id: gpu-01
   tags:
     - gpu-4090
-  model_root: /data/models
-  llama_swap_config: /etc/llama-swap/config.yaml
+  model_root: /opt/llmswap/models
+  llama_swap_config: /opt/llmswap/llama-swap.yaml
   llama_swap_service: llama-swap
-  llama_swap_url: http://10.0.0.11:8080
+  swap_url: http://10.0.0.11:8080
+  swap_port: 8080
   gateway_url: https://gateway.internal
   token: internal-shared-token
 ```
@@ -341,7 +348,6 @@ models:
       --port ${PORT}
       --served-model-name qwen3-32b-awq
     ttl: 900
-    concurrencyLimit: 8
 ```
 
 Important rules:
@@ -350,6 +356,7 @@ Important rules:
 - Agent replaces `{{model_path}}`.
 - llama-swap owns `${PORT}` expansion.
 - Agent does not allocate per-model runtime ports.
+- Agent does not render concurrency controls from gateway tag policy.
 - Agent compares the rendered file content with the existing config.
 - If content is unchanged, it does not restart llama-swap.
 - If content changed, it writes the file atomically and restarts llama-swap only after the gateway drain protocol allows it.
@@ -480,7 +487,7 @@ Limits checked:
 - Tag queue length.
 - Worker queue length.
 
-llama-swap `concurrencyLimit` is still rendered as a local safety net. It protects workers from gateway bugs, gateway restart drift, accidental direct traffic, or future multi-gateway race conditions.
+Gateway-owned limits are authoritative. The agent does not derive or render concurrency controls from tag policy; worker-side limits are only out-of-band runtime safeguards.
 
 If any hard cap is exceeded and queue capacity remains, the request queues. If queue capacity is full, gateway returns an OpenAI-compatible 429 error.
 
@@ -558,7 +565,7 @@ worker is not downloading or restarting
 Gateway unload call:
 
 ```http
-POST {worker.llama_swap_url}/api/models/unload/{model}
+POST {worker.swap_url}/api/models/unload/{model}
 Authorization: Bearer <llama-swap-internal-token>
 ```
 
@@ -567,7 +574,7 @@ Gateway then refreshes worker state via heartbeat or `GET /running`.
 Gateway can also unload all models on a worker during maintenance:
 
 ```http
-POST {worker.llama_swap_url}/api/models/unload
+POST {worker.swap_url}/api/models/unload
 ```
 
 The agent does not implement model eviction.
