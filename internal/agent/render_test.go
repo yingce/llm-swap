@@ -14,9 +14,10 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	resp := protocol.AgentConfigResponse{
 		Models: map[string]config.Model{
 			"qwen": {
-				Run:     "llama-server -m {{model_path}}/model.gguf --port ${PORT} --alias {{model_path}}",
-				CmdStop: "pkill -f qwen",
-				TTL:     30,
+				Run:           "llama-server -m {{model_path}}/model.gguf --port ${PORT} --alias {{model_path}}",
+				CmdStop:       "pkill -f qwen",
+				TTL:           30,
+				CheckEndpoint: "/model_info",
 			},
 			"extra": {
 				Run: "llama-server -m {{model_path}}/extra.gguf --port ${PORT}",
@@ -76,21 +77,35 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	}
 
 	qwen := models["qwen"].(map[string]any)
-	wantCmd := "/bin/sh -c 'llama-server -m /models/qwen/model.gguf --port ${PORT} --alias /models/qwen'"
-	if qwen["cmd"] != wantCmd {
-		t.Fatalf("qwen cmd = %q, want %q", qwen["cmd"], wantCmd)
+	qwenCmd := qwen["cmd"].(string)
+	for _, want := range []string{
+		"/bin/sh -c '",
+		"mkdir -p /opt/llmswap/logs",
+		"/opt/llmswap/logs/model-runtime.log",
+		"model=%s",
+		"qwen",
+		"cmd: %s",
+		"llama-server -m /models/qwen/model.gguf --port ${PORT} --alias /models/qwen",
+		"status=%s",
+	} {
+		if !strings.Contains(qwenCmd, want) {
+			t.Fatalf("qwen cmd missing %q: %q", want, qwenCmd)
+		}
 	}
-	if strings.Contains(qwen["cmd"].(string), "{{model_path}}") {
-		t.Fatalf("qwen cmd still contains model_path placeholder: %q", qwen["cmd"])
+	if strings.Contains(qwenCmd, "{{model_path}}") {
+		t.Fatalf("qwen cmd still contains model_path placeholder: %q", qwenCmd)
 	}
-	if !strings.Contains(qwen["cmd"].(string), "${PORT}") {
-		t.Fatalf("qwen cmd did not preserve ${PORT}: %q", qwen["cmd"])
+	if !strings.Contains(qwenCmd, "${PORT}") {
+		t.Fatalf("qwen cmd did not preserve ${PORT}: %q", qwenCmd)
 	}
 	if qwen["ttl"] != 30 {
 		t.Fatalf("qwen ttl = %#v, want 30", qwen["ttl"])
 	}
 	if qwen["cmdStop"] != "/bin/sh -c 'pkill -f qwen'" {
 		t.Fatalf("qwen cmdStop = %#v, want shell-wrapped pkill -f qwen", qwen["cmdStop"])
+	}
+	if qwen["checkEndpoint"] != "/model_info" {
+		t.Fatalf("qwen checkEndpoint = %#v, want /model_info", qwen["checkEndpoint"])
 	}
 	if _, ok := qwen["concurrencyLimit"]; ok {
 		t.Fatalf("qwen rendered worker-side concurrencyLimit: %#v", qwen["concurrencyLimit"])
@@ -175,9 +190,9 @@ func TestRenderLlamaSwapConfigQwen36GGUFPath(t *testing.T) {
 
 	models := parseYAML(t, out)["models"].(map[string]any)
 	qwen := models["qwen3.6"].(map[string]any)
-	wantCmd := "/bin/sh -c 'llama-server -m /opt/llmfly/models/qwen3.6/Qwen3.6-35B-A3B-RP-NSFW-q4_K_M.gguf --port ${PORT}'"
-	if qwen["cmd"] != wantCmd {
-		t.Fatalf("qwen3.6 cmd = %q, want %q", qwen["cmd"], wantCmd)
+	wantCmd := "llama-server -m /opt/llmfly/models/qwen3.6/Qwen3.6-35B-A3B-RP-NSFW-q4_K_M.gguf --port ${PORT}"
+	if !strings.Contains(qwen["cmd"].(string), wantCmd) {
+		t.Fatalf("qwen3.6 cmd = %q, want to contain %q", qwen["cmd"], wantCmd)
 	}
 }
 
@@ -198,9 +213,16 @@ func TestRenderLlamaSwapConfigShellEscapesSingleQuotes(t *testing.T) {
 
 	models := parseYAML(t, out)["models"].(map[string]any)
 	qwen := models["qwen"].(map[string]any)
-	wantCmd := "/bin/sh -c 'python -c '\"'\"'print(/models/qwen)'\"'\"''"
-	if qwen["cmd"] != wantCmd {
-		t.Fatalf("qwen cmd = %q, want %q", qwen["cmd"], wantCmd)
+	cmd := qwen["cmd"].(string)
+	for _, want := range []string{
+		"python -c ",
+		"print(/models/qwen)",
+		"'\"'\"'",
+		"/opt/llmswap/logs/model-runtime.log",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("qwen cmd missing %q: %q", want, cmd)
+		}
 	}
 }
 

@@ -68,6 +68,7 @@ models:
       kind: tar_gz
       crc64ecma: "123"
     run: "vllm serve {{model_path}} --port ${PORT}"
+    check_endpoint: /model_info
 tag_policies:
   gpu-4090:
     max_concurrency: 8
@@ -84,6 +85,9 @@ tag_policies:
 	}
 	if cfg.TagPolicies["gpu-4090"].WarmWhenIdle != "qwen" {
 		t.Fatalf("warm_when_idle = %q", cfg.TagPolicies["gpu-4090"].WarmWhenIdle)
+	}
+	if cfg.Models["qwen"].CheckEndpoint != "/model_info" {
+		t.Fatalf("models.qwen.check_endpoint = %q, want /model_info", cfg.Models["qwen"].CheckEndpoint)
 	}
 }
 

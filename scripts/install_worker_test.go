@@ -12,13 +12,15 @@ import (
 func TestInstallWorkerDryRunUsesCuda124TorchIndexAndSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.4")
 
-	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --clear")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm --torch-backend=auto")
-	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --clear")
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python sglang")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, "sglang_minicpmv46_patch=applied")
 	assertNotContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torch torchvision torchaudio")
 	assertContains(t, out, "/etc/supervisor/conf.d/llmswap-agent.conf")
+	assertContains(t, out, "/etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertNotContains(t, out, "systemctl")
 }
 
@@ -26,6 +28,9 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git")
+	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
+	assertContains(t, out, "command=/opt/llmswap/bin/llama-swap -config /opt/llmswap/llama-swap.yaml -listen :6006 -watch-config")
+	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/llama-swap.out.log")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
 	assertContains(t, out, "sh -c pgrep -x supervisord >/dev/null || supervisord -c /etc/supervisor/supervisord.conf")
 	assertContains(t, out, "supervisorctl reread")
@@ -36,31 +41,32 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 func TestInstallWorkerDryRunSelectsCuda128AndCuda130Indexes(t *testing.T) {
 	cuda128 := runInstallWorker(t, "12.8")
 	assertContains(t, cuda128, "https://download.pytorch.org/whl/cu128")
-	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python sglang")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
 	assertNotContains(t, cuda128, "https://docs.sglang.ai/whl/cu128/")
 	assertNotContains(t, cuda128, "sglang-kernel")
 
 	cuda130 := runInstallWorker(t, "13.0")
 	assertContains(t, cuda130, "https://download.pytorch.org/whl/cu130")
-	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python sglang")
+	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
 	assertNotContains(t, cuda130, "sglang[all]")
 }
 
 func TestInstallWorkerDryRunChecksSGLangResolvedCudaRuntime(t *testing.T) {
 	out := runInstallWorker(t, "13.0", "--runtime", "sglang")
 
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python sglang")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, `kwargs.pop(\"hidden_size\", None)`)
 	assertContains(t, out, `/opt/llmswap/venvs/sglang/bin/python -c import torch, sglang; print('torch', torch.__version__); print('torch_cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); print('sglang', sglang.__version__)`)
 }
 
 func TestInstallWorkerDryRunDefaultsToPython312AndAllowsOverride(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
-	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --clear")
-	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --clear")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
 
 	override := runInstallWorker(t, "12.8", "--python", "3.11")
-	assertContains(t, override, "uv venv /opt/llmswap/venvs/vllm --python 3.11 --clear")
-	assertContains(t, override, "uv venv /opt/llmswap/venvs/sglang --python 3.11 --clear")
+	assertContains(t, override, "uv venv /opt/llmswap/venvs/vllm --python 3.11 --managed-python --clear")
+	assertContains(t, override, "uv venv /opt/llmswap/venvs/sglang --python 3.11 --managed-python --clear")
 }
 
 func TestInstallWorkerDryRunInstallsUvWithPipFallback(t *testing.T) {
@@ -89,9 +95,9 @@ func TestInstallWorkerDryRunAcceptsPythonInstallMirror(t *testing.T) {
 func TestInstallWorkerCanSkipTailscaleAndSelectRuntime(t *testing.T) {
 	out := runInstallWorker(t, "12.8", "--runtime", "vllm", "--skip-tailscale")
 
-	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --clear")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm.server")
-	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --clear")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
 	assertNotContains(t, out, "WRITE /opt/llmswap/bin/sglang.server")
 	assertNotContains(t, out, "tailscale")
 }
@@ -104,6 +110,7 @@ func TestInstallWorkerDryRunStartsTailscaleWhenAuthKeyProvidedAndConfiguresSuper
 	)
 
 	assertContains(t, out, "tailscale up --auth-key tskey-auth-test --hostname worker-01")
+	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
 	assertContains(t, out, "supervisorctl reread")
 	assertContains(t, out, "supervisorctl update")
@@ -124,11 +131,11 @@ func TestInstallWorkerDryRunInstallsLlamaCppRuntimeAndBinWrappers(t *testing.T) 
 	assertContains(t, out, "tar -C /opt/llmswap/runtimes/llamacpp/cu128-sm89 -xzf /opt/llmswap/cache/runtimes/llamacpp-linux-cu128-sm89.tar.gz")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llamacpp.server")
 	assertContains(t, out, "LLAMACPP_BIN=\"/opt/llmswap/runtimes/llamacpp/cu128-sm89/bin\"")
-	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" -m \"$MODEL_PATH\" --host \"$HOST\" --port \"$PORT\" \"$@\"")
-	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" \"$@\"")
+	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" -m \"$MODEL_PATH\" \"$@\" \"${SERVER_ARGS[@]}\"")
+	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" \"$@\" \"${SERVER_ARGS[@]}\"")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llama-server")
 	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" \"$@\"")
-	assertContains(t, out, "/opt/llmswap/bin/llamacpp.server --version")
+	assertContains(t, out, "test -x /opt/llmswap/bin/llamacpp.server")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang")
 }
@@ -150,8 +157,9 @@ func TestInstallWorkerDryRunWritesRuntimeServerWrappers(t *testing.T) {
 	assertContains(t, out, "exec /opt/llmswap/venvs/vllm/bin/vllm serve \"$MODEL_PATH\" --host \"$HOST\" --port \"$PORT\"")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/sglang.server")
 	assertContains(t, out, "exec /opt/llmswap/venvs/sglang/bin/python -m sglang.launch_server --model-path \"$MODEL_PATH\" --host \"$HOST\" --port \"$PORT\"")
-	assertContains(t, out, "ln -sfn /opt/llmswap/venvs/sglang/bin/python /opt/llmswap/bin/sglang-python")
-	assertContains(t, out, "ln -sfn /opt/llmswap/venvs/vllm/bin/python /opt/llmswap/bin/vllm-python")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/sglang-python")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm-python")
+	assertContains(t, out, "LLMSWAP_CUDA_LIBS=\"${LLMSWAP_CUDA_LIBS:+$LLMSWAP_CUDA_LIBS:}$dir\"")
 }
 
 func TestInstallWorkerDryRunInitializesAgentConfigAndBuildsAgent(t *testing.T) {
@@ -168,6 +176,7 @@ func TestInstallWorkerDryRunInitializesAgentConfigAndBuildsAgent(t *testing.T) {
 	assertContains(t, out, "id: gpu-01")
 	assertContains(t, out, "tags: [gpu-4090, gpu-a100]")
 	assertContains(t, out, "gateway_url: http://gateway:8080")
+	assertContains(t, out, "restart_command: supervisorctl restart llmswap-llama-swap")
 	assertContains(t, out, "token: agent-token")
 	assertContains(t, out, "llama_swap_token: worker-token")
 }
@@ -198,7 +207,11 @@ func runInstallWorker(t *testing.T, cuda string, args ...string) string {
 	allArgs := append([]string{"--dry-run", "--cuda-version", cuda}, args...)
 	cmd := exec.Command("bash", append([]string{script}, allArgs...)...)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "LLMSWAP_ASSUME_YES=1")
+	cmd.Env = append(os.Environ(),
+		"HOME="+t.TempDir(),
+		"PATH=/usr/bin:/bin",
+		"LLMSWAP_ASSUME_YES=1",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("install-worker.sh failed: %v\n%s", err, string(out))

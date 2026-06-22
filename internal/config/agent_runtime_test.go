@@ -50,7 +50,10 @@ func TestResolveSwapURLFallsBackToLocalIP(t *testing.T) {
 }
 
 func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
+	unsetEnv(t, "SWAP_URL", "LLM_SWAP_AGENT_SWAP_URL", "LLM_SWAP_AGENT_LLAMA_SWAP_URL")
+
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "missing-agent.yaml"),
 		Args: []string{
 			"--id", "gpu-01",
 			"--tags", "gpu-4090,gpu-a100",
@@ -74,14 +77,31 @@ func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
 	if cfg.Agent.LlamaSwapConfig != "/opt/llmswap/llama-swap.yaml" {
 		t.Fatalf("llama_swap_config = %q, want /opt/llmswap/llama-swap.yaml", cfg.Agent.LlamaSwapConfig)
 	}
-	if cfg.Agent.SwapPort != 8081 {
-		t.Fatalf("swap_port = %d, want 8081", cfg.Agent.SwapPort)
+	if cfg.Agent.SwapPort != 6006 {
+		t.Fatalf("swap_port = %d, want 6006", cfg.Agent.SwapPort)
 	}
-	if cfg.Agent.LlamaSwapURL != "http://100.64.0.30:8081" {
+	if cfg.Agent.LlamaSwapURL != "http://100.64.0.30:6006" {
 		t.Fatalf("llama_swap_url = %q, want derived tailscale URL", cfg.Agent.LlamaSwapURL)
 	}
 	if len(cfg.Agent.Tags) != 2 || cfg.Agent.Tags[0] != "gpu-4090" || cfg.Agent.Tags[1] != "gpu-a100" {
 		t.Fatalf("tags = %v, want parsed CLI tags", cfg.Agent.Tags)
+	}
+}
+
+func unsetEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		value, ok := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if ok {
+				_ = os.Setenv(key, value)
+				return
+			}
+			_ = os.Unsetenv(key)
+		})
 	}
 }
 

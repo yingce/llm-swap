@@ -24,11 +24,7 @@ func main() {
 	gatewayHTTP := &http.Client{Timeout: 30 * time.Second}
 	artifactHTTP := &http.Client{}
 	service := restartService(cfg, log.Default())
-	llamaSwapState := agent.LlamaSwapStateClient{
-		BaseURL:     cfg.Agent.LlamaSwapURL,
-		BearerToken: cfg.Agent.LlamaSwapToken,
-		HTTP:        gatewayHTTP,
-	}
+	llamaSwapState := llamaSwapStateClient(cfg, gatewayHTTP)
 
 	reconciler := &agent.Reconciler{
 		AgentID:         cfg.Agent.ID,
@@ -51,9 +47,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("agent reconcile loop starting for %s", cfg.Agent.ID)
+	log.Printf("agent reconcile loop starting for %s advertised_swap_url=%s local_swap_url=%s", cfg.Agent.ID, cfg.Agent.LlamaSwapURL, llamaSwapState.BaseURL)
 	if err := reconciler.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
+	}
+}
+
+func llamaSwapStateClient(cfg config.AgentConfig, httpClient *http.Client) agent.LlamaSwapStateClient {
+	return agent.LlamaSwapStateClient{
+		BaseURL:     config.LocalLlamaSwapURL(cfg.Agent.SwapPort),
+		BearerToken: cfg.Agent.LlamaSwapToken,
+		HTTP:        httpClient,
 	}
 }
 

@@ -15,15 +15,35 @@ type Scheduler struct {
 }
 
 func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (Worker, error) {
-	if _, ok := s.Config.Models[model]; !ok {
+	modelCfg, ok := s.Config.Models[model]
+	if !ok {
 		return Worker{}, fmt.Errorf("unknown model %q", model)
 	}
 	if s.Workers == nil {
 		return Worker{}, fmt.Errorf("no healthy worker for model %q", model)
 	}
 
+	workers := s.Workers.Snapshot(now)
+	active := s.Workers.ActiveSnapshot()
+	loadedCount := 0
+	for _, worker := range workers {
+		if !s.Workers.Healthy(worker.ID, now) {
+			continue
+		}
+		if !workerAllowsModel(s.Config, worker, model) {
+			continue
+		}
+		if !artifactReady(worker, model) {
+			continue
+		}
+		if runningModelReady(worker, model) {
+			loadedCount++
+		}
+	}
+	shouldLoadIdleReplica := modelCfg.MaxLoaded > 0 && loadedCount < modelCfg.MaxLoaded
+
 	candidates := make([]scoredWorker, 0)
-	for _, worker := range s.Workers.Snapshot(now) {
+	for _, worker := range workers {
 		if exclude != nil && exclude[worker.ID] {
 			continue
 		}
@@ -39,7 +59,7 @@ func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (W
 		running := runningModelReady(worker, model)
 		candidates = append(candidates, scoredWorker{
 			worker: worker,
-			score:  workerScore(running),
+			score:  workerScore(worker, running, shouldLoadIdleReplica, active[worker.ID]),
 		})
 	}
 	if len(candidates) == 0 {
@@ -60,9 +80,12 @@ type scoredWorker struct {
 	score  int
 }
 
-func workerScore(running bool) int {
+func workerScore(worker Worker, running bool, shouldLoadIdleReplica bool, activeRequests int) int {
+	if shouldLoadIdleReplica && !running && activeRequests == 0 && len(worker.RunningModels) == 0 {
+		return 200
+	}
 	if running {
-		return 100
+		return 100 - activeRequests
 	}
 	return 0
 }

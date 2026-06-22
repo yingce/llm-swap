@@ -19,7 +19,7 @@ const DefaultAgentRoot = "/opt/llmswap"
 const DefaultAgentConfigPath = DefaultAgentRoot + "/agent.yaml"
 const DefaultModelRoot = DefaultAgentRoot + "/models"
 const DefaultLlamaSwapConfig = DefaultAgentRoot + "/llama-swap.yaml"
-const DefaultSwapPort = 8081
+const DefaultSwapPort = 6006
 
 type AgentRuntimeOptions struct {
 	ConfigPath  string
@@ -152,6 +152,13 @@ func ResolveSwapURL(ctx context.Context, explicit string, port int, tailscaleIP 
 		return "", fmt.Errorf("local IP resolver returned empty address")
 	}
 	return "http://" + net.JoinHostPort(strings.TrimSpace(ip), strconv.Itoa(port)), nil
+}
+
+func LocalLlamaSwapURL(port int) string {
+	if port <= 0 {
+		port = DefaultSwapPort
+	}
+	return "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 }
 
 func DefaultTailscaleIP(ctx context.Context) (string, bool) {

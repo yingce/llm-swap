@@ -49,3 +49,18 @@ func TestRestartServiceUsesLoggingWhenRestartUnconfigured(t *testing.T) {
 		t.Fatalf("restartService returned %T, want agent.LoggingService", service)
 	}
 }
+
+func TestLlamaSwapStateClientUsesLocalSwapPort(t *testing.T) {
+	cfg := config.AgentConfig{}
+	cfg.Agent.LlamaSwapURL = "https://public-worker.example:8443"
+	cfg.Agent.SwapPort = 6006
+	cfg.Agent.LlamaSwapToken = "worker-token"
+
+	client := llamaSwapStateClient(cfg, nil)
+	if client.BaseURL != "http://127.0.0.1:6006" {
+		t.Fatalf("state client base url = %q, want local swap port", client.BaseURL)
+	}
+	if client.BearerToken != "worker-token" {
+		t.Fatalf("state client bearer token = %q, want configured token", client.BearerToken)
+	}
+}

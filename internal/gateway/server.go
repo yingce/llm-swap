@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"llm-swap/internal/config"
@@ -22,6 +23,8 @@ type Server struct {
 	scraper       *MetricsScraper
 	proxyAttempts int
 	logger        *log.Logger
+	eventMu       sync.Mutex
+	recentEvents  []uiAgentEvent
 	mux           *http.ServeMux
 }
 
@@ -39,6 +42,8 @@ func NewServer(cfg config.GatewayConfig) *Server {
 	}
 
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
+	s.mux.Handle("GET /ui", http.HandlerFunc(s.handleUI))
+	s.mux.Handle("GET /ui/status", http.HandlerFunc(s.handleUIStatus))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))
@@ -185,6 +190,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	resp := s.workers.UpsertHeartbeat(hb, time.Now())
 	for _, event := range hb.Events {
+		s.recordAgentEvent(hb.AgentID, event, time.Now())
 		s.logAgentEvent(hb.AgentID, event)
 	}
 	writeJSON(w, resp)

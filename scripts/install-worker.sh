@@ -16,7 +16,7 @@ LLMSWAP_AGENT_TAGS="${LLMSWAP_AGENT_TAGS:-gpu}"
 LLMSWAP_GATEWAY_URL="${LLMSWAP_GATEWAY_URL:-http://gateway.example.local:8080}"
 LLMSWAP_AGENT_TOKEN="${LLMSWAP_AGENT_TOKEN:-agent-token}"
 LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-worker-token}"
-LLMSWAP_SWAP_PORT="${LLMSWAP_SWAP_PORT:-8081}"
+LLMSWAP_SWAP_PORT="${LLMSWAP_SWAP_PORT:-6006}"
 LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG="${LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG:-0}"
 LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
@@ -29,6 +29,8 @@ LLMSWAP_LLAMA_CPP_BASE_URL="${LLMSWAP_LLAMA_CPP_BASE_URL:-http://llmfs-bj.oss-cn
 LLMSWAP_LLAMA_CPP_CUDA="${LLMSWAP_LLAMA_CPP_CUDA:-auto}"
 LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH:-sm89}"
 LLMSWAP_RUNTIME_CACHE_DIR="${LLMSWAP_RUNTIME_CACHE_DIR:-$LLMSWAP_ROOT/cache/runtimes}"
+LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-vllm}"
+LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE:-sglang}"
 UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 export UV_CACHE_DIR="$LLMSWAP_UV_CACHE_DIR"
 export UV_PYTHON_INSTALL_DIR="$LLMSWAP_UV_PYTHON_INSTALL_DIR"
@@ -255,6 +257,13 @@ install_uv() {
     printf 'uv already installed: %s\n' "$(command -v uv)"
     return 0
   fi
+  for candidate in "$HOME/.local/bin/uv"; do
+    if [[ -x "$candidate" ]]; then
+      export PATH="$(dirname "$candidate"):$PATH"
+      printf 'uv already installed: %s\n' "$candidate"
+      return 0
+    fi
+  done
   run sh -c "timeout $LLMSWAP_UV_INSTALL_TIMEOUT sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv"
   export PATH="$HOME/.local/bin:$PATH"
 }
@@ -290,23 +299,49 @@ install_torch() {
 install_vllm() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/vllm"
-  run uv venv "$venv" --python "$LLMSWAP_PYTHON" --clear
+  run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
   install_torch "$venv/bin/python" "$backend"
-  run uv pip install --python "$venv/bin/python" vllm --torch-backend=auto
+  run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE" --torch-backend=auto
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/vllm.server" "$venv/bin/python" vllm
-  run ln -sfn "$venv/bin/python" "$LLMSWAP_ROOT/bin/vllm-python"
+  write_python_wrapper "$LLMSWAP_ROOT/bin/vllm-python" "$venv/bin/python"
 }
 
 install_sglang() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/sglang"
   local check_script="import torch, sglang; print('torch', torch.__version__); print('torch_cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); print('sglang', sglang.__version__)"
-  run uv venv "$venv" --python "$LLMSWAP_PYTHON" --clear
-  run uv pip install --python "$venv/bin/python" sglang
+  run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
+  run uv pip install --python "$venv/bin/python" --prerelease=allow "$LLMSWAP_SGLANG_PACKAGE"
+  patch_sglang_minicpmv46_config "$venv/bin/python"
   printf 'INFO sglang_resolved_runtime backend_hint=%s\n' "$backend"
   run "$venv/bin/python" -c "$check_script"
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/sglang.server" "$venv/bin/python" sglang
-  run ln -sfn "$venv/bin/python" "$LLMSWAP_ROOT/bin/sglang-python"
+  write_python_wrapper "$LLMSWAP_ROOT/bin/sglang-python" "$venv/bin/python"
+}
+
+patch_sglang_minicpmv46_config() {
+  local python="$1"
+  local patch_script
+  patch_script='from pathlib import Path
+import py_compile
+import sglang
+
+path = Path(sglang.__file__).parent / "srt" / "configs" / "minicpmv4_6.py"
+if not path.exists():
+    print("INFO sglang_minicpmv46_patch=skip_missing")
+    raise SystemExit(0)
+s = path.read_text()
+old = "        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)\n"
+new = "        kwargs.pop(\"hidden_size\", None)\n        kwargs.pop(\"vocab_size\", None)\n        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)\n"
+if new in s:
+    print("INFO sglang_minicpmv46_patch=already_applied")
+elif old in s:
+    path.write_text(s.replace(old, new, 1))
+    print("INFO sglang_minicpmv46_patch=applied")
+else:
+    raise SystemExit(f"unsupported SGLang MiniCPMV4_6Config layout: {path}")
+py_compile.compile(str(path), doraise=True)'
+  run "$python" -c "$patch_script"
 }
 
 llamacpp_cuda_for_cuda() {
@@ -362,7 +397,7 @@ install_llamacpp() {
   write_llamacpp_bin_wrapper "$LLMSWAP_ROOT/bin/llama-server" "$dest/bin" "llama-server"
   write_llamacpp_bin_wrapper "$LLMSWAP_ROOT/bin/llama-cli" "$dest/bin" "llama-cli"
   write_llamacpp_bin_wrapper "$LLMSWAP_ROOT/bin/llama-bench" "$dest/bin" "llama-bench"
-  run "$LLMSWAP_ROOT/bin/llamacpp.server" --version
+  run test -x "$LLMSWAP_ROOT/bin/llamacpp.server"
 }
 
 write_llamacpp_bin_wrapper() {
@@ -382,10 +417,25 @@ fi
 HOST=\"\${HOST:-0.0.0.0}\"
 PORT=\"\${PORT:-8080}\"
 export LD_LIBRARY_PATH=\"\$LLAMACPP_BIN:\${LD_LIBRARY_PATH:-}\"
-if [[ -n \"\$MODEL_PATH\" ]]; then
-  exec \"\$LLAMACPP_BIN/llama-server\" -m \"\$MODEL_PATH\" --host \"\$HOST\" --port \"\$PORT\" \"\$@\"
+SERVER_ARGS=()
+has_host=0
+has_port=0
+for arg in \"\$@\"; do
+  case \"\$arg\" in
+    --host|--host=*|--host-ip|--host-ip=*) has_host=1 ;;
+    --port|--port=*|-p) has_port=1 ;;
+  esac
+done
+if [[ \"\$has_host\" == \"0\" ]]; then
+  SERVER_ARGS+=(--host \"\$HOST\")
 fi
-exec \"\$LLAMACPP_BIN/llama-server\" \"\$@\""
+if [[ \"\$has_port\" == \"0\" ]]; then
+  SERVER_ARGS+=(--port \"\$PORT\")
+fi
+if [[ -n \"\$MODEL_PATH\" ]]; then
+  exec \"\$LLAMACPP_BIN/llama-server\" -m \"\$MODEL_PATH\" \"\$@\" \"\${SERVER_ARGS[@]}\"
+fi
+exec \"\$LLAMACPP_BIN/llama-server\" \"\$@\" \"\${SERVER_ARGS[@]}\""
   else
     content="#!/usr/bin/env bash
 set -euo pipefail
@@ -393,6 +443,29 @@ LLAMACPP_BIN=\"$bin_dir\"
 export LD_LIBRARY_PATH=\"\$LLAMACPP_BIN:\${LD_LIBRARY_PATH:-}\"
 exec \"\$LLAMACPP_BIN/$executable\" \"\$@\""
   fi
+  run rm -f "$path"
+  write_file "$path" "$content"
+  run chmod 0755 "$path"
+}
+
+write_python_wrapper() {
+  local path="$1"
+  local python_bin="$2"
+  local content
+  content="#!/usr/bin/env bash
+set -euo pipefail
+PYTHON_BIN=\"$python_bin\"
+VENV_DIR=\"\$(cd \"\$(dirname \"\$PYTHON_BIN\")/..\" && pwd)\"
+LLMSWAP_CUDA_LIBS=\"\"
+for dir in \"\$VENV_DIR\"/lib/python*/site-packages/nvidia/*/lib; do
+  if [[ -d \"\$dir\" ]]; then
+    LLMSWAP_CUDA_LIBS=\"\${LLMSWAP_CUDA_LIBS:+\$LLMSWAP_CUDA_LIBS:}\$dir\"
+  fi
+done
+if [[ -n \"\$LLMSWAP_CUDA_LIBS\" ]]; then
+  export LD_LIBRARY_PATH=\"\$LLMSWAP_CUDA_LIBS:\${LD_LIBRARY_PATH:-}\"
+fi
+exec \"\$PYTHON_BIN\" \"\$@\""
   run rm -f "$path"
   write_file "$path" "$content"
   run chmod 0755 "$path"
@@ -419,6 +492,17 @@ if [[ -z \"\$MODEL_PATH\" ]]; then
 fi
 HOST=\"\${HOST:-0.0.0.0}\"
 PORT=\"\${PORT:-8000}\"
+PYTHON_BIN=\"$python_bin\"
+VENV_DIR=\"\$(cd \"\$(dirname \"\$PYTHON_BIN\")/..\" && pwd)\"
+LLMSWAP_CUDA_LIBS=\"\"
+for dir in \"\$VENV_DIR\"/lib/python*/site-packages/nvidia/*/lib; do
+  if [[ -d \"\$dir\" ]]; then
+    LLMSWAP_CUDA_LIBS=\"\${LLMSWAP_CUDA_LIBS:+\$LLMSWAP_CUDA_LIBS:}\$dir\"
+  fi
+done
+if [[ -n \"\$LLMSWAP_CUDA_LIBS\" ]]; then
+  export LD_LIBRARY_PATH=\"\$LLMSWAP_CUDA_LIBS:\${LD_LIBRARY_PATH:-}\"
+fi
 exec $(dirname "$python_bin")/vllm serve \"\$MODEL_PATH\" --host \"\$HOST\" --port \"\$PORT\" \"\$@\""
       ;;
     sglang)
@@ -435,6 +519,17 @@ if [[ -z \"\$MODEL_PATH\" ]]; then
 fi
 HOST=\"\${HOST:-0.0.0.0}\"
 PORT=\"\${PORT:-30000}\"
+PYTHON_BIN=\"$python_bin\"
+VENV_DIR=\"\$(cd \"\$(dirname \"\$PYTHON_BIN\")/..\" && pwd)\"
+LLMSWAP_CUDA_LIBS=\"\"
+for dir in \"\$VENV_DIR\"/lib/python*/site-packages/nvidia/*/lib; do
+  if [[ -d \"\$dir\" ]]; then
+    LLMSWAP_CUDA_LIBS=\"\${LLMSWAP_CUDA_LIBS:+\$LLMSWAP_CUDA_LIBS:}\$dir\"
+  fi
+done
+if [[ -n \"\$LLMSWAP_CUDA_LIBS\" ]]; then
+  export LD_LIBRARY_PATH=\"\$LLMSWAP_CUDA_LIBS:\${LD_LIBRARY_PATH:-}\"
+fi
 exec $python_bin -m sglang.launch_server --model-path \"\$MODEL_PATH\" --host \"\$HOST\" --port \"\$PORT\" \"\$@\""
       ;;
     *)
@@ -443,6 +538,7 @@ exec $python_bin -m sglang.launch_server --model-path \"\$MODEL_PATH\" --host \"
       ;;
   esac
 
+  run rm -f "$path"
   write_file "$path" "$content"
   run chmod 0755 "$path"
 }
@@ -451,8 +547,18 @@ configure_supervisor() {
   if [[ "$LLMSWAP_INSTALL_SUPERVISOR" != "1" ]]; then
     return 0
   fi
-  local conf
-  conf="[program:llmswap-agent]
+  local llama_conf agent_conf
+  llama_conf="[program:llmswap-llama-swap]
+command=$LLMSWAP_ROOT/bin/llama-swap -config $LLMSWAP_ROOT/llama-swap.yaml -listen :$LLMSWAP_SWAP_PORT -watch-config
+directory=$LLMSWAP_ROOT
+autostart=true
+autorestart=true
+startsecs=3
+stopasgroup=true
+killasgroup=true
+stdout_logfile=$LLMSWAP_ROOT/logs/llama-swap.out.log
+stderr_logfile=$LLMSWAP_ROOT/logs/llama-swap.err.log"
+  agent_conf="[program:llmswap-agent]
 command=$LLMSWAP_AGENT_BIN --config $LLMSWAP_AGENT_CONFIG
 directory=$LLMSWAP_ROOT
 autostart=true
@@ -461,7 +567,8 @@ startsecs=5
 stdout_logfile=$LLMSWAP_ROOT/logs/agent.out.log
 stderr_logfile=$LLMSWAP_ROOT/logs/agent.err.log
 environment=LLM_SWAP_AGENT_CONFIG=\"$LLMSWAP_AGENT_CONFIG\""
-  write_file /etc/supervisor/conf.d/llmswap-agent.conf "$conf"
+  write_file /etc/supervisor/conf.d/llmswap-llama-swap.conf "$llama_conf"
+  write_file /etc/supervisor/conf.d/llmswap-agent.conf "$agent_conf"
   ensure_supervisord
   run supervisorctl reread
   run supervisorctl update
@@ -491,7 +598,7 @@ format_yaml_tags() {
 
 initialize_agent_config() {
   if [[ "$LLMSWAP_FORCE_CONFIG" != "1" ]]; then
-    if [[ -f "$LLMSWAP_AGENT_CONFIG" || "$LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG" == "1" ]]; then
+    if [[ "$LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG" == "1" || ( "$LLMSWAP_DRY_RUN" != "1" && -f "$LLMSWAP_AGENT_CONFIG" ) ]]; then
       printf 'INFO %s exists; keeping it\n' "$LLMSWAP_AGENT_CONFIG"
       return 0
     fi
@@ -506,6 +613,7 @@ initialize_agent_config() {
   model_root: $LLMSWAP_ROOT/models
   llama_swap_config: $LLMSWAP_ROOT/llama-swap.yaml
   llama_swap_service: supervisor
+  restart_command: supervisorctl restart llmswap-llama-swap
   swap_port: $LLMSWAP_SWAP_PORT
   gateway_url: $LLMSWAP_GATEWAY_URL
   token: $LLMSWAP_AGENT_TOKEN

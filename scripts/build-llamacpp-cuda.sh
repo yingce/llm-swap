@@ -141,10 +141,25 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8080}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="$SCRIPT_DIR:${LD_LIBRARY_PATH:-}"
-if [[ -n "$MODEL_PATH" ]]; then
-  exec "$SCRIPT_DIR/llama-server" -m "$MODEL_PATH" --host "$HOST" --port "$PORT" "$@"
+SERVER_ARGS=()
+has_host=0
+has_port=0
+for arg in "$@"; do
+  case "$arg" in
+    --host|--host=*|--host-ip|--host-ip=*) has_host=1 ;;
+    --port|--port=*|-p) has_port=1 ;;
+  esac
+done
+if [[ "$has_host" == "0" ]]; then
+  SERVER_ARGS+=(--host "$HOST")
 fi
-exec "$SCRIPT_DIR/llama-server" "$@"
+if [[ "$has_port" == "0" ]]; then
+  SERVER_ARGS+=(--port "$PORT")
+fi
+if [[ -n "$MODEL_PATH" ]]; then
+  exec "$SCRIPT_DIR/llama-server" -m "$MODEL_PATH" "$@" "${SERVER_ARGS[@]}"
+fi
+exec "$SCRIPT_DIR/llama-server" "$@" "${SERVER_ARGS[@]}"
 EOF
   chmod 0755 "$package_dir/bin/llamacpp.server"
   {

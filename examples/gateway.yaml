@@ -23,6 +23,7 @@ models:
       object: models/qwen3-32b-awq.tar.gz
       kind: tar_gz
       crc64ecma: sample-crc64ecma
+    check_endpoint: /model_info
     run: llama-swap run qwen3-32b-awq
     cmd_stop: llama-swap stop qwen3-32b-awq
 

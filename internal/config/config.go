@@ -34,6 +34,7 @@ type Model struct {
 	Artifact       Artifact `yaml:"artifact" json:"artifact"`
 	Run            string   `yaml:"run" json:"run"`
 	CmdStop        string   `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
+	CheckEndpoint  string   `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
 }
 
 type Artifact struct {
