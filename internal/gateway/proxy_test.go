@@ -810,6 +810,13 @@ func TestProxyReturnsQueueFullWhenModelLimitIsFull(t *testing.T) {
 			t.Fatalf("queue logs missing %s:\n%s", want, logText)
 		}
 	}
+	snapshot := srv.pressure.Model("qwen", time.Now())
+	if snapshot.QueueErrors != 1 {
+		t.Fatalf("QueueErrors = %d, want 1", snapshot.QueueErrors)
+	}
+	if snapshot.ReadyReplicas != 1 || snapshot.OccupiedReplicas != 1 || snapshot.MaxActive != 1 {
+		t.Fatalf("queue pressure replicas/active = ready:%d occupied:%d max_active:%d, want ready:1 occupied:1 max_active:1", snapshot.ReadyReplicas, snapshot.OccupiedReplicas, snapshot.MaxActive)
+	}
 
 	release()
 	select {
