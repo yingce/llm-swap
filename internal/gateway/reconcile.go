@@ -169,20 +169,14 @@ func (r LoadedReconciler) logControlAction(event string, action ControlAction, e
 		return
 	}
 	fields := map[string]any{
-		"type":         string(action.Type),
-		"worker_id":    action.Worker.ID,
+		"action":       string(action.Type),
 		"model":        action.Model,
+		"worker_id":    action.Worker.ID,
 		"reason":       action.Reason,
 		"demand_score": action.DemandScore,
-	}
-	if action.VictimModel != "" {
-		fields["victim_model"] = action.VictimModel
-	}
-	if action.KeepScore != 0 {
-		fields["keep_score"] = action.KeepScore
-	}
-	if action.SwitchCost != 0 {
-		fields["switch_cost"] = action.SwitchCost
+		"keep_score":   action.KeepScore,
+		"switch_cost":  action.SwitchCost,
+		"victim_model": action.VictimModel,
 	}
 	if err != nil {
 		fields["error"] = err.Error()

@@ -307,6 +307,7 @@ func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 		OccupiedReplicas: 1,
 		ActiveBefore:     1,
 	})
+	var plannedFields map[string]any
 
 	reconciler := LoadedReconciler{
 		Config:   cfg,
@@ -314,6 +315,11 @@ func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 		Client:   LlamaSwapClient{BearerToken: "llama-secret"},
 		Access:   NewAccessTracker(),
 		Pressure: pressure,
+		LogEvent: func(event string, fields map[string]any) {
+			if event == "control_action_planned" {
+				plannedFields = fields
+			}
+		},
 	}
 
 	if err := reconciler.Reconcile(context.Background(), now.Add(10 * time.Second)); err != nil {
@@ -321,6 +327,20 @@ func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 	}
 	if loadCalls.Load() != 1 {
 		t.Fatalf("load calls = %d, want 1", loadCalls.Load())
+	}
+	if plannedFields == nil {
+		t.Fatal("control_action_planned log was not captured")
+	}
+	if got := plannedFields["action"]; got != "warm" {
+		t.Fatalf("planned action = %v, want warm", got)
+	}
+	for _, key := range []string{"keep_score", "switch_cost", "victim_model"} {
+		if _, ok := plannedFields[key]; !ok {
+			t.Fatalf("planned fields missing %q: %+v", key, plannedFields)
+		}
+	}
+	if _, ok := plannedFields["type"]; ok {
+		t.Fatalf("planned fields included deprecated type key: %+v", plannedFields)
 	}
 }
 
