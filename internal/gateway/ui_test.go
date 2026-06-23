@@ -124,6 +124,66 @@ func TestUIEventsEndpointPaginatesPersistedWorkerEvents(t *testing.T) {
 	}
 }
 
+func TestUIEndpointsRequireClientTokenWhenConfigured(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+
+	for _, path := range []string{"/ui", "/ui/status", "/ui/events"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+
+		srv.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want %d", path, rr.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
+func TestUIEndpointsAcceptBearerClientToken(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer client-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestUIPageTokenSetsCookie(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/ui?token=client-secret", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if got := rr.Header().Get("Location"); got != "/ui" {
+		t.Fatalf("location = %q, want /ui", got)
+	}
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != uiAuthCookieName || cookies[0].Value != "client-secret" || !cookies[0].HttpOnly {
+		t.Fatalf("cookies = %+v, want auth cookie", cookies)
+	}
+}
+
+func TestUIEndpointsAcceptAuthCookie(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil)
+	req.AddCookie(&http.Cookie{Name: uiAuthCookieName, Value: "client-secret"})
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
 func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -137,6 +197,12 @@ func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
 		t.Fatalf("decode events: %v", err)
 	}
 	return resp
+}
+
+func testUIGatewayConfig() config.GatewayConfig {
+	cfg := testGatewayConfig()
+	cfg.Tokens.Client = "client-secret"
+	return cfg
 }
 
 func findUIModel(models []uiModelStatus, name string) (uiModelStatus, bool) {

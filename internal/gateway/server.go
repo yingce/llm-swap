@@ -73,9 +73,9 @@ func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPa
 	}
 
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
-	s.mux.Handle("GET /ui", http.HandlerFunc(s.handleUI))
-	s.mux.Handle("GET /ui/status", http.HandlerFunc(s.handleUIStatus))
-	s.mux.Handle("GET /ui/events", http.HandlerFunc(s.handleUIEvents))
+	s.mux.Handle("GET /ui", uiAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleUI)))
+	s.mux.Handle("GET /ui/status", uiAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleUIStatus)))
+	s.mux.Handle("GET /ui/events", uiAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleUIEvents)))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))
