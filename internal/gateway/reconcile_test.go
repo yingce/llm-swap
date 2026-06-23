@@ -344,6 +344,87 @@ func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 	}
 }
 
+func TestLoadedReconcilerExecutesOnlyOneWarmActionPerCycle(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var loadA atomic.Int32
+	var loadB atomic.Int32
+	serverA := loadServerForModel(t, "a", &loadA)
+	defer serverA.Close()
+	serverB := loadServerForModel(t, "b", &loadB)
+	defer serverB.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"a": {Priority: 100, MinLoaded: 0},
+			"b": {Priority: 100, MinLoaded: 0},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-a": {AllowedModels: []string{"a"}},
+			"gpu-b": {AllowedModels: []string{"b"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu-a"},
+		LlamaSwapURL: serverA.URL,
+		Artifacts:    map[string]string{"a": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-b",
+		Tags:         []string{"gpu-b"},
+		LlamaSwapURL: serverB.URL,
+		Artifacts:    map[string]string{"b": "ready"},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests+3; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "a",
+			TotalTokens: 1000,
+		})
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "b",
+			TotalTokens: 1000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "a",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+		ActiveBefore:     1,
+	})
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "b",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+		ActiveBefore:     1,
+	})
+
+	reconciler := LoadedReconciler{
+		Config:   cfg,
+		Workers:  reg,
+		Client:   LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:   NewAccessTracker(),
+		Pressure: pressure,
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now.Add(10*time.Second)); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if got := loadA.Load() + loadB.Load(); got != 1 {
+		t.Fatalf("load calls = a:%d b:%d, want exactly one warm action", loadA.Load(), loadB.Load())
+	}
+}
+
 func unloadServer(t *testing.T, calls *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return unloadServerForModel(t, "qwen", calls)
