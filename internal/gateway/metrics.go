@@ -37,6 +37,7 @@ type Metrics struct {
 	requests                     *prometheus.CounterVec
 	requestDuration              *prometheus.HistogramVec
 	queueEvents                  *prometheus.CounterVec
+	queueWaitDuration            *prometheus.HistogramVec
 	dispatchFailures             *prometheus.CounterVec
 	modelLoadedReplicas          *prometheus.GaugeVec
 	modelUnderprovisioned        *prometheus.GaugeVec
@@ -137,6 +138,11 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_queue_events_total",
 		Help: "Gateway queue outcomes.",
 	}, []string{"model", "result"})
+	queueWaitDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_swap_gateway_queue_wait_seconds",
+		Help:    "Gateway queue wait duration by model, gate type, and outcome.",
+		Buckets: []float64{0, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60},
+	}, []string{"model", "key_type", "result"})
 	dispatchFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_swap_gateway_dispatch_failures_total",
 		Help: "Gateway dispatch failures by selected worker and reason.",
@@ -151,7 +157,7 @@ func NewMetrics() *Metrics {
 	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, requestDuration, queueEvents, dispatchFailures, modelLoadedReplicas, modelUnderprovisioned)
+	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, modelLoadedReplicas, modelUnderprovisioned)
 
 	return &Metrics{
 		registry:                     registry,
@@ -178,6 +184,7 @@ func NewMetrics() *Metrics {
 		requests:                     requests,
 		requestDuration:              requestDuration,
 		queueEvents:                  queueEvents,
+		queueWaitDuration:            queueWaitDuration,
 		dispatchFailures:             dispatchFailures,
 		modelLoadedReplicas:          modelLoadedReplicas,
 		modelUnderprovisioned:        modelUnderprovisioned,
@@ -206,6 +213,14 @@ func (m *Metrics) ObserveRequest(model, workerID string, statusCode int, duratio
 
 func (m *Metrics) ObserveQueueEvent(model, result string) {
 	m.queueEvents.WithLabelValues(model, result).Inc()
+}
+
+func (m *Metrics) ObserveQueueWait(model, keyType, result string, wait time.Duration) {
+	if wait < 0 {
+		wait = 0
+	}
+	m.queueEvents.WithLabelValues(model, result).Inc()
+	m.queueWaitDuration.WithLabelValues(model, keyType, result).Observe(wait.Seconds())
 }
 
 func (m *Metrics) ObserveDispatchFailure(model, workerID, reason string) {

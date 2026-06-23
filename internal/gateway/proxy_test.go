@@ -172,6 +172,38 @@ func TestProxyGeneratesRequestIDForwardsGatewayHeadersAndLogs(t *testing.T) {
 	}
 }
 
+func TestProxySchedulerDecisionLogIncludesAutoMaxLoaded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+	}))
+	defer upstream.Close()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.MinLoaded = 1
+	model.MaxLoaded = 0
+	model.MaxLoadedSet = false
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+	registerProxyWorker(t, srv, "worker-b", upstream.URL, false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	logText := logs.String()
+	for _, want := range []string{`"event":"scheduler_decision"`, `"max_loaded":2`, `"max_loaded_auto":true`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %s:\n%s", want, logText)
+		}
+	}
+}
+
 func TestProxyNormalizesTopKZeroForSGLangModels(t *testing.T) {
 	var gotTopK float64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +376,7 @@ func TestProxyUpstream400IsNotRetriedAndResponseForwarded(t *testing.T) {
 
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "first", first.URL, true)
-	registerProxyWorker(t, srv, "second", second.URL, false)
+	registerProxyWorker(t, srv, "second", second.URL, true)
 
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
@@ -386,7 +418,7 @@ func TestProxyRetriesDifferentWorkerBeforeHeaders(t *testing.T) {
 
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "first", first.URL, true)
-	registerProxyWorker(t, srv, "second", second.URL, false)
+	registerProxyWorker(t, srv, "second", second.URL, true)
 
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
@@ -462,7 +494,7 @@ func TestProxyRetriesHTML404FromWorkerPlatform(t *testing.T) {
 
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "first", first.URL, true)
-	registerProxyWorker(t, srv, "second", second.URL, false)
+	registerProxyWorker(t, srv, "second", second.URL, true)
 
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
@@ -715,6 +747,8 @@ func TestProxyReturnsQueueFullWhenModelLimitIsFull(t *testing.T) {
 	model.MaxQueue = 0
 	cfg.Models["qwen"] = model
 	srv := NewServer(cfg)
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
 	registerProxyWorker(t, srv, "worker", upstream.URL, true)
 
 	done := make(chan *httptest.ResponseRecorder, 1)
@@ -736,6 +770,12 @@ func TestProxyReturnsQueueFullWhenModelLimitIsFull(t *testing.T) {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
 	}
 	assertOpenAIErrorCode(t, rr.Body.Bytes(), "queue_full")
+	logText := logs.String()
+	for _, want := range []string{`"event":"queue_observation"`, `"key":"model:qwen"`, `"key_type":"model"`, `"result":"queue_full"`, `"active":1`, `"queued":0`, `"max_concurrency":1`, `"max_queue":0`, `"ready_replicas":1`, `"occupied_replicas":1`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("queue logs missing %s:\n%s", want, logText)
+		}
+	}
 
 	release()
 	select {
@@ -832,7 +872,7 @@ func TestProxySkipsFullWorkerQueueWhenAnotherWorkerAvailable(t *testing.T) {
 	cfg.TagPolicies["gpu-4090"] = policy
 	srv := NewServer(cfg)
 	registerProxyWorker(t, srv, "gpu-a", first.URL, true)
-	registerProxyWorker(t, srv, "gpu-b", second.URL, false)
+	registerProxyWorker(t, srv, "gpu-b", second.URL, true)
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {

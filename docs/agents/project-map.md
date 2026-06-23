@@ -1,6 +1,6 @@
 # LLM Swap Project Map
 
-Last updated: 2026-06-23.
+Last updated: 2026-06-24.
 
 This document is the current high-level map for future agents. It reflects the
 code state after the gateway UI, token unification, worker event persistence,
@@ -14,8 +14,8 @@ The system is a Go control plane around worker-local llama-swap instances.
 ```text
 client
   -> gateway /v1/chat/completions
-    -> scheduler chooses a worker by model, tag, artifact readiness, running
-       model state, active request count, and max_loaded policy
+    -> placement chooses a worker by model, tag, artifact readiness, running
+       model state, active request count, and replica policy
     -> gateway proxies request to worker llama-swap
       -> llama-swap starts/switches local runtime command from rendered config
         -> vLLM, SGLang, or llama.cpp runtime wrapper
@@ -44,9 +44,14 @@ JSONL files for request accounting and worker events.
   models, warm model, worker defaults, and tag-level concurrency.
 - `running_model`: llama-swap reported model state, usually `loading` or
   `ready`.
-- `min_loaded`: target floor for loaded replicas.
-- `max_loaded`: loaded replica ceiling. If omitted, it effectively equals
-  `min_loaded`.
+- `min_loaded`: target floor for ready replicas. The async control loop tries
+  to satisfy it when capacity allows.
+- `max_loaded`: optional hard ceiling. When omitted, Placement treats the
+  ceiling as automatic and bounded by eligible workers, other models'
+  `min_loaded`, and priority protection.
+- `min_loaded=0`: opportunity-cache model. It is not proactively protected, but
+  loaded replicas can remain while capacity is spare and are preferred eviction
+  candidates when another model needs capacity.
 - `warm_when_idle`: tag policy model preloaded through rendered llama-swap
   startup hooks. It can still be unloaded if policy and traffic justify it.
 
@@ -73,16 +78,26 @@ JSONL files for request accounting and worker events.
   - Transformers-style `image`, `video`, and `audio` content parts are converted
     to OpenAI-style URL objects for SGLang compatibility.
 
+- `internal/gateway/placement.go`
+  - Owns request placement and async control-action planning.
+  - Request placement only returns workers that can handle the current request.
+  - Starting/loading runtimes count as occupied but are not routable.
+  - Omitted `max_loaded` is treated as an automatic ceiling bounded by eligible
+    workers and protected model floors.
+  - `min_loaded=0` models behave as opportunity cache: they can remain loaded
+    while capacity is spare, and are preferred eviction candidates when another
+    model needs capacity.
+
 - `internal/gateway/scheduler.go`
-  - Picks a worker for a model.
-  - Requires healthy worker, allowed tag policy, ready artifact, and not excluded
-    by an earlier failed dispatch attempt.
-  - Prefers idle workers when loading additional replicas is useful; otherwise
-    prefers already-running ready models with lower active request counts.
+  - Compatibility adapter over Placement.
+  - Keeps the older `Pick` and `PickDecision` interface for callers while
+    placement logic lives in `placement.go`.
 
 - `internal/gateway/limits.go`
   - Keyed in-memory queue/concurrency limiter.
   - Used for model, tag, and worker gates.
+  - `AcquireWithStats` reports admitted, admitted-after-wait, queue-full, and
+    queue-timeout outcomes with wait time and active/queued depth at admission.
 
 - `internal/gateway/workers.go`
   - In-memory worker registry.
@@ -91,8 +106,9 @@ JSONL files for request accounting and worker events.
 
 - `internal/gateway/reconcile.go`
   - Loaded-replica reconciler.
-  - Unloads excess idle replicas over `max_loaded`.
-  - Can unload a cold idle model to free a worker for an underloaded hot model.
+  - Unloads excess idle replicas over explicit hard `max_loaded`.
+  - Executes Placement control actions to free capacity for models below
+    `min_loaded`.
   - Records gateway-initiated unload success/failure as worker events.
 
 - `internal/gateway/request_log.go` and `request_log_parse.go`
@@ -146,6 +162,13 @@ JSONL files for request accounting and worker events.
   - Downloads artifacts from `oss.base_url`.
   - Verifies CRC64 ECMA and writes marker files.
   - Emits progress callbacks for download progress.
+  - Uses shared `flock` locks under `<model_root>/.locks` so workers sharing a
+    model root do not download or install the same artifact concurrently.
+  - Reuses a matching source artifact already present at
+    `<model_root>/<basename(artifact.object)>` before downloading.
+  - Persists downloaded source artifacts at
+    `<model_root>/<basename(artifact.object)>`; model directories still get
+    their own installed files and `.llm-agent-artifact.json` marker.
 
 - `internal/agent/render.go`
   - Renders local llama-swap config.
@@ -176,7 +199,9 @@ Gateway config:
 - `models.<name>.run` is the command rendered into llama-swap config.
 - `models.<name>.check_endpoint` should be set for runtimes whose health route
   is not `/health`, for example SGLang `/model_info`.
-- `models.<name>.max_loaded` omitted means `min_loaded`.
+- `models.<name>.max_loaded` omitted means automatic expansion bounded by
+  eligible workers, protected `min_loaded` floors, and priority policy. Set it
+  explicitly to impose a hard ceiling.
 - `max_queue` omitted means no queueing for that gate. Existing limiter semantics
   should be checked before changing this behavior.
 - Tag policies are the only source of which workers can install/run which
@@ -233,9 +258,15 @@ It can:
 
 - create `/opt/llmswap` directories;
 - install base apt packages, uv, optional Tailscale, and supervisor config;
+- run a single stage with `--only base|runtime|agent|supervisor|tailscale`
+  without replaying the full bootstrap;
+- when a Tailscale auth key is provided, write a supervisor-managed
+  `llmswap-tailscaled` program before running `tailscale up`;
 - create uv-managed Python venvs for vLLM and SGLang using Python 3.12 by
   default;
 - install torch for vLLM with CUDA-aware PyTorch index selection;
+- install vLLM with the `audio` extra by default (`vllm[audio]`) so PyAV and
+  other audio parser dependencies are available;
 - install SGLang and patch MiniCPMV4.6 config compatibility;
 - install prebuilt llama.cpp CUDA runtime archives from OSS;
 - write wrappers into `/opt/llmswap/bin`;
@@ -245,6 +276,7 @@ It can:
 Important env vars:
 
 - `LLMSWAP_ROOT`
+- `LLMSWAP_ONLY`
 - `LLMSWAP_RUNTIME`
 - `LLMSWAP_CUDA_VERSION`
 - `LLMSWAP_AGENT_ID`
@@ -270,8 +302,9 @@ Important env vars:
 
 - `llamacpp.server [MODEL_PATH] [args...]`
   - Wraps `llama-server`, sets `LD_LIBRARY_PATH` to the packaged llama.cpp bin
-    dir, maps a leading positional model path to `-m`, and applies default host
-    and port if not already supplied.
+    and lib dirs plus common CUDA/NCCL library dirs, maps a leading positional
+    model path to `-m`, and applies default host and port if not already
+    supplied.
   - llama.cpp only supports GGUF models. Do not route HF/AWQ directories through
     llama.cpp.
 
@@ -279,6 +312,34 @@ Important env vars:
 
 Gateway structured stdout logs include scheduler decisions, requests, queue
 events, agent events, and log write errors.
+
+Scheduler decision logs include the selected reason, ready replica count,
+occupied replica count, effective `max_loaded`, and a compact candidate list.
+The important reasons are:
+
+- `ready_idle`: selected an already-ready model with no active gateway request.
+- `ready_busy`: selected a ready model because the loaded ceiling is satisfied.
+- `ready_busy_scale_out`: selected a ready model while scale-out may be useful;
+  the current request still routes to ready.
+- `same_model_loading`: legacy reason name kept in code for compatibility;
+  non-ready same-model runtimes are not routable candidates.
+- `empty_scale_out` and `switch_scale_out`: only possible when there is no ready
+  same-model replica for the current request path.
+
+Queue observation logs use `event=queue_observation`. They are emitted for
+configured model, tag, and worker gates and include:
+
+- `result`: `admitted`, `admitted_after_wait`, `queue_full`, or
+  `queue_timeout`.
+- `wait_ms`, `active`, `queued`, `max_concurrency`, and `max_queue`.
+- `ready_replicas`, `occupied_replicas`, and effective `max_loaded`.
+
+Client-facing queue errors currently use OpenAI error code `queue_full` for
+both full and timeout cases. Internal logs and metrics still distinguish
+`queue_full` from `queue_timeout`. Future scale-out logic should use recent
+`admitted_after_wait`, `queue_full`, `queue_timeout`, p95 `wait_ms`, ready
+replicas, occupied replicas, and `max_loaded` rather than expanding on a single
+burst.
 
 Persistent gateway files:
 
@@ -298,6 +359,16 @@ UI routes:
 UI authentication uses the agent token. `/ui?token=<agent-token>` sets an
 HTTP-only cookie scoped to `/ui`.
 
+## Placement Rollout Notes
+
+- Requests route only to ready workers for the requested model.
+- Starting/loading workers are visible as occupied replicas but do not receive
+  current requests.
+- Omitted `max_loaded` now means automatic expansion rather than `min_loaded`.
+  Use explicit `max_loaded` to cap expensive models.
+- `min_loaded=0` models behave as opportunity cache and can remain loaded until
+  capacity is needed elsewhere.
+
 ## Known Compatibility Notes
 
 - SGLang-backed models may reject `top_k: 0`; gateway normalizes it to `-1`.
@@ -307,6 +378,19 @@ HTTP-only cookie scoped to `/ui`.
   `scripts/install-worker.sh`.
 - vLLM and SGLang compatibility for specific VL/AWQ models can depend on
   upstream transformers, torch, torchcodec, ffmpeg, and CUDA shared libraries.
+- MiniCPM-o audio AWQ models such as `MiniCPM-PawSense-Audio` are not fully
+  supported by SGLang 0.5.13 OpenAI serving in this project. Worker2 testing
+  showed these blockers:
+  - system `ffmpeg`/`libavdevice.so.58` and Python `librosa` are required for
+    the model processor path;
+  - SGLang native MiniCPMO initializes vision even with `init_vision=false` and
+    is incompatible with the model text backbone weights;
+  - `--model-impl transformers` can load after excluding fp16 modules from AWQ
+    (`lm_head`, `apm`, `audio_projection_layer`) and ignoring disabled vision
+    weights, but generation still fails because `MiniCPMO.forward()` requires a
+    remote-code `data` argument that SGLang's generic OpenAI path does not pass.
+  Use the model README's `AutoAWQForCausalLM.from_quantized(...)` flow or a
+  custom runtime server unless upstream SGLang adds native support.
 - llama.cpp CUDA runtime archives require matching CUDA runtime libraries in
   `LD_LIBRARY_PATH`; the installed wrappers set this for packaged binaries.
 
@@ -340,4 +424,3 @@ go test ./...
   llama-swap URLs.
 - Do not hide model lifecycle events. They are needed to debug model switching,
   unload, download, and restart behavior.
-

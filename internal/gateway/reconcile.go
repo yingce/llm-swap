@@ -72,7 +72,21 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			excess--
 		}
 	}
-	outErr = errors.Join(outErr, r.unloadColdModelsForUnderloadedHotModels(ctx, now, workers, active))
+	placement := Placement{Config: r.Config, Workers: r.Workers, Access: r.Access}
+	for _, action := range placement.PlanControlActions(now) {
+		if action.Type != ControlActionUnload {
+			continue
+		}
+		if active[action.Worker.ID] > 0 {
+			continue
+		}
+		if err := r.Client.Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+			r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_error", err)
+			outErr = errors.Join(outErr, err)
+			continue
+		}
+		r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_done", nil)
+	}
 	return outErr
 }
 

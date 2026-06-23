@@ -46,9 +46,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	baseLogEntry := requestLogEntryFromBody(requestID, model, body)
 	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
 	defer cancelLimit()
-	modelLimitRelease, err := s.acquireLimit(limitCtx, "model:"+model, modelCfg.MaxConcurrency, modelCfg.MaxQueue)
+	modelLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "model", "model:"+model, modelCfg.MaxConcurrency, modelCfg.MaxQueue, s.replicaStats(model, time.Now()))
 	if err != nil {
-		s.observeQueueError(model, err)
 		writeQueueError(w, err)
 		return
 	}
@@ -63,32 +62,31 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		now := time.Now()
-		worker, err := (Scheduler{Config: s.config, Workers: s.workers, Access: s.access}).Pick(model, now, exclude)
+		decision, err := (Scheduler{Config: s.config, Workers: s.workers, Access: s.access}).PickDecision(model, now, exclude)
 		if err != nil {
 			break
 		}
+		worker := decision.Worker
 		exclude[worker.ID] = true
 
 		tag := selectedWorkerTag(s.config, worker, model)
 		policy, _ := tagPolicy(s.config, tag)
-		tagLimitRelease, err := s.acquireLimit(limitCtx, "tag:"+tag, policy.MaxConcurrency, policy.MaxQueue)
+		tagLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "tag", "tag:"+tag, policy.MaxConcurrency, policy.MaxQueue, replicaStatsFromDecision(decision))
 		if err != nil {
 			if errors.Is(err, ErrQueueFull) {
 				lastQueueErr = err
 				continue
 			}
-			s.observeQueueError(model, err)
 			writeQueueError(w, err)
 			return
 		}
-		workerLimitRelease, err := s.acquireLimit(limitCtx, "worker:"+worker.ID, policy.WorkerDefaults.MaxConcurrency, policy.WorkerDefaults.MaxQueue)
+		workerLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "worker", "worker:"+worker.ID, policy.WorkerDefaults.MaxConcurrency, policy.WorkerDefaults.MaxQueue, replicaStatsFromDecision(decision))
 		if err != nil {
 			tagLimitRelease()
 			if errors.Is(err, ErrQueueFull) {
 				lastQueueErr = err
 				continue
 			}
-			s.observeQueueError(model, err)
 			writeQueueError(w, err)
 			return
 		}
@@ -100,10 +98,16 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		s.logEvent("scheduler_decision", map[string]any{
-			"request_id": requestID,
-			"model":      model,
-			"worker_id":  worker.ID,
-			"tag":        tag,
+			"request_id":        requestID,
+			"model":             model,
+			"worker_id":         worker.ID,
+			"tag":               tag,
+			"reason":            decision.Reason,
+			"ready_replicas":    decision.ReadyReplicas,
+			"occupied_replicas": decision.OccupiedReplicas,
+			"max_loaded":        decision.MaxLoaded,
+			"max_loaded_auto":   decision.MaxLoadedAuto,
+			"candidates":        decision.Candidates,
 		})
 		accountingRelease := s.accounting.Acquire(requestID, model, tag, worker.ID)
 		metricsRelease := s.metrics.AcquireActiveRequest(worker.ID, model)
@@ -190,6 +194,58 @@ func (s *Server) acquireLimit(ctx context.Context, key string, maxActive, maxQue
 		return func() {}, nil
 	}
 	return s.limiter.Acquire(ctx, key, maxActive, maxQueue)
+}
+
+func (s *Server) acquireObservedLimit(ctx context.Context, requestID, model, keyType, key string, maxActive, maxQueue int, replicas queueReplicaStats) (func(), QueueAcquireStats, error) {
+	if s.limiter == nil {
+		return func() {}, QueueAcquireStats{Result: QueueResultAdmitted, MaxConcurrency: maxActive, MaxQueue: maxQueue}, nil
+	}
+	release, stats, err := s.limiter.AcquireWithStats(ctx, key, maxActive, maxQueue)
+	if maxActive > 0 || err != nil || stats.Waited {
+		s.observeQueue(model, requestID, keyType, key, stats, replicas)
+	}
+	return release, stats, err
+}
+
+type queueReplicaStats struct {
+	readyReplicas    int
+	occupiedReplicas int
+	maxLoaded        int
+}
+
+func replicaStatsFromDecision(decision ScheduleDecision) queueReplicaStats {
+	return queueReplicaStats{
+		readyReplicas:    decision.ReadyReplicas,
+		occupiedReplicas: decision.OccupiedReplicas,
+		maxLoaded:        decision.MaxLoaded,
+	}
+}
+
+func (s *Server) replicaStats(model string, now time.Time) queueReplicaStats {
+	out := queueReplicaStats{}
+	modelCfg, ok := s.config.Models[model]
+	if ok {
+		out.maxLoaded = modelCfg.EffectiveMaxLoaded()
+	}
+	if s.workers == nil {
+		return out
+	}
+	for _, worker := range s.workers.Snapshot(now) {
+		if !s.workers.Healthy(worker.ID, now) {
+			continue
+		}
+		if !workerAllowsModel(s.config, worker, model) || !artifactReady(worker, model) {
+			continue
+		}
+		state, running := runningModelState(worker, model)
+		if running {
+			out.occupiedReplicas++
+		}
+		if strings.EqualFold(state, "ready") {
+			out.readyReplicas++
+		}
+	}
+	return out
 }
 
 func normalizeProxyRequestBody(body []byte, modelCfg config.Model) []byte {
@@ -298,12 +354,11 @@ func isSGLangModel(modelCfg config.Model) bool {
 }
 
 func writeQueueError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrQueueTimeout):
-		protocol.WriteOpenAIError(w, http.StatusTooManyRequests, "queue_timeout", "request waited longer than the configured queue timeout")
-	default:
-		protocol.WriteOpenAIError(w, http.StatusTooManyRequests, "queue_full", "request queue is full")
+	message := "request queue is full"
+	if errors.Is(err, ErrQueueTimeout) {
+		message = "request waited longer than the configured queue timeout"
 	}
+	protocol.WriteOpenAIError(w, http.StatusTooManyRequests, "queue_full", message)
 }
 
 func ensureRequestID(r *http.Request) string {
@@ -333,6 +388,32 @@ func (s *Server) observeQueueError(model string, err error) {
 		return
 	}
 	s.metrics.ObserveQueueEvent(model, "queue_full")
+}
+
+func (s *Server) observeQueue(model, requestID, keyType, key string, stats QueueAcquireStats, replicas queueReplicaStats) {
+	if stats.Result == "" {
+		return
+	}
+	wait := time.Duration(stats.WaitMS) * time.Millisecond
+	if s.metrics != nil {
+		s.metrics.ObserveQueueWait(model, keyType, stats.Result, wait)
+	}
+	s.logEvent("queue_observation", map[string]any{
+		"request_id":        requestID,
+		"model":             model,
+		"key_type":          keyType,
+		"key":               key,
+		"result":            stats.Result,
+		"wait_ms":           stats.WaitMS,
+		"waited":            stats.Waited,
+		"active":            stats.ActiveBefore,
+		"queued":            stats.QueuedBefore,
+		"max_concurrency":   stats.MaxConcurrency,
+		"max_queue":         stats.MaxQueue,
+		"ready_replicas":    replicas.readyReplicas,
+		"occupied_replicas": replicas.occupiedReplicas,
+		"max_loaded":        replicas.maxLoaded,
+	})
 }
 
 func (s *Server) logEvent(event string, fields map[string]any) {

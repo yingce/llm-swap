@@ -991,7 +991,6 @@ func TestLoadedReconcilerKeepsOpportunityCacheWhenNoModelNeedsCapacity(t *testin
 			{Model: "cold", State: "ready"},
 		},
 	}, now)
-	client := &fakeLlamaSwapClient{}
 	reconciler := LoadedReconciler{
 		Config:  cfg,
 		Workers: reg,

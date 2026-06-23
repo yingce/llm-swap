@@ -4,6 +4,7 @@ set -euo pipefail
 LLMSWAP_ROOT="${LLMSWAP_ROOT:-/opt/llmswap}"
 LLMSWAP_PYTHON="${LLMSWAP_PYTHON:-3.12}"
 LLMSWAP_RUNTIME="${LLMSWAP_RUNTIME:-all}"
+LLMSWAP_ONLY="${LLMSWAP_ONLY:-all}"
 LLMSWAP_INSTALL_TAILSCALE="${LLMSWAP_INSTALL_TAILSCALE:-1}"
 LLMSWAP_INSTALL_SUPERVISOR="${LLMSWAP_INSTALL_SUPERVISOR:-1}"
 LLMSWAP_DRY_RUN="${LLMSWAP_DRY_RUN:-0}"
@@ -29,7 +30,7 @@ LLMSWAP_LLAMA_CPP_BASE_URL="${LLMSWAP_LLAMA_CPP_BASE_URL:-http://llmfs-bj.oss-cn
 LLMSWAP_LLAMA_CPP_CUDA="${LLMSWAP_LLAMA_CPP_CUDA:-auto}"
 LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH:-sm89}"
 LLMSWAP_RUNTIME_CACHE_DIR="${LLMSWAP_RUNTIME_CACHE_DIR:-$LLMSWAP_ROOT/cache/runtimes}"
-LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-vllm}"
+LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-vllm[audio]}"
 LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE:-sglang}"
 UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 export UV_CACHE_DIR="$LLMSWAP_UV_CACHE_DIR"
@@ -46,6 +47,8 @@ Usage: install-worker.sh [options]
 Options:
   --dry-run                 Print commands without executing them.
   --root PATH               Installation root. Default: /opt/llmswap.
+  --only all|base|runtime|agent|supervisor|tailscale
+                            Run only one install stage. Default: all.
   --runtime all|vllm|sglang|llamacpp
                             Runtime environments to install.
   --cuda-version X.Y        Override detected CUDA version, e.g. 12.4, 12.8, 13.0.
@@ -83,6 +86,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --runtime)
       LLMSWAP_RUNTIME="$2"
+      shift 2
+      ;;
+    --only)
+      LLMSWAP_ONLY="$2"
       shift 2
       ;;
     --cuda-version)
@@ -238,17 +245,50 @@ runtime_enabled() {
   esac
 }
 
-install_base_packages() {
+stage_enabled() {
+  local stage="$1"
+  case "$LLMSWAP_ONLY" in
+    all) return 0 ;;
+    "$stage") return 0 ;;
+    base|runtime|agent|supervisor|tailscale) return 1 ;;
+    *)
+      echo "unsupported --only '$LLMSWAP_ONLY'; use all, base, runtime, agent, supervisor, or tailscale" >&2
+      exit 1
+      ;;
+  esac
+}
+
+print_uv_info() {
   printf 'INFO uv_cache_dir=%s uv_python_install_dir=%s uv_link_mode=%s\n' "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$UV_LINK_MODE"
   if [[ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ]]; then
     printf 'INFO uv_python_install_mirror=%s\n' "$UV_PYTHON_INSTALL_MIRROR"
   fi
+}
+
+ensure_runtime_dirs() {
   run mkdir -p "$LLMSWAP_ROOT/bin" "$LLMSWAP_ROOT/models" "$LLMSWAP_ROOT/venvs" "$LLMSWAP_ROOT/logs" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$LLMSWAP_RUNTIME_CACHE_DIR"
+}
+
+ensure_agent_dirs() {
+  run mkdir -p "$LLMSWAP_ROOT/bin" "$LLMSWAP_ROOT/logs"
+}
+
+ensure_supervisor_dirs() {
+  run mkdir -p "$LLMSWAP_ROOT/logs"
+}
+
+install_base_packages() {
+  print_uv_info
+  ensure_runtime_dirs
   if command -v apt-get >/dev/null 2>&1 || [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
+    local packages=(ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git ffmpeg)
+    if [[ "$LLMSWAP_DRY_RUN" == "1" ]] || apt-cache show libavdevice58 >/dev/null 2>&1; then
+      packages+=(libavdevice58)
+    fi
     run apt-get update
-    run apt-get install -y ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git
+    run apt-get install -y "${packages[@]}"
   else
-    echo "apt-get not found; install ca-certificates, curl, python3, python3-venv, python3-dev, python3-pip, supervisor, git manually" >&2
+    echo "apt-get not found; install ca-certificates, curl, python3, python3-venv, python3-dev, python3-pip, supervisor, git, and ffmpeg manually" >&2
   fi
 }
 
@@ -282,11 +322,38 @@ install_tailscale() {
     return 0
   fi
 
+  configure_tailscale_supervisor
+  ensure_supervisord
+  run supervisorctl reread
+  run supervisorctl update llmswap-tailscaled
+  run supervisorctl start llmswap-tailscaled
+
   local args=(tailscale up --auth-key "$LLMSWAP_TAILSCALE_AUTHKEY")
   if [[ -n "$LLMSWAP_TAILSCALE_HOSTNAME" ]]; then
     args+=(--hostname "$LLMSWAP_TAILSCALE_HOSTNAME")
   fi
   run "${args[@]}"
+}
+
+configure_tailscale_supervisor() {
+  local tailscaled_bin
+  tailscaled_bin="$(command -v tailscaled 2>/dev/null || true)"
+  if [[ -z "$tailscaled_bin" ]]; then
+    tailscaled_bin="/usr/sbin/tailscaled"
+  fi
+  run mkdir -p "$LLMSWAP_ROOT/tailscale" "$LLMSWAP_ROOT/logs" /run/tailscale
+  local conf
+  conf="[program:llmswap-tailscaled]
+command=$tailscaled_bin --state=$LLMSWAP_ROOT/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641
+directory=$LLMSWAP_ROOT
+autostart=true
+autorestart=true
+startsecs=3
+stopasgroup=true
+killasgroup=true
+stdout_logfile=$LLMSWAP_ROOT/logs/tailscaled.out.log
+stderr_logfile=$LLMSWAP_ROOT/logs/tailscaled.err.log"
+  write_file /etc/supervisor/conf.d/llmswap-tailscaled.conf "$conf"
 }
 
 install_torch() {
@@ -296,12 +363,18 @@ install_torch() {
   run uv pip install --python "$python" torch torchvision torchaudio --index-url "$index_url"
 }
 
+install_multimodal_audio_deps() {
+  local python="$1"
+  run uv pip install --python "$python" librosa soundfile torchcodec av
+}
+
 install_vllm() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/vllm"
   run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
   install_torch "$venv/bin/python" "$backend"
   run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE" --torch-backend=auto
+  install_multimodal_audio_deps "$venv/bin/python"
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/vllm.server" "$venv/bin/python" vllm
   write_python_wrapper "$LLMSWAP_ROOT/bin/vllm-python" "$venv/bin/python"
 }
@@ -312,6 +385,7 @@ install_sglang() {
   local check_script="import torch, sglang; print('torch', torch.__version__); print('torch_cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); print('sglang', sglang.__version__)"
   run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
   run uv pip install --python "$venv/bin/python" --prerelease=allow "$LLMSWAP_SGLANG_PACKAGE"
+  install_multimodal_audio_deps "$venv/bin/python"
   patch_sglang_minicpmv46_config "$venv/bin/python"
   printf 'INFO sglang_resolved_runtime backend_hint=%s\n' "$backend"
   run "$venv/bin/python" -c "$check_script"
@@ -321,8 +395,10 @@ install_sglang() {
 
 patch_sglang_minicpmv46_config() {
   local python="$1"
-  local patch_script
-  patch_script='from pathlib import Path
+  if [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
+    cat <<EOF
+RUN $python - <<'PY'
+from pathlib import Path
 import py_compile
 import sglang
 
@@ -340,8 +416,33 @@ elif old in s:
     print("INFO sglang_minicpmv46_patch=applied")
 else:
     raise SystemExit(f"unsupported SGLang MiniCPMV4_6Config layout: {path}")
-py_compile.compile(str(path), doraise=True)'
-  run "$python" -c "$patch_script"
+py_compile.compile(str(path), doraise=True)
+PY
+EOF
+    return 0
+  fi
+
+  "$python" - <<'PY'
+from pathlib import Path
+import py_compile
+import sglang
+
+path = Path(sglang.__file__).parent / "srt" / "configs" / "minicpmv4_6.py"
+if not path.exists():
+    print("INFO sglang_minicpmv46_patch=skip_missing")
+    raise SystemExit(0)
+s = path.read_text()
+old = "        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)\n"
+new = "        kwargs.pop(\"hidden_size\", None)\n        kwargs.pop(\"vocab_size\", None)\n        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)\n"
+if new in s:
+    print("INFO sglang_minicpmv46_patch=already_applied")
+elif old in s:
+    path.write_text(s.replace(old, new, 1))
+    print("INFO sglang_minicpmv46_patch=applied")
+else:
+    raise SystemExit(f"unsupported SGLang MiniCPMV4_6Config layout: {path}")
+py_compile.compile(str(path), doraise=True)
+PY
 }
 
 llamacpp_cuda_for_cuda() {
@@ -405,6 +506,17 @@ write_llamacpp_bin_wrapper() {
   local bin_dir="$2"
   local executable="$3"
   local content
+  local ld_setup
+  ld_setup='LLAMACPP_LIBS=""
+for dir in "$LLAMACPP_BIN" "$LLAMACPP_BIN/../lib" /usr/local/cuda/lib64 /usr/local/cuda-*/lib64 /usr/lib/x86_64-linux-gnu; do
+  if [[ -d "$dir" ]]; then
+    LLAMACPP_LIBS="${LLAMACPP_LIBS:+$LLAMACPP_LIBS:}$dir"
+  fi
+done
+if [[ -n "${LLMSWAP_LLAMACPP_EXTRA_LD_LIBRARY_PATH:-}" ]]; then
+  LLAMACPP_LIBS="${LLAMACPP_LIBS:+$LLAMACPP_LIBS:}$LLMSWAP_LLAMACPP_EXTRA_LD_LIBRARY_PATH"
+fi
+export LD_LIBRARY_PATH="$LLAMACPP_LIBS:${LD_LIBRARY_PATH:-}"'
   if [[ "$executable" == "llamacpp.server" ]]; then
     content="#!/usr/bin/env bash
 set -euo pipefail
@@ -416,7 +528,7 @@ if [[ -z \"\$MODEL_PATH\" && \$# -gt 0 && \"\$1\" != -* ]]; then
 fi
 HOST=\"\${HOST:-0.0.0.0}\"
 PORT=\"\${PORT:-8080}\"
-export LD_LIBRARY_PATH=\"\$LLAMACPP_BIN:\${LD_LIBRARY_PATH:-}\"
+$ld_setup
 SERVER_ARGS=()
 has_host=0
 has_port=0
@@ -440,7 +552,7 @@ exec \"\$LLAMACPP_BIN/llama-server\" \"\$@\" \"\${SERVER_ARGS[@]}\""
     content="#!/usr/bin/env bash
 set -euo pipefail
 LLAMACPP_BIN=\"$bin_dir\"
-export LD_LIBRARY_PATH=\"\$LLAMACPP_BIN:\${LD_LIBRARY_PATH:-}\"
+$ld_setup
 exec \"\$LLAMACPP_BIN/$executable\" \"\$@\""
   fi
   run rm -f "$path"
@@ -641,23 +753,45 @@ main() {
   cuda="$(detect_cuda_version)"
   local backend
   backend="$(torch_backend_for_cuda "$cuda")"
-  printf 'INFO cuda_version=%s torch_backend=%s root=%s runtime=%s\n' "$cuda" "$backend" "$LLMSWAP_ROOT" "$LLMSWAP_RUNTIME"
+  printf 'INFO cuda_version=%s torch_backend=%s root=%s runtime=%s only=%s\n' "$cuda" "$backend" "$LLMSWAP_ROOT" "$LLMSWAP_RUNTIME" "$LLMSWAP_ONLY"
 
-  install_base_packages
-  install_uv
-  install_tailscale
-  if runtime_enabled vllm; then
-    install_vllm "$backend"
+  if stage_enabled base; then
+    install_base_packages
+    install_uv
   fi
-  if runtime_enabled sglang; then
-    install_sglang "$backend"
+
+  if stage_enabled tailscale; then
+    install_tailscale
   fi
-  if runtime_enabled llamacpp; then
-    install_llamacpp "$cuda"
+
+  if stage_enabled runtime; then
+    if ! stage_enabled base; then
+      print_uv_info
+      ensure_runtime_dirs
+      install_uv
+    fi
+    if runtime_enabled vllm; then
+      install_vllm "$backend"
+    fi
+    if runtime_enabled sglang; then
+      install_sglang "$backend"
+    fi
+    if runtime_enabled llamacpp; then
+      install_llamacpp "$cuda"
+    fi
   fi
-  initialize_agent_config
-  install_agent_binary
-  configure_supervisor
+
+  if stage_enabled agent; then
+    ensure_agent_dirs
+    initialize_agent_config
+    install_agent_binary
+  fi
+
+  if stage_enabled supervisor; then
+    ensure_supervisor_dirs
+    configure_supervisor
+  fi
+
   printf 'INFO worker install complete\n'
 }
 

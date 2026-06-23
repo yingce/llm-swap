@@ -1,8 +1,6 @@
 package gateway
 
 import (
-	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -16,90 +14,113 @@ type Scheduler struct {
 }
 
 func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (Worker, error) {
-	modelCfg, ok := s.Config.Models[model]
-	if !ok {
-		return Worker{}, fmt.Errorf("unknown model %q", model)
+	decision, err := s.PickDecision(model, now, exclude)
+	if err != nil {
+		return Worker{}, err
 	}
-	if s.Workers == nil {
-		return Worker{}, fmt.Errorf("no healthy worker for model %q", model)
+	return decision.Worker, nil
+}
+
+func (s Scheduler) PickDecision(model string, now time.Time, exclude map[string]bool) (ScheduleDecision, error) {
+	decision, err := (Placement{Config: s.Config, Workers: s.Workers, Access: s.Access}).PickReadyWorker(model, now, exclude)
+	if err != nil {
+		return ScheduleDecision{
+			ReadyReplicas:    decision.ReadyReplicas,
+			OccupiedReplicas: decision.OccupiedReplicas,
+			MaxLoaded:        decision.MaxLoaded,
+			MaxLoadedAuto:    decision.MaxLoadedAuto,
+			Candidates:       scheduleCandidatesFromPlacement(decision.Candidates),
+		}, err
+	}
+	return ScheduleDecision{
+		Worker:           decision.Worker,
+		Reason:           decision.Reason,
+		ReadyReplicas:    decision.ReadyReplicas,
+		OccupiedReplicas: decision.OccupiedReplicas,
+		MaxLoaded:        decision.MaxLoaded,
+		MaxLoadedAuto:    decision.MaxLoadedAuto,
+		Candidates:       scheduleCandidatesFromPlacement(decision.Candidates),
+	}, nil
+}
+
+type ScheduleDecision struct {
+	Worker           Worker
+	Reason           string
+	ReadyReplicas    int
+	OccupiedReplicas int
+	MaxLoaded        int
+	MaxLoadedAuto    bool
+	Candidates       []ScheduleCandidate
+}
+
+type ScheduleCandidate struct {
+	WorkerID       string `json:"worker_id"`
+	Reason         string `json:"reason"`
+	Score          int    `json:"score"`
+	ActiveRequests int    `json:"active_requests"`
+	RunningState   string `json:"running_state,omitempty"`
+	RunningModels  int    `json:"running_models"`
+}
+
+const (
+	scheduleReasonReadyIdle          = "ready_idle"
+	scheduleReasonReadyBusy          = "ready_busy"
+	scheduleReasonReadyBusyScaleOut  = "ready_busy_scale_out"
+	scheduleReasonSameModelLoading   = "same_model_loading"
+	scheduleReasonEmptyScaleOut      = "empty_scale_out"
+	scheduleReasonSwitchScaleOut     = "switch_scale_out"
+	scheduleReasonEmptyColdStart     = "empty_cold_start"
+	scheduleReasonSwitchColdStart    = "switch_cold_start"
+	scheduleReasonMaxLoadedSatisfied = "max_loaded_satisfied"
+)
+
+func scoreScheduleCandidate(worker Worker, state string, runningSameModel bool, canScaleOut bool, targetLoaded bool, readyCount int, activeRequests int) (int, string) {
+	if strings.EqualFold(state, "ready") {
+		if activeRequests == 0 {
+			return 600, scheduleReasonReadyIdle
+		}
+		if canScaleOut {
+			return 100 - activeRequests, scheduleReasonReadyBusyScaleOut
+		}
+		return 500 - activeRequests, scheduleReasonReadyBusy
 	}
 
-	workers := s.Workers.Snapshot(now)
-	active := s.Workers.ActiveSnapshot()
-	loadedCount := 0
-	for _, worker := range workers {
-		if !s.Workers.Healthy(worker.ID, now) {
-			continue
+	if runningSameModel {
+		if readyCount == 0 {
+			return 450 - activeRequests, scheduleReasonSameModelLoading
 		}
-		if !workerAllowsModel(s.Config, worker, model) {
-			continue
-		}
-		if !artifactReady(worker, model) {
-			continue
-		}
-		if runningModelReady(worker, model) {
-			loadedCount++
-		}
+		return 350 - activeRequests, scheduleReasonSameModelLoading
 	}
-	targetLoaded := loadedCount > 0
-	maxLoaded := modelCfg.EffectiveMaxLoaded()
-	shouldLoadIdleReplica := maxLoaded > 0 && loadedCount < maxLoaded
 
-	candidates := make([]scoredWorker, 0)
-	for _, worker := range workers {
-		if exclude != nil && exclude[worker.ID] {
-			continue
+	if canScaleOut {
+		if len(worker.RunningModels) == 0 {
+			return 400 - activeRequests, scheduleReasonEmptyScaleOut
 		}
-		if !s.Workers.Healthy(worker.ID, now) {
-			continue
-		}
-		if !workerAllowsModel(s.Config, worker, model) {
-			continue
-		}
-		if !artifactReady(worker, model) {
-			continue
-		}
-		running := runningModelReady(worker, model)
-		candidates = append(candidates, scoredWorker{
-			worker: worker,
-			score:  workerScore(worker, running, shouldLoadIdleReplica, targetLoaded, active[worker.ID]),
+		return 200 - activeRequests, scheduleReasonSwitchScaleOut
+	}
+
+	if !targetLoaded && len(worker.RunningModels) == 0 {
+		return 100 - activeRequests, scheduleReasonEmptyColdStart
+	}
+	if !targetLoaded {
+		return 50 - activeRequests, scheduleReasonSwitchColdStart
+	}
+	return 0, scheduleReasonMaxLoadedSatisfied
+}
+
+func scheduleCandidatesFromPlacement(in []PlacementCandidate) []ScheduleCandidate {
+	out := make([]ScheduleCandidate, 0, len(in))
+	for _, candidate := range in {
+		out = append(out, ScheduleCandidate{
+			WorkerID:       candidate.WorkerID,
+			Reason:         candidate.Reason,
+			Score:          candidate.Score,
+			ActiveRequests: candidate.ActiveRequests,
+			RunningState:   candidate.RunningState,
+			RunningModels:  candidate.RunningModels,
 		})
 	}
-	if len(candidates) == 0 {
-		return Worker{}, fmt.Errorf("no healthy worker for model %q", model)
-	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].worker.ID < candidates[j].worker.ID
-	})
-	return candidates[0].worker, nil
-}
-
-type scoredWorker struct {
-	worker Worker
-	score  int
-}
-
-func workerScore(worker Worker, running bool, shouldLoadIdleReplica bool, targetLoaded bool, activeRequests int) int {
-	if shouldLoadIdleReplica {
-		if !running && len(worker.RunningModels) == 0 {
-			return 300 - activeRequests
-		}
-		if !running {
-			return 250 - activeRequests
-		}
-		return 200 - activeRequests
-	}
-	if running {
-		return 100 - activeRequests
-	}
-	if !targetLoaded && len(worker.RunningModels) == 0 {
-		return 50 - activeRequests
-	}
-	return 0
+	return out
 }
 
 func workerAllowsModel(cfg config.GatewayConfig, worker Worker, model string) bool {
@@ -130,12 +151,17 @@ func allowedModel(policy config.TagPolicy, model string) bool {
 }
 
 func runningModelReady(worker Worker, model string) bool {
+	state, ok := runningModelState(worker, model)
+	return ok && strings.EqualFold(state, "ready")
+}
+
+func runningModelState(worker Worker, model string) (string, bool) {
 	for _, running := range worker.RunningModels {
-		if running.Model == model && strings.EqualFold(running.State, "ready") {
-			return true
+		if running.Model == model {
+			return strings.ToLower(strings.TrimSpace(running.State)), true
 		}
 	}
-	return false
+	return "", false
 }
 
 func artifactReady(worker Worker, model string) bool {

@@ -295,6 +295,141 @@ func TestInstallArtifactFileWritesBasenameAndMarker(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactReusesExistingSourceFileInModelRoot(t *testing.T) {
+	payload := []byte("model payload already present")
+	crc := crc64String(payload)
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc,
+	}
+	modelRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modelRoot, "model.gguf"), payload, 0o644); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected network request %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen", artifact)
+	if err != nil {
+		t.Fatalf("InstallArtifact() error = %v", err)
+	}
+	if !installed {
+		t.Fatalf("InstallArtifact() installed = false, want true")
+	}
+
+	got, err := os.ReadFile(filepath.Join(modelRoot, "qwen", "model.gguf"))
+	if err != nil {
+		t.Fatalf("read installed model file: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("installed payload = %q, want %q", got, payload)
+	}
+	matches, err := MarkerMatches(filepath.Join(modelRoot, "qwen"), "qwen", artifact)
+	if err != nil {
+		t.Fatalf("MarkerMatches() error = %v", err)
+	}
+	if !matches {
+		t.Fatalf("marker does not match installed artifact")
+	}
+}
+
+func TestInstallArtifactPersistsDownloadedSourceFileInModelRoot(t *testing.T) {
+	payload := []byte("download once keep source")
+	crc := crc64String(payload)
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc,
+	}
+	server := artifactServer(t, payload, crc)
+	defer server.Close()
+	modelRoot := t.TempDir()
+
+	installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen", artifact)
+	if err != nil {
+		t.Fatalf("InstallArtifact() error = %v", err)
+	}
+	if !installed {
+		t.Fatalf("InstallArtifact() installed = false, want true")
+	}
+
+	got, err := os.ReadFile(filepath.Join(modelRoot, "model.gguf"))
+	if err != nil {
+		t.Fatalf("read persisted source artifact: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("persisted source = %q, want payload", got)
+	}
+}
+
+func TestInstallArtifactRechecksMarkerAfterWaitingForLock(t *testing.T) {
+	payload := []byte("installed by another worker")
+	crc := crc64String(payload)
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc,
+	}
+	modelRoot := t.TempDir()
+	modelDir := filepath.Join(modelRoot, "qwen")
+	if err := os.MkdirAll(filepath.Join(modelRoot, ".locks"), 0o755); err != nil {
+		t.Fatalf("create lock dir: %v", err)
+	}
+	lockFile, err := os.OpenFile(filepath.Join(modelRoot, ".locks", artifactLockName("qwen", artifact)+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer lockFile.Close()
+	if err := lockArtifactFile(lockFile); err != nil {
+		t.Fatalf("lock file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected network request %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	resultCh := make(chan struct {
+		installed bool
+		err       error
+	}, 1)
+	go func() {
+		installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, "qwen", artifact)
+		resultCh <- struct {
+			installed bool
+			err       error
+		}{installed: installed, err: err}
+	}()
+
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create model dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "model.gguf"), payload, 0o644); err != nil {
+		t.Fatalf("write installed file: %v", err)
+	}
+	if err := WriteMarker(modelDir, "qwen", artifact); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := unlockArtifactFile(lockFile); err != nil {
+		t.Fatalf("unlock file: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("InstallArtifact() error = %v", result.err)
+		}
+		if result.installed {
+			t.Fatalf("InstallArtifact() installed = true, want false after another worker installed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("InstallArtifact() did not return after lock release")
+	}
+}
+
 func TestInstallArtifactFileMarkerFailurePreservesExistingTarget(t *testing.T) {
 	oldArtifact := config.Artifact{
 		Object:    "models/old.gguf",

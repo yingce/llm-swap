@@ -92,7 +92,7 @@ tag_policies:
 	}
 }
 
-func TestLoadGatewayConfigDefaultsMissingMaxLoadedToMinLoaded(t *testing.T) {
+func TestLoadGatewayConfigTreatsMissingMaxLoadedAsAutomatic(t *testing.T) {
 	raw := `
 oss:
   base_url: https://oss.example.com
@@ -116,8 +116,11 @@ tag_policies:
 	if err != nil {
 		t.Fatalf("LoadGateway returned error: %v", err)
 	}
-	if got := cfg.Models["qwen"].EffectiveMaxLoaded(); got != 1 {
-		t.Fatalf("effective max_loaded = %d, want 1", got)
+	if cfg.Models["qwen"].MaxLoadedSet {
+		t.Fatalf("MaxLoadedSet = true, want false")
+	}
+	if got := cfg.Models["qwen"].HardMaxLoaded(); got != 0 {
+		t.Fatalf("HardMaxLoaded = %d, want 0 for automatic", got)
 	}
 }
 

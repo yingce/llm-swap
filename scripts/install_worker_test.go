@@ -14,7 +14,8 @@ func TestInstallWorkerDryRunUsesCuda124TorchIndexAndSupervisor(t *testing.T) {
 
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm --torch-backend=auto")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm[audio] --torch-backend=auto")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python librosa soundfile torchcodec av")
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
 	assertContains(t, out, "sglang_minicpmv46_patch=applied")
@@ -28,6 +29,7 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git")
+	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git ffmpeg libavdevice58")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "command=/opt/llmswap/bin/llama-swap -config /opt/llmswap/llama-swap.yaml -listen :6006 -watch-config")
 	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/llama-swap.out.log")
@@ -55,7 +57,10 @@ func TestInstallWorkerDryRunChecksSGLangResolvedCudaRuntime(t *testing.T) {
 	out := runInstallWorker(t, "13.0", "--runtime", "sglang")
 
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python librosa soundfile torchcodec av")
 	assertContains(t, out, `kwargs.pop(\"hidden_size\", None)`)
+	assertContains(t, out, `/opt/llmswap/venvs/sglang/bin/python - <<'PY'`)
+	assertNotContains(t, out, "/opt/llmswap/venvs/sglang/bin/python -c from pathlib")
 	assertContains(t, out, `/opt/llmswap/venvs/sglang/bin/python -c import torch, sglang; print('torch', torch.__version__); print('torch_cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); print('sglang', sglang.__version__)`)
 }
 
@@ -102,6 +107,53 @@ func TestInstallWorkerCanSkipTailscaleAndSelectRuntime(t *testing.T) {
 	assertNotContains(t, out, "tailscale")
 }
 
+func TestInstallWorkerOnlyRuntimeInstallsSelectedRuntimeWithoutBaseAgentOrSupervisor(t *testing.T) {
+	out := runInstallWorker(t, "13.0", "--only", "runtime", "--runtime", "sglang")
+
+	assertContains(t, out, "INFO cuda_version=13.0 torch_backend=cu130 root=/opt/llmswap runtime=sglang only=runtime")
+	assertContains(t, out, "RUN mkdir -p /opt/llmswap/bin /opt/llmswap/models /opt/llmswap/venvs /opt/llmswap/logs /opt/llmswap/cache/uv /opt/llmswap/python")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/sglang.server")
+	assertNotContains(t, out, "apt-get update")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
+	assertNotContains(t, out, "tailscale")
+	assertNotContains(t, out, "WRITE /opt/llmswap/agent.yaml")
+	assertNotContains(t, out, "go build -o /opt/llmswap/bin/llm-swap-agent")
+	assertNotContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
+	assertNotContains(t, out, "supervisorctl")
+}
+
+func TestInstallWorkerOnlyAgentSkipsRuntimeAndSupervisor(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--only", "agent", "--agent-binary", "/tmp/llm-swap-agent")
+
+	assertContains(t, out, "INFO cuda_version=12.8 torch_backend=cu128 root=/opt/llmswap runtime=all only=agent")
+	assertContains(t, out, "RUN mkdir -p /opt/llmswap/bin /opt/llmswap/logs")
+	assertContains(t, out, "WRITE /opt/llmswap/agent.yaml")
+	assertContains(t, out, "install -m 0755 /tmp/llm-swap-agent /opt/llmswap/bin/llm-swap-agent")
+	assertNotContains(t, out, "apt-get update")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang")
+	assertNotContains(t, out, "tailscale")
+	assertNotContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
+}
+
+func TestInstallWorkerOnlySupervisorSkipsRuntimeAndAgent(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--only", "supervisor")
+
+	assertContains(t, out, "INFO cuda_version=12.8 torch_backend=cu128 root=/opt/llmswap runtime=all only=supervisor")
+	assertContains(t, out, "RUN mkdir -p /opt/llmswap/logs")
+	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
+	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
+	assertContains(t, out, "supervisorctl reread")
+	assertNotContains(t, out, "apt-get update")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang")
+	assertNotContains(t, out, "WRITE /opt/llmswap/agent.yaml")
+	assertNotContains(t, out, "go build -o /opt/llmswap/bin/llm-swap-agent")
+	assertNotContains(t, out, "tailscale")
+}
+
 func TestInstallWorkerDryRunStartsTailscaleWhenAuthKeyProvidedAndConfiguresSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8",
 		"--runtime", "llamacpp",
@@ -109,6 +161,11 @@ func TestInstallWorkerDryRunStartsTailscaleWhenAuthKeyProvidedAndConfiguresSuper
 		"--tailscale-hostname", "worker-01",
 	)
 
+	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-tailscaled.conf")
+	assertContains(t, out, "command=/usr/sbin/tailscaled --state=/opt/llmswap/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641")
+	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/tailscaled.out.log")
+	assertContains(t, out, "supervisorctl update llmswap-tailscaled")
+	assertContains(t, out, "supervisorctl start llmswap-tailscaled")
 	assertContains(t, out, "tailscale up --auth-key tskey-auth-test --hostname worker-01")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
@@ -121,6 +178,7 @@ func TestInstallWorkerDryRunDoesNotStartTailscaleWithoutAuthKey(t *testing.T) {
 
 	assertContains(t, out, "INFO TAILSCALE_AUTHKEY not set; not running tailscale up.")
 	assertNotContains(t, out, "tailscale up --auth-key")
+	assertNotContains(t, out, "llmswap-tailscaled.conf")
 }
 
 func TestInstallWorkerDryRunInstallsLlamaCppRuntimeAndBinWrappers(t *testing.T) {
@@ -131,6 +189,9 @@ func TestInstallWorkerDryRunInstallsLlamaCppRuntimeAndBinWrappers(t *testing.T) 
 	assertContains(t, out, "tar -C /opt/llmswap/runtimes/llamacpp/cu128-sm89 -xzf /opt/llmswap/cache/runtimes/llamacpp-linux-cu128-sm89.tar.gz")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llamacpp.server")
 	assertContains(t, out, "LLAMACPP_BIN=\"/opt/llmswap/runtimes/llamacpp/cu128-sm89/bin\"")
+	assertContains(t, out, "for dir in \"$LLAMACPP_BIN\" \"$LLAMACPP_BIN/../lib\" /usr/local/cuda/lib64 /usr/local/cuda-*/lib64 /usr/lib/x86_64-linux-gnu; do")
+	assertContains(t, out, "LLAMACPP_LIBS=\"${LLAMACPP_LIBS:+$LLAMACPP_LIBS:}$dir\"")
+	assertContains(t, out, "LLMSWAP_LLAMACPP_EXTRA_LD_LIBRARY_PATH")
 	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" -m \"$MODEL_PATH\" \"$@\" \"${SERVER_ARGS[@]}\"")
 	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" \"$@\" \"${SERVER_ARGS[@]}\"")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llama-server")

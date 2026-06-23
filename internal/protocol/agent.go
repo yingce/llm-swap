@@ -20,8 +20,9 @@ type AgentTagPolicy struct {
 }
 
 type RunningModel struct {
-	Model string `json:"model"`
-	State string `json:"state"`
+	Model          string    `json:"model"`
+	State          string    `json:"state"`
+	ProtectedUntil time.Time `json:"protected_until,omitempty"`
 }
 
 type AgentEvent struct {

@@ -178,7 +178,7 @@ func TestLoadedReconcilerUnloadsColdModelFromIdleWorkerForUnderloadedHotModel(t 
 
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{
-			"hot":  {MaxLoaded: 2},
+			"hot":  {MinLoaded: 2},
 			"cold": {},
 		},
 		TagPolicies: map[string]config.TagPolicy{
@@ -218,6 +218,44 @@ func TestLoadedReconcilerUnloadsColdModelFromIdleWorkerForUnderloadedHotModel(t 
 	}
 	if unloadCold.Load() != 1 {
 		t.Fatalf("cold model unload calls = %d, want 1 to free idle worker for hot model", unloadCold.Load())
+	}
+}
+
+func TestLoadedReconcilerKeepsOpportunityCacheWhenNoModelNeedsCapacity(t *testing.T) {
+	now := time.Now()
+	var unloadCold atomic.Int32
+	coldServer := unloadServerForModel(t, "cold", &unloadCold)
+	defer coldServer.Close()
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"cold": {MinLoaded: 0},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"cold"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: coldServer.URL,
+		Artifacts:    map[string]string{"cold": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "cold", State: "ready"},
+		},
+	}, now)
+	reconciler := LoadedReconciler{
+		Config:  cfg,
+		Workers: reg,
+		Client:  LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:  NewAccessTracker(),
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if unloadCold.Load() != 0 {
+		t.Fatalf("cold unload calls = %d, want 0", unloadCold.Load())
 	}
 }
 

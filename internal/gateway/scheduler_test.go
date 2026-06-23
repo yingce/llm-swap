@@ -40,7 +40,7 @@ func TestSchedulerPrefersLoadedHealthyWorker(t *testing.T) {
 	}
 }
 
-func TestSchedulerUsesIdleColdWorkerWhenLoadedReplicasBelowMaxLoaded(t *testing.T) {
+func TestSchedulerPrefersIdleLoadedWorkerWhenLoadedReplicasBelowMaxLoaded(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{"qwen": {MaxLoaded: 2}},
 		TagPolicies: map[string]config.TagPolicy{
@@ -68,12 +68,80 @@ func TestSchedulerUsesIdleColdWorkerWhenLoadedReplicasBelowMaxLoaded(t *testing.
 	if err != nil {
 		t.Fatalf("Pick returned error: %v", err)
 	}
-	if pick.ID != "idle" {
-		t.Fatalf("picked %s, want idle cold worker to fill max_loaded", pick.ID)
+	if pick.ID != "loaded" {
+		t.Fatalf("picked %s, want loaded worker before filling max_loaded", pick.ID)
 	}
 }
 
-func TestSchedulerUsesLowLoadWorkerWithOtherModelWhenReplicasBelowMaxLoaded(t *testing.T) {
+func TestSchedulerKeepsRoutingToReadyWorkerWhenScaleOutIsPossible(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{"qwen": {MaxLoaded: 2}},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "loaded",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://loaded",
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		Artifacts:     map[string]string{"qwen": "ready"},
+	}, now)
+	release, ok := reg.Acquire("loaded", now)
+	if !ok {
+		t.Fatal("failed to mark loaded worker active")
+	}
+	defer release()
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "idle",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://idle",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	pick, err := s.Pick("qwen", now, nil)
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if pick.ID != "loaded" {
+		t.Fatalf("picked %s, want ready worker even when scale-out is possible", pick.ID)
+	}
+}
+
+func TestSchedulerDoesNotRouteOrDuplicateColdStartWhenSameModelIsLoadingAtMaxLoaded(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{"qwen": {MaxLoaded: 1}},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "loading",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://loading",
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "loading"}},
+		Artifacts:     map[string]string{"qwen": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "idle",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://idle",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	_, err := s.PickDecision("qwen", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("PickDecision error = %v, want no ready worker while loading occupies max_loaded", err)
+	}
+}
+
+func TestSchedulerKeepsRoutingToReadyWorkerBeforeSwitchingOtherWorker(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{
 			"qwen":  {MaxLoaded: 2},
@@ -92,6 +160,11 @@ func TestSchedulerUsesLowLoadWorkerWithOtherModelWhenReplicasBelowMaxLoaded(t *t
 		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
 		Artifacts:     map[string]string{"qwen": "ready", "other": "ready"},
 	}, now)
+	release, ok := reg.Acquire("loaded-qwen", now)
+	if !ok {
+		t.Fatal("failed to mark loaded worker active")
+	}
+	defer release()
 	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
 		AgentID:       "loaded-other",
 		Tags:          []string{"gpu-4090"},
@@ -105,8 +178,38 @@ func TestSchedulerUsesLowLoadWorkerWithOtherModelWhenReplicasBelowMaxLoaded(t *t
 	if err != nil {
 		t.Fatalf("Pick returned error: %v", err)
 	}
-	if pick.ID != "loaded-other" {
-		t.Fatalf("picked %s, want low-load worker with other model to grow qwen replicas", pick.ID)
+	if pick.ID != "loaded-qwen" {
+		t.Fatalf("picked %s, want ready qwen worker before switching another worker", pick.ID)
+	}
+}
+
+func TestSchedulerReturnsNoReadyWorkerInsteadOfColdWorkerWhenReadyWorkerExcluded(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{"qwen": {MaxLoaded: 2}},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "loaded",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://loaded",
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		Artifacts:     map[string]string{"qwen": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "idle",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://idle",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	_, err := s.Pick("qwen", now, map[string]bool{"loaded": true})
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("Pick error = %v, want no ready worker instead of routing current request to cold worker", err)
 	}
 }
 
@@ -179,7 +282,7 @@ func TestSchedulerDoesNotUseColdWorkerWhenMaxLoadedAlreadySatisfied(t *testing.T
 	}
 }
 
-func TestSchedulerUsesMinLoadedAsDefaultMaxLoaded(t *testing.T) {
+func TestSchedulerUsesAutoMaxLoadedWhenMaxLoadedIsMissing(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{"qwen": {MinLoaded: 1}},
 		TagPolicies: map[string]config.TagPolicy{
@@ -203,12 +306,18 @@ func TestSchedulerUsesMinLoadedAsDefaultMaxLoaded(t *testing.T) {
 	}, now)
 	s := Scheduler{Config: cfg, Workers: reg}
 
-	pick, err := s.Pick("qwen", now, nil)
+	decision, err := s.PickDecision("qwen", now, nil)
 	if err != nil {
-		t.Fatalf("Pick returned error: %v", err)
+		t.Fatalf("PickDecision returned error: %v", err)
 	}
-	if pick.ID != "loaded" {
-		t.Fatalf("picked %s, want loaded worker when default max_loaded is satisfied", pick.ID)
+	if decision.Worker.ID != "loaded" {
+		t.Fatalf("picked %s, want loaded worker when max_loaded is automatic", decision.Worker.ID)
+	}
+	if decision.MaxLoaded != 2 {
+		t.Fatalf("MaxLoaded = %d, want 2 eligible workers", decision.MaxLoaded)
+	}
+	if !decision.MaxLoadedAuto {
+		t.Fatalf("MaxLoadedAuto = false, want true")
 	}
 }
 

@@ -4,14 +4,32 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 var ErrQueueFull = errors.New("queue full")
 var ErrQueueTimeout = errors.New("queue timeout")
 
+const (
+	QueueResultAdmitted          = "admitted"
+	QueueResultAdmittedAfterWait = "admitted_after_wait"
+	QueueResultFull              = "queue_full"
+	QueueResultTimeout           = "queue_timeout"
+)
+
 type QueueLimiter struct {
 	mu     sync.Mutex
 	states map[string]*queueLimitState
+}
+
+type QueueAcquireStats struct {
+	Result         string
+	Waited         bool
+	WaitMS         int64
+	ActiveBefore   int
+	QueuedBefore   int
+	MaxConcurrency int
+	MaxQueue       int
 }
 
 type queueLimitState struct {
@@ -28,8 +46,18 @@ func NewQueueLimiter() *QueueLimiter {
 }
 
 func (l *QueueLimiter) Acquire(ctx context.Context, key string, maxActive, maxQueue int) (func(), error) {
+	release, _, err := l.AcquireWithStats(ctx, key, maxActive, maxQueue)
+	return release, err
+}
+
+func (l *QueueLimiter) AcquireWithStats(ctx context.Context, key string, maxActive, maxQueue int) (func(), QueueAcquireStats, error) {
+	stats := QueueAcquireStats{
+		MaxConcurrency: maxActive,
+		MaxQueue:       maxQueue,
+	}
 	if maxActive <= 0 {
-		return func() {}, nil
+		stats.Result = QueueResultAdmitted
+		return func() {}, stats, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -37,28 +65,40 @@ func (l *QueueLimiter) Acquire(ctx context.Context, key string, maxActive, maxQu
 
 	l.mu.Lock()
 	st := l.stateLocked(key)
+	stats.ActiveBefore = st.active
+	stats.QueuedBefore = len(st.waiters)
 	if st.active < maxActive {
 		st.active++
 		l.mu.Unlock()
-		return l.release(key), nil
+		stats.Result = QueueResultAdmitted
+		return l.release(key), stats, nil
 	}
 	if len(st.waiters) >= maxQueue {
 		l.mu.Unlock()
-		return nil, ErrQueueFull
+		stats.Result = QueueResultFull
+		return nil, stats, ErrQueueFull
 	}
 	waiter := &queueWaiter{ready: make(chan struct{})}
 	st.waiters = append(st.waiters, waiter)
 	l.mu.Unlock()
 
+	start := time.Now()
 	select {
 	case <-waiter.ready:
-		return l.release(key), nil
+		stats.Result = QueueResultAdmittedAfterWait
+		stats.Waited = true
+		stats.WaitMS = time.Since(start).Milliseconds()
+		return l.release(key), stats, nil
 	case <-ctx.Done():
+		stats.Waited = true
+		stats.WaitMS = time.Since(start).Milliseconds()
 		if l.cancelWaiter(key, waiter) {
-			return nil, ErrQueueTimeout
+			stats.Result = QueueResultTimeout
+			return nil, stats, ErrQueueTimeout
 		}
 		<-waiter.ready
-		return l.release(key), nil
+		stats.Result = QueueResultAdmittedAfterWait
+		return l.release(key), stats, nil
 	}
 }
 

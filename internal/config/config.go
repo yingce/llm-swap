@@ -55,7 +55,18 @@ func (m Model) EffectiveMaxLoaded() int {
 	if m.MaxLoadedSet || m.MaxLoaded > 0 {
 		return m.MaxLoaded
 	}
-	return m.MinLoaded
+	return 0
+}
+
+func (m Model) HardMaxLoaded() int {
+	if m.MaxLoadedSet || m.MaxLoaded > 0 {
+		return m.MaxLoaded
+	}
+	return 0
+}
+
+func (m Model) MaxLoadedIsAuto() bool {
+	return !m.MaxLoadedSet && m.MaxLoaded == 0
 }
 
 func yamlMappingHasKey(node *yaml.Node, key string) bool {

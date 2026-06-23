@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -195,32 +197,65 @@ func InstallArtifactWithProgress(ctx context.Context, httpClient *http.Client, o
 		return false, err
 	}
 
+	lockFile, err := acquireArtifactLock(ctx, modelRoot, modelName, artifact)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = unlockArtifactFile(lockFile)
+		_ = lockFile.Close()
+	}()
+
+	matches, err = MarkerMatches(modelDir, modelName, artifact)
+	if err != nil {
+		return false, err
+	}
+	if matches {
+		return false, nil
+	}
+
+	sourcePath, sourceReady, err := localArtifactSource(modelRoot, artifact)
+	if err != nil {
+		return false, err
+	}
+
 	downloadURL := artifactURL(ossBaseURL, artifact.Object)
-	if err := checkRemoteCRC(ctx, httpClient, downloadURL, artifact.CRC64ECMA); err != nil {
-		return false, err
-	}
+	if !sourceReady {
+		if err := checkRemoteCRC(ctx, httpClient, downloadURL, artifact.CRC64ECMA); err != nil {
+			return false, err
+		}
 
-	tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot, onProgress)
-	if err != nil {
-		return false, err
-	}
-	defer os.Remove(tmpFile)
+		tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot, onProgress)
+		if err != nil {
+			return false, err
+		}
+		tmpMoved := false
+		defer func() {
+			if !tmpMoved {
+				_ = os.Remove(tmpFile)
+			}
+		}()
 
-	gotCRC, err := CRC64ECMAFile(tmpFile)
-	if err != nil {
-		return false, err
-	}
-	if gotCRC != artifact.CRC64ECMA {
-		return false, fmt.Errorf("downloaded artifact crc64ecma mismatch for %s: got %s, want %s", artifact.Object, gotCRC, artifact.CRC64ECMA)
+		gotCRC, err := CRC64ECMAFile(tmpFile)
+		if err != nil {
+			return false, err
+		}
+		if gotCRC != artifact.CRC64ECMA {
+			return false, fmt.Errorf("downloaded artifact crc64ecma mismatch for %s: got %s, want %s", artifact.Object, gotCRC, artifact.CRC64ECMA)
+		}
+		if err := persistArtifactSource(tmpFile, sourcePath); err != nil {
+			return false, err
+		}
+		tmpMoved = true
 	}
 
 	switch artifact.Kind {
 	case "file":
-		if err := installFileArtifact(tmpFile, modelDir, modelName, artifact); err != nil {
+		if err := installFileArtifact(sourcePath, modelDir, modelName, artifact); err != nil {
 			return false, err
 		}
 	case "tar_gz":
-		if err := installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName, artifact); err != nil {
+		if err := installTarGzArtifact(sourcePath, modelRoot, modelDir, modelName, artifact); err != nil {
 			return false, err
 		}
 	default:
@@ -232,6 +267,51 @@ func InstallArtifactWithProgress(ctx context.Context, httpClient *http.Client, o
 
 func artifactURL(ossBaseURL, object string) string {
 	return strings.TrimRight(ossBaseURL, "/") + "/" + strings.TrimLeft(object, "/")
+}
+
+func artifactLockName(_ string, artifact config.Artifact) string {
+	sum := sha256.Sum256([]byte(artifact.Kind + "\x00" + artifact.Object + "\x00" + artifact.CRC64ECMA))
+	return hex.EncodeToString(sum[:])
+}
+
+func acquireArtifactLock(ctx context.Context, modelRoot, modelName string, artifact config.Artifact) (*os.File, error) {
+	lockDir := filepath.Join(modelRoot, ".locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(lockDir, artifactLockName(modelName, artifact)+".lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockArtifactFileContext(ctx, lockFile); err != nil {
+		_ = lockFile.Close()
+		return nil, err
+	}
+	return lockFile, nil
+}
+
+func localArtifactSource(modelRoot string, artifact config.Artifact) (string, bool, error) {
+	filename := filepath.Base(filepath.FromSlash(artifact.Object))
+	if filename == "." || filename == string(filepath.Separator) || filename == "" {
+		return "", false, fmt.Errorf("artifact object %q has no base filename", artifact.Object)
+	}
+	sourcePath := filepath.Join(modelRoot, filename)
+	gotCRC, err := CRC64ECMAFile(sourcePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return sourcePath, false, nil
+	}
+	if err != nil {
+		return sourcePath, false, err
+	}
+	return sourcePath, gotCRC == artifact.CRC64ECMA, nil
+}
+
+func persistArtifactSource(tmpFile, sourcePath string) error {
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, sourcePath)
 }
 
 func checkRemoteCRC(ctx context.Context, httpClient *http.Client, downloadURL, wantCRC string) error {
@@ -321,10 +401,7 @@ func installFileArtifact(tmpFile, modelDir, modelName string, artifact config.Ar
 		return fmt.Errorf("artifact object %q has no base filename", artifact.Object)
 	}
 	targetPath := filepath.Join(stageDir, filename)
-	if err := os.Chmod(tmpFile, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpFile, targetPath); err != nil {
+	if err := linkOrCopyFile(tmpFile, targetPath); err != nil {
 		return err
 	}
 	if err := writeMarker(stageDir, modelDir, modelName, artifact); err != nil {
@@ -367,6 +444,28 @@ func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifa
 	}
 	extractMoved = true
 	return nil
+}
+
+func linkOrCopyFile(sourcePath, targetPath string) error {
+	if err := os.Link(sourcePath, targetPath); err == nil {
+		return nil
+	}
+
+	in, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func flattenSingleTopLevelDir(dir string) error {
