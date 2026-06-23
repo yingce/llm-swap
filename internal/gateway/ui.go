@@ -676,11 +676,20 @@ const gatewayUIHTML = `<!doctype html>
       button.style.display = hasMore ? "" : "none";
       button.disabled = false;
       if (!events.length) { document.getElementById("events").innerHTML = '<div class="empty">No worker events yet.</div>'; return; }
-      document.getElementById("events").innerHTML = '<table><thead><tr><th>Received</th><th>Worker</th><th>Event</th><th>Model</th><th>Progress</th><th>Detail</th></tr></thead><tbody>' + events.map((e) => {
-        const progress = e.total_bytes ? '<div class="bar"><span style="width:' + Math.max(0, Math.min(100, e.percent || 0)) + '%"></span></div><span class="muted">' + (e.percent || 0).toFixed(1) + '% ' + bytes(e.downloaded_bytes) + '/' + bytes(e.total_bytes) + '</span>' : '<span class="muted">-</span>';
-        const detail = e.error || (e.from_state || e.to_state ? (e.from_state || "-") + " -> " + (e.to_state || "-") : (e.duration_ms ? "duration " + Math.round(e.duration_ms / 1000) + "s" : e.object || ""));
-        return '<tr><td class="mono">' + esc(new Date(e.received_at).toLocaleTimeString()) + '</td><td>' + esc(e.worker_id) + '</td><td>' + pill(e.event, e.error ? "error" : eventClass(e.event)) + '</td><td>' + esc(e.model || "-") + '</td><td>' + progress + '</td><td class="mono">' + esc(detail) + '</td></tr>';
+      document.getElementById("events").innerHTML = '<table><thead><tr><th>Received</th><th>Worker</th><th>Event</th><th>Model</th><th>Detail</th></tr></thead><tbody>' + events.map((e) => {
+        const detail = eventDetail(e);
+        return '<tr><td class="mono">' + esc(new Date(e.received_at).toLocaleTimeString()) + '</td><td>' + esc(e.worker_id) + '</td><td>' + pill(e.event, e.error ? "error" : eventClass(e.event)) + '</td><td>' + esc(e.model || "-") + '</td><td class="mono">' + esc(detail) + '</td></tr>';
       }).join("") + '</tbody></table>';
+    }
+    function eventDetail(e) {
+      if (e.error) return e.error;
+      if (e.total_bytes) return progressDetail(e);
+      if (e.from_state || e.to_state) return (e.from_state || "-") + " -> " + (e.to_state || "-");
+      if (e.duration_ms) return "duration " + Math.round(e.duration_ms / 1000) + "s";
+      return e.object || "";
+    }
+    function progressDetail(e) {
+      return (e.percent || 0).toFixed(1) + "% " + bytes(e.downloaded_bytes) + "/" + bytes(e.total_bytes);
     }
     function eventClass(event) {
       if (event.endsWith("_error")) return "error";

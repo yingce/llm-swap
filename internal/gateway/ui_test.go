@@ -237,6 +237,12 @@ func TestUIPageServesDashboardHTML(t *testing.T) {
 			t.Fatalf("body missing %q:\n%s", want, body)
 		}
 	}
+	if strings.Contains(body, "<th>Progress</th>") {
+		t.Fatalf("event table should not have a standalone Progress column")
+	}
+	if !strings.Contains(body, "progressDetail") {
+		t.Fatalf("body missing progress detail renderer:\n%s", body)
+	}
 }
 
 func TestUIStatusEndpointUsesEmptyArraysInsteadOfNull(t *testing.T) {
