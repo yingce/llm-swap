@@ -57,6 +57,7 @@ func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 
@@ -124,7 +125,7 @@ func TestUIEventsEndpointPaginatesPersistedWorkerEvents(t *testing.T) {
 	}
 }
 
-func TestUIEndpointsRequireClientTokenWhenConfigured(t *testing.T) {
+func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 
 	for _, path := range []string{"/ui", "/ui/status", "/ui/events"} {
@@ -139,10 +140,10 @@ func TestUIEndpointsRequireClientTokenWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestUIEndpointsAcceptBearerClientToken(t *testing.T) {
+func TestUIEndpointsAcceptBearerAgentToken(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
-	req.Header.Set("Authorization", "Bearer client-secret")
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
 
 	srv.ServeHTTP(rr, req)
@@ -154,7 +155,7 @@ func TestUIEndpointsAcceptBearerClientToken(t *testing.T) {
 
 func TestUIPageTokenSetsCookie(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
-	req := httptest.NewRequest(http.MethodGet, "/ui?token=client-secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui?token=agent-secret", nil)
 	rr := httptest.NewRecorder()
 
 	srv.ServeHTTP(rr, req)
@@ -166,7 +167,7 @@ func TestUIPageTokenSetsCookie(t *testing.T) {
 		t.Fatalf("location = %q, want /ui", got)
 	}
 	cookies := rr.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != uiAuthCookieName || cookies[0].Value != "client-secret" || !cookies[0].HttpOnly {
+	if len(cookies) != 1 || cookies[0].Name != uiAuthCookieName || cookies[0].Value != "agent-secret" || !cookies[0].HttpOnly {
 		t.Fatalf("cookies = %+v, want auth cookie", cookies)
 	}
 }
@@ -174,7 +175,7 @@ func TestUIPageTokenSetsCookie(t *testing.T) {
 func TestUIEndpointsAcceptAuthCookie(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil)
-	req.AddCookie(&http.Cookie{Name: uiAuthCookieName, Value: "client-secret"})
+	req.AddCookie(&http.Cookie{Name: uiAuthCookieName, Value: "agent-secret"})
 	rr := httptest.NewRecorder()
 
 	srv.ServeHTTP(rr, req)
@@ -187,6 +188,7 @@ func TestUIEndpointsAcceptAuthCookie(t *testing.T) {
 func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -202,6 +204,7 @@ func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
 func testUIGatewayConfig() config.GatewayConfig {
 	cfg := testGatewayConfig()
 	cfg.Tokens.Client = "client-secret"
+	cfg.Tokens.Agent = "agent-secret"
 	return cfg
 }
 
@@ -217,6 +220,7 @@ func findUIModel(models []uiModelStatus, name string) (uiModelStatus, bool) {
 func TestUIPageServesDashboardHTML(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
 
 	srv.ServeHTTP(rr, req)
@@ -238,6 +242,7 @@ func TestUIPageServesDashboardHTML(t *testing.T) {
 func TestUIStatusEndpointUsesEmptyArraysInsteadOfNull(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
 
 	srv.ServeHTTP(rr, req)
