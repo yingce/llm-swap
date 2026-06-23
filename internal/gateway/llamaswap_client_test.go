@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestLlamaSwapClientLoadPostsModelLoadEndpoint(t *testing.T) {
+func TestLlamaSwapClientLoadRequestsUpstreamModelsEndpoint(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/models/load/qwen" {
+		if r.Method != http.MethodGet || r.URL.Path != "/upstream/qwen/v1/models" {
 			t.Fatalf("unexpected load request %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer llama-secret" {

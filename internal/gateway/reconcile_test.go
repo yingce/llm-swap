@@ -433,7 +433,7 @@ func unloadServer(t *testing.T, calls *atomic.Int32) *httptest.Server {
 func loadServerForModel(t *testing.T, model string, calls *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/models/load/"+model {
+		if r.Method != http.MethodGet || r.URL.Path != "/upstream/"+model+"/v1/models" {
 			t.Fatalf("unexpected load request %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer llama-secret" {

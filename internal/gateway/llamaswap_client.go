@@ -35,8 +35,8 @@ func (c LlamaSwapClient) Unload(ctx context.Context, baseURL, model string) erro
 }
 
 func (c LlamaSwapClient) Load(ctx context.Context, baseURL, model string) error {
-	endpoint := strings.TrimRight(baseURL, "/") + "/api/models/load/" + url.PathEscape(model)
-	return c.post(ctx, endpoint)
+	endpoint := strings.TrimRight(baseURL, "/") + "/upstream/" + url.PathEscape(model) + "/v1/models"
+	return c.get(ctx, endpoint)
 }
 
 func (c LlamaSwapClient) UnloadAll(ctx context.Context, baseURL string) error {
@@ -49,6 +49,18 @@ func (c LlamaSwapClient) post(ctx context.Context, endpoint string) error {
 	if err != nil {
 		return err
 	}
+	return c.do(req)
+}
+
+func (c LlamaSwapClient) get(ctx context.Context, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	return c.do(req)
+}
+
+func (c LlamaSwapClient) do(req *http.Request) error {
 	if c.BearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
 	}
