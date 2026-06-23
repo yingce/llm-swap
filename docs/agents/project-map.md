@@ -73,7 +73,7 @@ JSONL files for request accounting and worker events.
   - OpenAI-compatible chat proxy path.
   - Extracts the requested model, normalizes some SGLang request fields, applies
     queue/concurrency gates, schedules a worker, proxies to llama-swap, records
-    request stats, and emits metrics/logs.
+    request stats, records pressure observations, and emits metrics/logs.
   - `top_k: 0` is normalized to `-1` for SGLang-backed models.
   - Transformers-style `image`, `video`, and `audio` content parts are converted
     to OpenAI-style URL objects for SGLang compatibility.
@@ -87,6 +87,14 @@ JSONL files for request accounting and worker events.
   - `min_loaded=0` models behave as opportunity cache: they can remain loaded
     while capacity is spare, and are preferred eviction candidates when another
     model needs capacity.
+  - Plans conservative predictive warm actions when sustained demand beats the
+    current replica value plus switch cost.
+
+- `internal/gateway/pressure.go`
+  - Tracks rolling in-memory model pressure from request and queue observations.
+  - Computes conservative demand scores used by Placement warm scale-out.
+  - Rolling queue pressure is not persisted and starts empty after gateway
+    restart.
 
 - `internal/gateway/scheduler.go`
   - Compatibility adapter over Placement.
@@ -109,7 +117,9 @@ JSONL files for request accounting and worker events.
   - Unloads excess idle replicas over explicit hard `max_loaded`.
   - Executes Placement control actions to free capacity for models below
     `min_loaded`.
-  - Records gateway-initiated unload success/failure as worker events.
+  - Executes at most one predictive warm action per cycle after hard ceiling and
+    min_loaded capacity actions.
+  - Records gateway-initiated unload/warm success/failure as worker events.
 
 - `internal/gateway/request_log.go` and `request_log_parse.go`
   - Append and parse gateway request JSONL.
@@ -336,10 +346,19 @@ configured model, tag, and worker gates and include:
 
 Client-facing queue errors currently use OpenAI error code `queue_full` for
 both full and timeout cases. Internal logs and metrics still distinguish
-`queue_full` from `queue_timeout`. Future scale-out logic should use recent
-`admitted_after_wait`, `queue_full`, `queue_timeout`, p95 `wait_ms`, ready
-replicas, occupied replicas, and `max_loaded` rather than expanding on a single
-burst.
+`queue_full` from `queue_timeout`. Conservative warm scale-out uses rolling
+request and queue pressure, including `admitted_after_wait`, `queue_full`,
+`queue_timeout`, p95 `wait_ms`, ready replicas, occupied replicas, active depth,
+token volume, and model priority. It avoids expanding from a single burst.
+
+Control action logs use:
+
+- `control_action_planned`
+- `control_action_done`
+- `control_action_error`
+
+Warm action log fields include `action`, `model`, `worker_id`, `reason`,
+`demand_score`, `keep_score`, `switch_cost`, and `victim_model`.
 
 Persistent gateway files:
 
