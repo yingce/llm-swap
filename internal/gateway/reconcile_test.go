@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +45,48 @@ func TestLoadedReconcilerUnloadsExcessIdleReplica(t *testing.T) {
 	}
 	if unloadA.Load()+unloadB.Load() != 1 {
 		t.Fatalf("unload calls = worker-a:%d worker-b:%d, want exactly 1", unloadA.Load(), unloadB.Load())
+	}
+}
+
+func TestLoadedReconcilerRecordsSuccessfulUnloadEvent(t *testing.T) {
+	var unloadA atomic.Int32
+	var unloadB atomic.Int32
+	workerA := unloadServer(t, &unloadA)
+	defer workerA.Close()
+	workerB := unloadServer(t, &unloadB)
+	defer workerB.Close()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.MaxLoaded = 1
+	cfg.Models["qwen"] = model
+
+	eventLogPath := filepath.Join(t.TempDir(), "worker-events.jsonl")
+	srv := NewServerWithGatewayPersistencePaths(cfg, "", eventLogPath)
+	now := time.Unix(1000, 0)
+	registerRunningWorker(srv.workers, "worker-a", workerA.URL, now)
+	registerRunningWorker(srv.workers, "worker-b", workerB.URL, now)
+
+	reconciler := LoadedReconciler{
+		Config:      cfg,
+		Workers:     srv.workers,
+		Client:      LlamaSwapClient{BearerToken: "llama-secret"},
+		RecordEvent: srv.recordGatewayWorkerEvent,
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	data, err := os.ReadFile(eventLogPath)
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	var entry uiAgentEvent
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("decode event log: %v", err)
+	}
+	if entry.Event != "gateway_model_unload_done" || entry.Model != "qwen" || entry.WorkerID == "" {
+		t.Fatalf("event log entry = %+v, want successful gateway unload event", entry)
 	}
 }
 

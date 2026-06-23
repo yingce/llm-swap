@@ -111,6 +111,51 @@ func TestReconcileHeartbeatIncludesRunningModels(t *testing.T) {
 	}
 }
 
+func TestReconcileReportsRunningModelLoadStateChangeAndUnloadEvents(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected OSS request %s %s", r.Method, r.URL.Path)
+	}))
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, reconcileConfigWithArtifact(oss.URL, artifact), &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+		RunningModels: &sequenceRunningModelsClient{sequences: [][]protocol.RunningModel{
+			{{Model: "qwen", State: "loading"}},
+			{{Model: "qwen", State: "ready"}},
+			{},
+		}},
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := rec.Reconcile(context.Background()); err != nil {
+			t.Fatalf("Reconcile(%d) error = %v", i+1, err)
+		}
+	}
+	if len(heartbeats) != 3 {
+		t.Fatalf("heartbeats = %d, want 3", len(heartbeats))
+	}
+	assertHeartbeatEvent(t, heartbeats[0], "model_loaded", "qwen")
+	assertHeartbeatEvent(t, heartbeats[1], "model_state_changed", "qwen")
+	assertHeartbeatEvent(t, heartbeats[2], "model_unloaded", "qwen")
+}
+
 func TestReconcileMarkerSkipStillReportsReady(t *testing.T) {
 	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
 	modelRoot := t.TempDir()
@@ -1488,6 +1533,31 @@ type fakeRunningModelsClient struct {
 func (f *fakeRunningModelsClient) RunningModelsContext(context.Context) ([]protocol.RunningModel, error) {
 	f.calls++
 	return f.models, f.err
+}
+
+type sequenceRunningModelsClient struct {
+	sequences [][]protocol.RunningModel
+	calls     int
+}
+
+func (f *sequenceRunningModelsClient) RunningModelsContext(context.Context) ([]protocol.RunningModel, error) {
+	if f.calls >= len(f.sequences) {
+		f.calls++
+		return nil, nil
+	}
+	models := append([]protocol.RunningModel(nil), f.sequences[f.calls]...)
+	f.calls++
+	return models, nil
+}
+
+func assertHeartbeatEvent(t *testing.T, hb protocol.HeartbeatRequest, eventName string, model string) {
+	t.Helper()
+	for _, event := range hb.Events {
+		if event.Event == eventName && event.Model == model {
+			return
+		}
+	}
+	t.Fatalf("heartbeat events = %+v, want %s for %s", hb.Events, eventName, model)
 }
 
 type fakeLlamaSwapHealthChecker struct {

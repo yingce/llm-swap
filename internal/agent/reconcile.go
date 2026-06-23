@@ -44,6 +44,8 @@ type Reconciler struct {
 	needsRestart bool
 	eventMu      sync.Mutex
 	events       []protocol.AgentEvent
+	runningMu    sync.Mutex
+	lastRunning  map[string]string
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -127,6 +129,9 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	reconcileErr = errors.Join(reconcileErr, err)
 	runningModels, err := r.fetchRunningModels(ctx)
 	reconcileErr = errors.Join(reconcileErr, err)
+	if err == nil {
+		r.observeRunningModelChanges(runningModels)
+	}
 
 	if allAllowedArtifactsReady(cfg, artifactStatus) {
 		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
@@ -379,6 +384,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	reconcileErr = errors.Join(reconcileErr, err)
 	runningModels, err := r.fetchRunningModels(ctx)
 	reconcileErr = errors.Join(reconcileErr, err)
+	if err == nil {
+		r.observeRunningModelChanges(runningModels)
+	}
 
 	if allAllowedArtifactsReady(cfg, artifactStatus) {
 		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
@@ -397,6 +405,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
 	hb.RunningModels = runningModels
+	hb.Events = r.snapshotEventsForHeartbeat(agentEventHeartbeatLimit)
 	if reconcileErr != nil {
 		hb.LastError = reconcileErr.Error()
 	}
@@ -405,6 +414,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	if err != nil {
 		return resp, errors.Join(reconcileErr, err)
 	}
+	r.dropReportedEvents(len(hb.Events))
 
 	if resp.RestartAllowed && r.needsRestart {
 		if err := r.restart(ctx); err != nil {
@@ -451,6 +461,36 @@ func (r *Reconciler) fetchRunningModels(ctx context.Context) ([]protocol.Running
 		return nil, fmt.Errorf("fetch llama-swap running models: %w", err)
 	}
 	return models, nil
+}
+
+func (r *Reconciler) observeRunningModelChanges(models []protocol.RunningModel) {
+	current := make(map[string]string, len(models))
+	for _, model := range models {
+		if model.Model == "" {
+			continue
+		}
+		current[model.Model] = model.State
+	}
+
+	r.runningMu.Lock()
+	previous := r.lastRunning
+	r.lastRunning = current
+	r.runningMu.Unlock()
+
+	for model, state := range current {
+		oldState, existed := previous[model]
+		switch {
+		case !existed:
+			r.recordEvent(protocol.AgentEvent{Event: "model_loaded", Model: model, ToState: state})
+		case oldState != state:
+			r.recordEvent(protocol.AgentEvent{Event: "model_state_changed", Model: model, FromState: oldState, ToState: state})
+		}
+	}
+	for model, oldState := range previous {
+		if _, ok := current[model]; !ok {
+			r.recordEvent(protocol.AgentEvent{Event: "model_unloaded", Model: model, FromState: oldState})
+		}
+	}
 }
 
 func allAllowedArtifactsReady(cfg protocol.AgentConfigResponse, artifactStatus map[string]string) bool {

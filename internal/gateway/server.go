@@ -248,6 +248,12 @@ func (s *Server) logAgentEvent(workerID string, event protocol.AgentEvent) {
 	if event.Model != "" {
 		fields["model"] = event.Model
 	}
+	if event.FromState != "" {
+		fields["from_state"] = event.FromState
+	}
+	if event.ToState != "" {
+		fields["to_state"] = event.ToState
+	}
 	if event.Object != "" {
 		fields["object"] = event.Object
 	}
@@ -273,6 +279,20 @@ func (s *Server) logAgentEvent(workerID string, event protocol.AgentEvent) {
 		fields["error"] = event.Error
 	}
 	s.logEvent("agent_event", fields)
+}
+
+func (s *Server) recordGatewayWorkerEvent(workerID string, event protocol.AgentEvent) {
+	cached := s.recordAgentEvent(workerID, event, time.Now())
+	if cached.Event == "" {
+		return
+	}
+	if err := appendWorkerEventLog(s.workerEventLogPath, cached); err != nil {
+		s.logEvent("worker_event_log_error", map[string]any{
+			"worker_id": workerID,
+			"error":     err.Error(),
+		})
+	}
+	s.logAgentEvent(workerID, event)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {

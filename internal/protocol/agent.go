@@ -28,6 +28,8 @@ type AgentEvent struct {
 	Time            time.Time `json:"time"`
 	Event           string    `json:"event"`
 	Model           string    `json:"model,omitempty"`
+	FromState       string    `json:"from_state,omitempty"`
+	ToState         string    `json:"to_state,omitempty"`
 	Object          string    `json:"object,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
 	CRC64ECMA       string    `json:"crc64ecma,omitempty"`

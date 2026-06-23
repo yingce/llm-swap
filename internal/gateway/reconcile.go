@@ -8,13 +8,15 @@ import (
 	"time"
 
 	"llm-swap/internal/config"
+	"llm-swap/internal/protocol"
 )
 
 type LoadedReconciler struct {
-	Config  config.GatewayConfig
-	Workers *WorkerRegistry
-	Client  LlamaSwapClient
-	Access  *AccessTracker
+	Config      config.GatewayConfig
+	Workers     *WorkerRegistry
+	Client      LlamaSwapClient
+	Access      *AccessTracker
+	RecordEvent func(workerID string, event protocol.AgentEvent)
 }
 
 func (r LoadedReconciler) Run(ctx context.Context, interval time.Duration) {
@@ -62,9 +64,11 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 				continue
 			}
 			if err := r.Client.Unload(ctx, worker.LlamaSwapURL, modelName); err != nil {
+				r.recordUnloadEvent(worker.ID, modelName, "gateway_model_unload_error", err)
 				outErr = errors.Join(outErr, err)
 				continue
 			}
+			r.recordUnloadEvent(worker.ID, modelName, "gateway_model_unload_done", nil)
 			excess--
 		}
 	}
@@ -89,12 +93,28 @@ func (r LoadedReconciler) unloadColdModelsForUnderloadedHotModels(ctx context.Co
 			continue
 		}
 		if err := r.Client.Unload(ctx, victim.LlamaSwapURL, victimModel); err != nil {
+			r.recordUnloadEvent(victim.ID, victimModel, "gateway_model_unload_error", err)
 			outErr = errors.Join(outErr, err)
 			continue
 		}
+		r.recordUnloadEvent(victim.ID, victimModel, "gateway_model_unload_done", nil)
 		loadedCounts[victimModel]--
 	}
 	return outErr
+}
+
+func (r LoadedReconciler) recordUnloadEvent(workerID string, modelName string, eventName string, err error) {
+	if r.RecordEvent == nil {
+		return
+	}
+	event := protocol.AgentEvent{
+		Event: eventName,
+		Model: modelName,
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	r.RecordEvent(workerID, event)
 }
 
 func (r LoadedReconciler) pickColdVictimForModel(workers []Worker, active map[string]int, loadedCounts map[string]int, targetModel string) (Worker, string, bool) {
@@ -178,10 +198,11 @@ func loadedWorkersForModel(workers []Worker, model string, now time.Time, reg *W
 
 func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration) {
 	reconciler := LoadedReconciler{
-		Config:  s.config,
-		Workers: s.workers,
-		Client:  LlamaSwapClient{BearerToken: s.config.Tokens.LlamaSwap},
-		Access:  s.access,
+		Config:      s.config,
+		Workers:     s.workers,
+		Client:      LlamaSwapClient{BearerToken: s.config.Tokens.LlamaSwap},
+		Access:      s.access,
+		RecordEvent: s.recordGatewayWorkerEvent,
 	}
 	reconciler.Run(ctx, interval)
 }

@@ -104,6 +104,8 @@ type uiAgentEvent struct {
 	Time            time.Time `json:"time"`
 	Event           string    `json:"event"`
 	Model           string    `json:"model,omitempty"`
+	FromState       string    `json:"from_state,omitempty"`
+	ToState         string    `json:"to_state,omitempty"`
 	Object          string    `json:"object,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
 	DownloadedBytes int64     `json:"downloaded_bytes,omitempty"`
@@ -320,6 +322,8 @@ func (s *Server) recordAgentEvent(workerID string, event protocol.AgentEvent, re
 		Time:            event.Time.UTC(),
 		Event:           event.Event,
 		Model:           event.Model,
+		FromState:       event.FromState,
+		ToState:         event.ToState,
 		Object:          event.Object,
 		Kind:            event.Kind,
 		DownloadedBytes: event.DownloadedBytes,
@@ -674,7 +678,7 @@ const gatewayUIHTML = `<!doctype html>
       if (!events.length) { document.getElementById("events").innerHTML = '<div class="empty">No worker events yet.</div>'; return; }
       document.getElementById("events").innerHTML = '<table><thead><tr><th>Received</th><th>Worker</th><th>Event</th><th>Model</th><th>Progress</th><th>Detail</th></tr></thead><tbody>' + events.map((e) => {
         const progress = e.total_bytes ? '<div class="bar"><span style="width:' + Math.max(0, Math.min(100, e.percent || 0)) + '%"></span></div><span class="muted">' + (e.percent || 0).toFixed(1) + '% ' + bytes(e.downloaded_bytes) + '/' + bytes(e.total_bytes) + '</span>' : '<span class="muted">-</span>';
-        const detail = e.error || (e.duration_ms ? "duration " + Math.round(e.duration_ms / 1000) + "s" : e.object || "");
+        const detail = e.error || (e.from_state || e.to_state ? (e.from_state || "-") + " -> " + (e.to_state || "-") : (e.duration_ms ? "duration " + Math.round(e.duration_ms / 1000) + "s" : e.object || ""));
         return '<tr><td class="mono">' + esc(new Date(e.received_at).toLocaleTimeString()) + '</td><td>' + esc(e.worker_id) + '</td><td>' + pill(e.event, e.error ? "error" : eventClass(e.event)) + '</td><td>' + esc(e.model || "-") + '</td><td>' + progress + '</td><td class="mono">' + esc(detail) + '</td></tr>';
       }).join("") + '</tbody></table>';
     }
