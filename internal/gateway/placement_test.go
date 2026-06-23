@@ -213,3 +213,109 @@ func TestPlacementDoesNotEvictProtectedReplica(t *testing.T) {
 		t.Fatalf("PlanControlActions returned %#v, want no eviction of protected replica", actions)
 	}
 }
+
+func TestPlacementPlansWarmActionOnEmptyIdleWorkerForSustainedPressure(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "ready",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://ready",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "ready"},
+		},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://empty",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "qwen",
+			TotalTokens: 1000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    1,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(10 * time.Second))
+	if len(actions) != 1 {
+		t.Fatalf("actions = %#v, want one warm action", actions)
+	}
+	if actions[0].Type != ControlActionWarm || actions[0].Worker.ID != "empty" || actions[0].Model != "qwen" {
+		t.Fatalf("action = %#v, want warm qwen on empty", actions[0])
+	}
+	if actions[0].Reason != "empty_worker_predictive_scaleout" {
+		t.Fatalf("reason = %q, want empty_worker_predictive_scaleout", actions[0].Reason)
+	}
+}
+
+func TestPlacementDoesNotPlanWarmWhenTargetAlreadyLoading(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 0, MaxLoaded: 2, MaxLoadedSet: true},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "loading",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://loading",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "loading"},
+		},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://empty",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests+3; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "qwen",
+			TotalTokens: 1000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(10 * time.Second))
+	if len(actions) != 0 {
+		t.Fatalf("actions = %#v, want no duplicate warm while target is already loading", actions)
+	}
+}

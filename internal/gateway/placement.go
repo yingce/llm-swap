@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"llm-swap/internal/config"
+	"llm-swap/internal/protocol"
 )
 
 type Placement struct {
-	Config  config.GatewayConfig
-	Workers *WorkerRegistry
-	Access  *AccessTracker
+	Config   config.GatewayConfig
+	Workers  *WorkerRegistry
+	Access   *AccessTracker
+	Pressure *PressureTracker
 }
 
 type PlacementDecision struct {
@@ -38,13 +40,18 @@ type ControlActionType string
 
 const (
 	ControlActionUnload ControlActionType = "unload"
+	ControlActionWarm   ControlActionType = "warm"
 )
 
 type ControlAction struct {
-	Type   ControlActionType
-	Worker Worker
-	Model  string
-	Reason string
+	Type        ControlActionType
+	Worker      Worker
+	Model       string
+	Reason      string
+	VictimModel string
+	DemandScore int
+	KeepScore   int
+	SwitchCost  int
 }
 
 func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[string]bool) (PlacementDecision, error) {
@@ -175,7 +182,166 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 			Reason: "free_capacity_for_min_loaded",
 		}}
 	}
+	if action, ok := p.planWarmAction(now, workers, active, loadedCounts); ok {
+		return []ControlAction{action}
+	}
 	return nil
+}
+
+func (p Placement) planWarmAction(now time.Time, workers []Worker, active map[string]int, loadedCounts map[string]int) (ControlAction, bool) {
+	if p.Pressure == nil {
+		return ControlAction{}, false
+	}
+	workers = sortedWorkersByID(workers)
+	for _, modelName := range placementModelNamesByPriority(p.Config) {
+		model := p.Config.Models[modelName]
+		readyCount := loadedCounts[modelName]
+		occupiedCount := occupiedModelCount(workers, now, p.Workers, modelName)
+		maxLoaded, _ := p.effectiveMaxLoaded(model, workers, modelName, now)
+		if maxLoaded <= 0 || occupiedCount >= maxLoaded {
+			continue
+		}
+		if occupiedCount > readyCount {
+			continue
+		}
+
+		demandScore := DemandScore(p.Pressure.Model(modelName, now), DemandScoreInput{
+			Priority:         model.Priority,
+			ReadyReplicas:    readyCount,
+			OccupiedReplicas: occupiedCount,
+			Active:           activeCountForReadyModel(workers, active, modelName),
+		})
+		if demandScore < minScaleOutScore {
+			continue
+		}
+
+		for _, worker := range workers {
+			if !p.warmEligibleWorker(worker, now, active, modelName) {
+				continue
+			}
+			if len(worker.RunningModels) == 0 {
+				return ControlAction{
+					Type:        ControlActionWarm,
+					Worker:      worker,
+					Model:       modelName,
+					Reason:      "empty_worker_predictive_scaleout",
+					DemandScore: demandScore,
+				}, true
+			}
+		}
+
+		if action, ok := p.planWarmEviction(now, workers, active, loadedCounts, modelName, demandScore); ok {
+			return action, true
+		}
+	}
+	return ControlAction{}, false
+}
+
+func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[string]int, loadedCounts map[string]int, targetModel string, demandScore int) (ControlAction, bool) {
+	var best ControlAction
+	found := false
+	for _, worker := range workers {
+		if !p.warmEligibleWorker(worker, now, active, targetModel) {
+			continue
+		}
+		for _, running := range worker.RunningModels {
+			if running.Model == targetModel || !strings.EqualFold(running.State, "ready") {
+				continue
+			}
+			if !running.ProtectedUntil.IsZero() && running.ProtectedUntil.After(now) {
+				continue
+			}
+			if !p.canUnloadModelForPlacement(running.Model, loadedCounts) {
+				continue
+			}
+			keep := p.keepScore(now, worker.ID, running, active[worker.ID], loadedCounts)
+			if demandScore <= keep+defaultSwitchCost {
+				continue
+			}
+			action := ControlAction{
+				Type:        ControlActionWarm,
+				Worker:      worker,
+				Model:       targetModel,
+				Reason:      "evict_for_predictive_scaleout",
+				VictimModel: running.Model,
+				DemandScore: demandScore,
+				KeepScore:   keep,
+				SwitchCost:  defaultSwitchCost,
+			}
+			if !found || action.KeepScore < best.KeepScore || (action.KeepScore == best.KeepScore && (action.VictimModel < best.VictimModel || (action.VictimModel == best.VictimModel && action.Worker.ID < best.Worker.ID))) {
+				best = action
+				found = true
+			}
+		}
+	}
+	return best, found
+}
+
+func (p Placement) warmEligibleWorker(worker Worker, now time.Time, active map[string]int, modelName string) bool {
+	if p.Workers != nil && !p.Workers.Healthy(worker.ID, now) {
+		return false
+	}
+	if active[worker.ID] > 0 {
+		return false
+	}
+	if !workerAllowsModel(p.Config, worker, modelName) || !artifactReady(worker, modelName) {
+		return false
+	}
+	_, running := runningModelState(worker, modelName)
+	return !running
+}
+
+func (p Placement) keepScore(now time.Time, workerID string, running protocol.RunningModel, active int, loadedCounts map[string]int) int {
+	model := p.Config.Models[running.Model]
+	score := model.Priority
+	if loadedCounts[running.Model] <= model.MinLoaded {
+		score += 120
+	}
+	if !running.ProtectedUntil.IsZero() && running.ProtectedUntil.After(now) {
+		score += 80
+	}
+	if active > 0 {
+		score += 50
+	}
+	if p.Access != nil {
+		last := p.Access.WorkerModelLastAccess(workerID, running.Model)
+		if !last.IsZero() && now.Sub(last) <= defaultPressureWindow {
+			score += 30
+		}
+	}
+	if model.MinLoaded == 0 {
+		score -= 40
+	}
+	return score
+}
+
+func sortedWorkersByID(workers []Worker) []Worker {
+	out := append([]Worker(nil), workers...)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func occupiedModelCount(workers []Worker, now time.Time, reg *WorkerRegistry, model string) int {
+	count := 0
+	for _, worker := range workers {
+		if reg != nil && !reg.Healthy(worker.ID, now) {
+			continue
+		}
+		if _, running := runningModelState(worker, model); running {
+			count++
+		}
+	}
+	return count
+}
+
+func activeCountForReadyModel(workers []Worker, active map[string]int, model string) int {
+	total := 0
+	for _, worker := range workers {
+		if runningModelReady(worker, model) {
+			total += active[worker.ID]
+		}
+	}
+	return total
 }
 
 func placementModelNamesByPriority(cfg config.GatewayConfig) []string {
