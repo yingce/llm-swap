@@ -41,6 +41,7 @@ func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (W
 			loadedCount++
 		}
 	}
+	targetLoaded := loadedCount > 0
 	shouldLoadIdleReplica := modelCfg.MaxLoaded > 0 && loadedCount < modelCfg.MaxLoaded
 
 	candidates := make([]scoredWorker, 0)
@@ -60,7 +61,7 @@ func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (W
 		running := runningModelReady(worker, model)
 		candidates = append(candidates, scoredWorker{
 			worker: worker,
-			score:  workerScore(worker, running, shouldLoadIdleReplica, active[worker.ID]),
+			score:  workerScore(worker, running, shouldLoadIdleReplica, targetLoaded, active[worker.ID]),
 		})
 	}
 	if len(candidates) == 0 {
@@ -81,7 +82,7 @@ type scoredWorker struct {
 	score  int
 }
 
-func workerScore(worker Worker, running bool, shouldLoadIdleReplica bool, activeRequests int) int {
+func workerScore(worker Worker, running bool, shouldLoadIdleReplica bool, targetLoaded bool, activeRequests int) int {
 	if shouldLoadIdleReplica {
 		if !running && len(worker.RunningModels) == 0 {
 			return 300 - activeRequests
@@ -93,6 +94,9 @@ func workerScore(worker Worker, running bool, shouldLoadIdleReplica bool, active
 	}
 	if running {
 		return 100 - activeRequests
+	}
+	if !targetLoaded && len(worker.RunningModels) == 0 {
+		return 50 - activeRequests
 	}
 	return 0
 }

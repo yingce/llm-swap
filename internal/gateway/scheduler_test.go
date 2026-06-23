@@ -110,6 +110,42 @@ func TestSchedulerUsesLowLoadWorkerWithOtherModelWhenReplicasBelowMaxLoaded(t *t
 	}
 }
 
+func TestSchedulerUsesIdleWorkerForUnloadedModelWithoutMaxLoaded(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen":  {},
+			"other": {},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen", "other"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "worker-1",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-1",
+		RunningModels: []protocol.RunningModel{{Model: "other", State: "ready"}},
+		Artifacts:     map[string]string{"qwen": "ready", "other": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-2",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-2",
+		Artifacts:    map[string]string{"qwen": "ready", "other": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	pick, err := s.Pick("qwen", now, nil)
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if pick.ID != "worker-2" {
+		t.Fatalf("picked %s, want idle worker to avoid unloading other model", pick.ID)
+	}
+}
+
 func TestSchedulerDoesNotUseColdWorkerWhenMaxLoadedAlreadySatisfied(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{"qwen": {MaxLoaded: 1}},
