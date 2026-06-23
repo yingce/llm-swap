@@ -179,6 +179,39 @@ func TestSchedulerDoesNotUseColdWorkerWhenMaxLoadedAlreadySatisfied(t *testing.T
 	}
 }
 
+func TestSchedulerUsesMinLoadedAsDefaultMaxLoaded(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{"qwen": {MinLoaded: 1}},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "loaded",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://loaded",
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		Artifacts:     map[string]string{"qwen": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "idle",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://idle",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	pick, err := s.Pick("qwen", now, nil)
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if pick.ID != "loaded" {
+		t.Fatalf("picked %s, want loaded worker when default max_loaded is satisfied", pick.ID)
+	}
+}
+
 func TestSchedulerRejectsUnknownModel(t *testing.T) {
 	s := Scheduler{Config: config.GatewayConfig{Models: map[string]config.Model{"qwen": {}}}}
 

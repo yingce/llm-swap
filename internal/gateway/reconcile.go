@@ -43,18 +43,19 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 
 	var outErr error
 	for modelName, model := range r.Config.Models {
-		if model.MaxLoaded <= 0 {
+		maxLoaded := model.EffectiveMaxLoaded()
+		if maxLoaded <= 0 {
 			continue
 		}
 		loaded := loadedWorkersForModel(workers, modelName, now, r.Workers)
-		if len(loaded) <= model.MaxLoaded {
+		if len(loaded) <= maxLoaded {
 			continue
 		}
 
 		sort.Slice(loaded, func(i, j int) bool {
 			return r.workerModelLessRecentlyAccessed(loaded[i], loaded[j], modelName)
 		})
-		excess := len(loaded) - model.MaxLoaded
+		excess := len(loaded) - maxLoaded
 		for i := 0; i < len(loaded) && excess > 0; i++ {
 			worker := loaded[i]
 			if active[worker.ID] > 0 {
@@ -75,7 +76,8 @@ func (r LoadedReconciler) unloadColdModelsForUnderloadedHotModels(ctx context.Co
 	var outErr error
 	loadedCounts := runningModelCounts(workers, now, r.Workers)
 	for modelName, model := range r.Config.Models {
-		if model.MaxLoaded <= 0 || loadedCounts[modelName] >= model.MaxLoaded {
+		maxLoaded := model.EffectiveMaxLoaded()
+		if maxLoaded <= 0 || loadedCounts[modelName] >= maxLoaded {
 			continue
 		}
 		if r.Access == nil || r.Access.ModelLastAccess(modelName).IsZero() {

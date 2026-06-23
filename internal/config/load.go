@@ -70,7 +70,7 @@ func validateGateway(cfg GatewayConfig) error {
 		if strings.TrimSpace(model.Run) == "" {
 			return fmt.Errorf("model %s run is required", name)
 		}
-		if model.MaxLoaded > 0 && model.MinLoaded > model.MaxLoaded {
+		if model.MinLoaded > model.EffectiveMaxLoaded() {
 			return fmt.Errorf("model %s min_loaded cannot exceed max_loaded", name)
 		}
 		if model.MaxConcurrency < 0 || model.MaxQueue < 0 {

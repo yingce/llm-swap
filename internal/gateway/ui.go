@@ -186,7 +186,7 @@ func (s *Server) buildUIModels(workers []Worker, now time.Time) []uiModelStatus 
 			Name:           name,
 			Priority:       model.Priority,
 			MinLoaded:      model.MinLoaded,
-			MaxLoaded:      model.MaxLoaded,
+			MaxLoaded:      model.EffectiveMaxLoaded(),
 			MaxConcurrency: model.MaxConcurrency,
 			MaxQueue:       model.MaxQueue,
 			QueueTimeoutMS: model.QueueTimeoutMS,

@@ -42,7 +42,8 @@ func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (W
 		}
 	}
 	targetLoaded := loadedCount > 0
-	shouldLoadIdleReplica := modelCfg.MaxLoaded > 0 && loadedCount < modelCfg.MaxLoaded
+	maxLoaded := modelCfg.EffectiveMaxLoaded()
+	shouldLoadIdleReplica := maxLoaded > 0 && loadedCount < maxLoaded
 
 	candidates := make([]scoredWorker, 0)
 	for _, worker := range workers {

@@ -1,5 +1,7 @@
 package config
 
+import "gopkg.in/yaml.v3"
+
 type GatewayConfig struct {
 	Gateway     GatewaySettings      `yaml:"gateway" json:"gateway"`
 	OSS         OSSConfig            `yaml:"oss" json:"oss"`
@@ -27,6 +29,7 @@ type Model struct {
 	Priority       int      `yaml:"priority" json:"priority"`
 	MinLoaded      int      `yaml:"min_loaded" json:"min_loaded"`
 	MaxLoaded      int      `yaml:"max_loaded" json:"max_loaded"`
+	MaxLoadedSet   bool     `yaml:"-" json:"-"`
 	MaxConcurrency int      `yaml:"max_concurrency" json:"max_concurrency"`
 	MaxQueue       int      `yaml:"max_queue" json:"max_queue"`
 	QueueTimeoutMS int      `yaml:"queue_timeout_ms" json:"queue_timeout_ms"`
@@ -35,6 +38,36 @@ type Model struct {
 	Run            string   `yaml:"run" json:"run"`
 	CmdStop        string   `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
 	CheckEndpoint  string   `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
+}
+
+func (m *Model) UnmarshalYAML(value *yaml.Node) error {
+	type rawModel Model
+	var raw rawModel
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*m = Model(raw)
+	m.MaxLoadedSet = yamlMappingHasKey(value, "max_loaded")
+	return nil
+}
+
+func (m Model) EffectiveMaxLoaded() int {
+	if m.MaxLoadedSet || m.MaxLoaded > 0 {
+		return m.MaxLoaded
+	}
+	return m.MinLoaded
+}
+
+func yamlMappingHasKey(node *yaml.Node, key string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 type Artifact struct {

@@ -91,6 +91,65 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayConfigDefaultsMissingMaxLoadedToMinLoaded(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+  llama_swap: worker-token
+models:
+  qwen:
+    min_loaded: 1
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	cfg, err := LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if got := cfg.Models["qwen"].EffectiveMaxLoaded(); got != 1 {
+		t.Fatalf("effective max_loaded = %d, want 1", got)
+	}
+}
+
+func TestLoadGatewayConfigRejectsExplicitMaxLoadedBelowMinLoaded(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+  llama_swap: worker-token
+models:
+  qwen:
+    min_loaded: 1
+    max_loaded: 0
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "min_loaded cannot exceed max_loaded") {
+		t.Fatalf("error = %v, want min_loaded/max_loaded", err)
+	}
+}
+
 func TestLoadGatewayConfigRequiresClientToken(t *testing.T) {
 	raw := `
 oss:
