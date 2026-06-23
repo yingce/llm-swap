@@ -168,7 +168,6 @@ func TestInstallWorkerDryRunInitializesAgentConfigAndBuildsAgent(t *testing.T) {
 		"--tags", "gpu-4090,gpu-a100",
 		"--gateway-url", "http://gateway:8080",
 		"--agent-token", "agent-token",
-		"--llama-swap-token", "worker-token",
 	)
 
 	assertContains(t, out, "go build -o /opt/llmswap/bin/llm-swap-agent ./cmd/agent")
@@ -178,7 +177,7 @@ func TestInstallWorkerDryRunInitializesAgentConfigAndBuildsAgent(t *testing.T) {
 	assertContains(t, out, "gateway_url: http://gateway:8080")
 	assertContains(t, out, "restart_command: supervisorctl restart llmswap-llama-swap")
 	assertContains(t, out, "token: agent-token")
-	assertContains(t, out, "llama_swap_token: worker-token")
+	assertContains(t, out, "llama_swap_token: agent-token")
 }
 
 func TestInstallWorkerCanUseExistingAgentBinary(t *testing.T) {

@@ -107,6 +107,9 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	cfg.Agent.GatewayURL = configString(v, "gateway_url", "")
 	cfg.Agent.Token = configString(v, "token", "")
 	cfg.Agent.LlamaSwapToken = configString(v, "llama_swap_token", "")
+	if cfg.Agent.LlamaSwapToken == "" {
+		cfg.Agent.LlamaSwapToken = cfg.Agent.Token
+	}
 
 	tailscaleIP := opts.TailscaleIP
 	if tailscaleIP == nil {
@@ -282,9 +285,6 @@ func validateAgentRuntime(cfg AgentConfig) error {
 	}
 	if cfg.Agent.Token == "" {
 		return fmt.Errorf("agent.token is required")
-	}
-	if cfg.Agent.LlamaSwapToken == "" {
-		return fmt.Errorf("agent.llama_swap_token is required")
 	}
 	return nil
 }

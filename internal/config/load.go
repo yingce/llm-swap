@@ -15,6 +15,7 @@ func LoadGateway(r io.Reader) (GatewayConfig, error) {
 		return cfg, err
 	}
 	applyGatewayDefaults(&cfg)
+	applyGatewayTokenDefaults(&cfg)
 	return cfg, validateGateway(cfg)
 }
 
@@ -39,7 +40,7 @@ func LoadAgent(r io.Reader) (AgentConfig, error) {
 		return cfg, fmt.Errorf("agent.token is required")
 	}
 	if cfg.Agent.LlamaSwapToken == "" {
-		return cfg, fmt.Errorf("agent.llama_swap_token is required")
+		cfg.Agent.LlamaSwapToken = cfg.Agent.Token
 	}
 	return cfg, nil
 }
@@ -51,8 +52,8 @@ func validateGateway(cfg GatewayConfig) error {
 	if strings.TrimSpace(cfg.OSS.BaseURL) == "" {
 		return fmt.Errorf("oss.base_url is required")
 	}
-	if cfg.Tokens.Client == "" || cfg.Tokens.Agent == "" || cfg.Tokens.LlamaSwap == "" {
-		return fmt.Errorf("tokens.client, tokens.agent, and tokens.llama_swap are required")
+	if cfg.Tokens.Client == "" || cfg.Tokens.Agent == "" {
+		return fmt.Errorf("tokens.client and tokens.agent are required")
 	}
 	if len(cfg.Models) == 0 {
 		return fmt.Errorf("models is required")
@@ -99,5 +100,11 @@ func validateGateway(cfg GatewayConfig) error {
 func applyGatewayDefaults(cfg *GatewayConfig) {
 	if cfg.Gateway.ProxyAttempts == 0 {
 		cfg.Gateway.ProxyAttempts = DefaultProxyAttempts
+	}
+}
+
+func applyGatewayTokenDefaults(cfg *GatewayConfig) {
+	if cfg.Tokens.LlamaSwap == "" {
+		cfg.Tokens.LlamaSwap = cfg.Tokens.Agent
 	}
 }

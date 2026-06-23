@@ -15,7 +15,7 @@ LLMSWAP_AGENT_ID="${LLMSWAP_AGENT_ID:-$(hostname 2>/dev/null || printf worker-01
 LLMSWAP_AGENT_TAGS="${LLMSWAP_AGENT_TAGS:-gpu}"
 LLMSWAP_GATEWAY_URL="${LLMSWAP_GATEWAY_URL:-http://gateway.example.local:8080}"
 LLMSWAP_AGENT_TOKEN="${LLMSWAP_AGENT_TOKEN:-agent-token}"
-LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-worker-token}"
+LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-$LLMSWAP_AGENT_TOKEN}"
 LLMSWAP_SWAP_PORT="${LLMSWAP_SWAP_PORT:-6006}"
 LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG="${LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG:-0}"
@@ -62,7 +62,7 @@ Options:
   --tags TAGS               Comma-separated tags written into agent config.
   --gateway-url URL         Gateway URL written into agent config.
   --agent-token TOKEN       Gateway agent token written into agent config.
-  --llama-swap-token TOKEN  llama-swap token written into agent config.
+  --llama-swap-token TOKEN  llama-swap token written into agent config. Default: agent token.
   --swap-port PORT          llama-swap port used when swap_url is omitted.
   --force-config            Overwrite an existing agent config.
   -h, --help                Show this help.

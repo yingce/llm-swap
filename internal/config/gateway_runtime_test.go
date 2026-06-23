@@ -63,6 +63,38 @@ gateway:
 	}
 }
 
+func TestLoadGatewayRuntimeDefaultsLlamaSwapTokenToEnvAgentToken(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: file-agent-token
+models:
+  qwen:
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLM_SWAP_GATEWAY_TOKENS_AGENT", "env-agent-token")
+
+	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("LoadGatewayRuntime returned error: %v", err)
+	}
+	if runtime.Config.Tokens.LlamaSwap != "env-agent-token" {
+		t.Fatalf("llama_swap token = %q, want env agent token", runtime.Config.Tokens.LlamaSwap)
+	}
+}
+
 func TestLoadGatewayRuntimeAcceptsShortGatewayEnvNames(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	if err := os.WriteFile(configPath, []byte(validGatewayYAML("")), 0o644); err != nil {

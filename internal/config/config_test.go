@@ -12,7 +12,6 @@ oss:
 tokens:
   client: client-token
   agent: agent-token
-  llama_swap: worker-token
 models:
   qwen:
     priority: 100
@@ -53,7 +52,6 @@ oss:
 tokens:
   client: client-token
   agent: agent-token
-  llama_swap: worker-token
 models:
   qwen:
     priority: 100
@@ -88,6 +86,9 @@ tag_policies:
 	}
 	if cfg.Models["qwen"].CheckEndpoint != "/model_info" {
 		t.Fatalf("models.qwen.check_endpoint = %q, want /model_info", cfg.Models["qwen"].CheckEndpoint)
+	}
+	if cfg.Tokens.LlamaSwap != "agent-token" {
+		t.Fatalf("tokens.llama_swap = %q, want inherited agent token", cfg.Tokens.LlamaSwap)
 	}
 }
 
@@ -304,7 +305,7 @@ agent:
 	}
 }
 
-func TestLoadAgentRequiresLlamaSwapToken(t *testing.T) {
+func TestLoadAgentDefaultsLlamaSwapTokenToAgentToken(t *testing.T) {
 	raw := `
 agent:
   id: gpu-01
@@ -315,11 +316,11 @@ agent:
   gateway_url: http://gateway
   token: agent-token
 `
-	_, err := LoadAgent(strings.NewReader(raw))
-	if err == nil {
-		t.Fatal("expected validation error")
+	cfg, err := LoadAgent(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadAgent returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "llama_swap_token") {
-		t.Fatalf("error = %v, want llama_swap_token", err)
+	if cfg.Agent.LlamaSwapToken != "agent-token" {
+		t.Fatalf("agent.llama_swap_token = %q, want inherited agent token", cfg.Agent.LlamaSwapToken)
 	}
 }

@@ -59,7 +59,6 @@ func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
 			"--tags", "gpu-4090,gpu-a100",
 			"--gateway-url", "http://gateway",
 			"--token", "agent-token",
-			"--llama-swap-token", "worker-token",
 		},
 		TailscaleIP: func(context.Context) (string, bool) {
 			return "100.64.0.30", true
@@ -85,6 +84,9 @@ func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
 	}
 	if len(cfg.Agent.Tags) != 2 || cfg.Agent.Tags[0] != "gpu-4090" || cfg.Agent.Tags[1] != "gpu-a100" {
 		t.Fatalf("tags = %v, want parsed CLI tags", cfg.Agent.Tags)
+	}
+	if cfg.Agent.LlamaSwapToken != "agent-token" {
+		t.Fatalf("llama_swap_token = %q, want inherited agent token", cfg.Agent.LlamaSwapToken)
 	}
 }
 

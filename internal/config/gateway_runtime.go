@@ -76,6 +76,8 @@ func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (Gatewa
 }
 
 func applyGatewayEnv(v *viper.Viper, cfg *GatewayConfig) {
+	llamaSwapInheritedAgentToken := cfg.Tokens.LlamaSwap == "" || cfg.Tokens.LlamaSwap == cfg.Tokens.Agent
+	llamaSwapTokenOverridden := false
 	if value := strings.TrimSpace(v.GetString("addr")); value != "" {
 		cfg.Gateway.ListenAddr = value
 	}
@@ -96,5 +98,9 @@ func applyGatewayEnv(v *viper.Viper, cfg *GatewayConfig) {
 	}
 	if value := strings.TrimSpace(v.GetString("tokens.llama_swap")); value != "" {
 		cfg.Tokens.LlamaSwap = value
+		llamaSwapTokenOverridden = true
+	}
+	if llamaSwapInheritedAgentToken && !llamaSwapTokenOverridden {
+		cfg.Tokens.LlamaSwap = cfg.Tokens.Agent
 	}
 }
