@@ -148,7 +148,8 @@ func (p *PressureTracker) Model(model string, now time.Time) PressureSnapshot {
 }
 
 func DemandScore(snapshot PressureSnapshot, input DemandScoreInput) int {
-	if snapshot.RecentRequests < minScaleOutRequests {
+	demandEvents := snapshot.RecentRequests + snapshot.WaitedRequests + snapshot.QueueErrors
+	if demandEvents < minScaleOutRequests {
 		return 0
 	}
 

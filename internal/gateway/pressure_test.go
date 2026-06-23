@@ -80,3 +80,47 @@ func TestPressureDemandScoreRequiresSustainedRequests(t *testing.T) {
 		t.Fatalf("DemandScore = 0, want positive score after sustained requests")
 	}
 }
+
+func TestPressureDemandScoreCountsQueuePressureTowardSustainedDemand(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tracker := NewPressureTracker(5 * time.Minute)
+	tracker.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(-3 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           400,
+		ReadyReplicas:    1,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+	tracker.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(-2 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultTimeout,
+		WaitMS:           700,
+		ReadyReplicas:    1,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+	tracker.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(-1 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultFull,
+		WaitMS:           0,
+		ReadyReplicas:    1,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+
+	snapshot := tracker.Model("qwen", now)
+	if snapshot.RecentRequests != 0 {
+		t.Fatalf("RecentRequests = %d, want 0", snapshot.RecentRequests)
+	}
+	if snapshot.WaitedRequests+snapshot.QueueErrors < minScaleOutRequests {
+		t.Fatalf("queue pressure events = %d, want at least %d", snapshot.WaitedRequests+snapshot.QueueErrors, minScaleOutRequests)
+	}
+	score := DemandScore(snapshot, DemandScoreInput{Priority: 100, ReadyReplicas: 1, OccupiedReplicas: 1, Active: 1})
+	if score == 0 {
+		t.Fatalf("DemandScore = 0, want positive score from sustained queue pressure")
+	}
+}
