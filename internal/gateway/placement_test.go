@@ -319,3 +319,48 @@ func TestPlacementDoesNotPlanWarmWhenTargetAlreadyLoading(t *testing.T) {
 		t.Fatalf("actions = %#v, want no duplicate warm while target is already loading", actions)
 	}
 }
+
+func TestPlacementDoesNotPredictivelyWarmWhenAnyMinLoadedFloorIsUnderloaded(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"hot":  {Priority: 100, MinLoaded: 1},
+			"qwen": {Priority: 200, MinLoaded: 0},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"hot", "qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://empty",
+		Artifacts: map[string]string{
+			"hot":  "ready",
+			"qwen": "ready",
+		},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests+3; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "qwen",
+			TotalTokens: 1000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+		ActiveBefore:     1,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(10 * time.Second))
+	if len(actions) != 0 {
+		t.Fatalf("actions = %#v, want no predictive warm while a min_loaded floor is underloaded", actions)
+	}
+}

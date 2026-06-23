@@ -163,6 +163,7 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 	loadedCounts := runningModelCounts(workers, now, p.Workers)
 
 	models := placementModelNamesByPriority(p.Config)
+	underloadedFloor := false
 	for _, modelName := range models {
 		model := p.Config.Models[modelName]
 		if model.MinLoaded <= 0 {
@@ -171,6 +172,7 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 		if loadedCounts[modelName] >= model.MinLoaded {
 			continue
 		}
+		underloadedFloor = true
 		victim, victimModel, ok := p.pickEvictionVictimForModel(now, workers, active, loadedCounts, modelName)
 		if !ok {
 			continue
@@ -181,6 +183,9 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 			Model:  victimModel,
 			Reason: "free_capacity_for_min_loaded",
 		}}
+	}
+	if underloadedFloor {
+		return nil
 	}
 	if action, ok := p.planWarmAction(now, workers, active, loadedCounts); ok {
 		return []ControlAction{action}
