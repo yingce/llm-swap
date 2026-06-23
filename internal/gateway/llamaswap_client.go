@@ -34,6 +34,11 @@ func (c LlamaSwapClient) Unload(ctx context.Context, baseURL, model string) erro
 	return c.post(ctx, endpoint)
 }
 
+func (c LlamaSwapClient) Load(ctx context.Context, baseURL, model string) error {
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/models/load/" + url.PathEscape(model)
+	return c.post(ctx, endpoint)
+}
+
 func (c LlamaSwapClient) UnloadAll(ctx context.Context, baseURL string) error {
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/models/unload"
 	return c.post(ctx, endpoint)
