@@ -329,6 +329,40 @@ func TestProxyWritesRequestLogAndAggregatesUsage(t *testing.T) {
 	}
 }
 
+func TestProxyRecordsQueueAndRequestPressure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+			"usage": map[string]any{
+				"prompt_tokens":     3,
+				"completion_tokens": 4,
+				"total_tokens":      7,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	cfg := testProxyConfig()
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	snapshot := srv.pressure.Model("qwen", time.Now())
+	if snapshot.RecentRequests != 1 {
+		t.Fatalf("RecentRequests = %d, want 1", snapshot.RecentRequests)
+	}
+	if snapshot.RecentTokens != 7 {
+		t.Fatalf("RecentTokens = %d, want 7", snapshot.RecentTokens)
+	}
+}
+
 func TestProxyWritesStreamingRequestLogUsage(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

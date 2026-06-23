@@ -175,6 +175,16 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 	if s.access != nil {
 		s.access.RecordRequest(entry)
 	}
+	if s.pressure != nil {
+		s.pressure.RecordRequest(PressureRequestObservation{
+			Time:        entry.Time,
+			Model:       entry.Model,
+			WorkerID:    entry.WorkerID,
+			TotalTokens: entry.TotalTokens,
+			DurationMS:  entry.DurationMS,
+			StatusCode:  entry.StatusCode,
+		})
+	}
 	if s.requestLogPath != "" {
 		if err := appendRequestLog(s.requestLogPath, entry); err != nil {
 			s.logEvent("request_log_write_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})
@@ -397,6 +407,18 @@ func (s *Server) observeQueue(model, requestID, keyType, key string, stats Queue
 	wait := time.Duration(stats.WaitMS) * time.Millisecond
 	if s.metrics != nil {
 		s.metrics.ObserveQueueWait(model, keyType, stats.Result, wait)
+	}
+	if s.pressure != nil {
+		s.pressure.RecordQueue(PressureQueueObservation{
+			Time:             time.Now(),
+			Model:            model,
+			Result:           stats.Result,
+			WaitMS:           stats.WaitMS,
+			ReadyReplicas:    replicas.readyReplicas,
+			OccupiedReplicas: replicas.occupiedReplicas,
+			ActiveBefore:     stats.ActiveBefore,
+			QueuedBefore:     stats.QueuedBefore,
+		})
 	}
 	s.logEvent("queue_observation", map[string]any{
 		"request_id":        requestID,

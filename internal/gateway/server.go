@@ -22,6 +22,7 @@ type Server struct {
 	metrics            *Metrics
 	scraper            *MetricsScraper
 	access             *AccessTracker
+	pressure           *PressureTracker
 	requestLogPath     string
 	workerEventLogPath string
 	proxyAttempts      int
@@ -64,6 +65,7 @@ func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPa
 		metrics:            NewMetrics(),
 		scraper:            NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
 		access:             access,
+		pressure:           NewPressureTracker(defaultPressureWindow),
 		requestLogPath:     requestLogPath,
 		workerEventLogPath: workerEventLogPath,
 		proxyAttempts:      configuredProxyAttempts(cfg),
