@@ -8,7 +8,8 @@ oss:
 tokens:
   client: client-token
   agent: agent-token
-  llama_swap: worker-token
+  # Optional. Defaults to tokens.agent when omitted.
+  # llama_swap: agent-token
 
 models:
   qwen3-32b-awq:
