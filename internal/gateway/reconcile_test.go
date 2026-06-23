@@ -259,9 +259,88 @@ func TestLoadedReconcilerKeepsOpportunityCacheWhenNoModelNeedsCapacity(t *testin
 	}
 }
 
+func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var loadCalls atomic.Int32
+	loadServer := loadServerForModel(t, "qwen", &loadCalls)
+	defer loadServer.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "ready",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://ready",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "ready"},
+		},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: loadServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "qwen",
+			TotalTokens: 1000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "qwen",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    1,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+
+	reconciler := LoadedReconciler{
+		Config:   cfg,
+		Workers:  reg,
+		Client:   LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:   NewAccessTracker(),
+		Pressure: pressure,
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now.Add(10 * time.Second)); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if loadCalls.Load() != 1 {
+		t.Fatalf("load calls = %d, want 1", loadCalls.Load())
+	}
+}
+
 func unloadServer(t *testing.T, calls *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return unloadServerForModel(t, "qwen", calls)
+}
+
+func loadServerForModel(t *testing.T, model string, calls *atomic.Int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/models/load/"+model {
+			t.Fatalf("unexpected load request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer llama-secret" {
+			t.Fatalf("authorization = %q, want llama-secret bearer", got)
+		}
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
 }
 
 func unloadServerForModel(t *testing.T, model string, calls *atomic.Int32) *httptest.Server {

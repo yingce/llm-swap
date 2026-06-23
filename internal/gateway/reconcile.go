@@ -16,7 +16,9 @@ type LoadedReconciler struct {
 	Workers     *WorkerRegistry
 	Client      LlamaSwapClient
 	Access      *AccessTracker
+	Pressure    *PressureTracker
 	RecordEvent func(workerID string, event protocol.AgentEvent)
+	LogEvent    func(event string, fields map[string]any)
 }
 
 func (r LoadedReconciler) Run(ctx context.Context, interval time.Duration) {
@@ -72,20 +74,37 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			excess--
 		}
 	}
-	placement := Placement{Config: r.Config, Workers: r.Workers, Access: r.Access}
+	placement := Placement{Config: r.Config, Workers: r.Workers, Access: r.Access, Pressure: r.Pressure}
 	for _, action := range placement.PlanControlActions(now) {
-		if action.Type != ControlActionUnload {
+		actionActive := r.Workers.ActiveSnapshot()
+		switch action.Type {
+		case ControlActionUnload:
+			if actionActive[action.Worker.ID] > 0 {
+				continue
+			}
+			if err := r.Client.Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+				r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_error", err)
+				outErr = errors.Join(outErr, err)
+				continue
+			}
+			r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_done", nil)
+		case ControlActionWarm:
+			if actionActive[action.Worker.ID] > 0 {
+				continue
+			}
+			r.logControlAction("control_action_planned", action, nil)
+			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_start", nil)
+			if err := r.Client.Load(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+				r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_error", err)
+				r.logControlAction("control_action_error", action, err)
+				outErr = errors.Join(outErr, err)
+				continue
+			}
+			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_done", nil)
+			r.logControlAction("control_action_done", action, nil)
+		default:
 			continue
 		}
-		if active[action.Worker.ID] > 0 {
-			continue
-		}
-		if err := r.Client.Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
-			r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_error", err)
-			outErr = errors.Join(outErr, err)
-			continue
-		}
-		r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_done", nil)
 	}
 	return outErr
 }
@@ -129,6 +148,46 @@ func (r LoadedReconciler) recordUnloadEvent(workerID string, modelName string, e
 		event.Error = err.Error()
 	}
 	r.RecordEvent(workerID, event)
+}
+
+func (r LoadedReconciler) recordWarmEvent(workerID string, modelName string, eventName string, err error) {
+	if r.RecordEvent == nil {
+		return
+	}
+	event := protocol.AgentEvent{
+		Event: eventName,
+		Model: modelName,
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	r.RecordEvent(workerID, event)
+}
+
+func (r LoadedReconciler) logControlAction(event string, action ControlAction, err error) {
+	if r.LogEvent == nil {
+		return
+	}
+	fields := map[string]any{
+		"type":         string(action.Type),
+		"worker_id":    action.Worker.ID,
+		"model":        action.Model,
+		"reason":       action.Reason,
+		"demand_score": action.DemandScore,
+	}
+	if action.VictimModel != "" {
+		fields["victim_model"] = action.VictimModel
+	}
+	if action.KeepScore != 0 {
+		fields["keep_score"] = action.KeepScore
+	}
+	if action.SwitchCost != 0 {
+		fields["switch_cost"] = action.SwitchCost
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	r.LogEvent(event, fields)
 }
 
 func (r LoadedReconciler) pickColdVictimForModel(workers []Worker, active map[string]int, loadedCounts map[string]int, targetModel string) (Worker, string, bool) {
@@ -216,7 +275,9 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 		Workers:     s.workers,
 		Client:      LlamaSwapClient{BearerToken: s.config.Tokens.LlamaSwap},
 		Access:      s.access,
+		Pressure:    s.pressure,
 		RecordEvent: s.recordGatewayWorkerEvent,
+		LogEvent:    s.logEvent,
 	}
 	reconciler.Run(ctx, interval)
 }
