@@ -3,11 +3,12 @@ package config
 import "gopkg.in/yaml.v3"
 
 type GatewayConfig struct {
-	Gateway     GatewaySettings      `yaml:"gateway" json:"gateway"`
-	OSS         OSSConfig            `yaml:"oss" json:"oss"`
-	Tokens      TokenConfig          `yaml:"tokens" json:"tokens"`
-	Models      map[string]Model     `yaml:"models" json:"models"`
-	TagPolicies map[string]TagPolicy `yaml:"tag_policies" json:"tag_policies"`
+	Gateway      GatewaySettings      `yaml:"gateway" json:"gateway"`
+	OSS          OSSConfig            `yaml:"oss" json:"oss"`
+	Tokens       TokenConfig          `yaml:"tokens" json:"tokens"`
+	MetricsStore MetricsStoreConfig   `yaml:"metrics_store" json:"metrics_store"`
+	Models       map[string]Model     `yaml:"models" json:"models"`
+	TagPolicies  map[string]TagPolicy `yaml:"tag_policies" json:"tag_policies"`
 }
 
 type GatewaySettings struct {
@@ -23,6 +24,15 @@ type TokenConfig struct {
 	Client    string `yaml:"client" json:"client"`
 	Agent     string `yaml:"agent" json:"agent"`
 	LlamaSwap string `yaml:"llama_swap" json:"llama_swap"`
+}
+
+type MetricsStoreConfig struct {
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Type         string `yaml:"type" json:"type"`
+	QueryURL     string `yaml:"query_url" json:"query_url"`
+	DefaultRange string `yaml:"default_range" json:"default_range"`
+	MaxRange     string `yaml:"max_range" json:"max_range"`
+	TimeoutMS    int    `yaml:"timeout_ms" json:"timeout_ms"`
 }
 
 type Model struct {

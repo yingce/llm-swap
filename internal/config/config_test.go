@@ -92,6 +92,47 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayConfigAcceptsMetricsStoreConfig(t *testing.T) {
+	raw := validGatewayYAML(`
+metrics_store:
+  enabled: true
+  type: victoriametrics
+  query_url: http://victoriametrics:8428
+  default_range: 2h
+  max_range: 14d
+  timeout_ms: 2500
+`)
+	cfg, err := LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if !cfg.MetricsStore.Enabled {
+		t.Fatal("metrics_store.enabled = false, want true")
+	}
+	if cfg.MetricsStore.Type != "victoriametrics" || cfg.MetricsStore.QueryURL != "http://victoriametrics:8428" {
+		t.Fatalf("metrics store = %+v, want victoriametrics query URL", cfg.MetricsStore)
+	}
+	if cfg.MetricsStore.DefaultRange != "2h" || cfg.MetricsStore.MaxRange != "14d" || cfg.MetricsStore.TimeoutMS != 2500 {
+		t.Fatalf("metrics store ranges = %+v", cfg.MetricsStore)
+	}
+}
+
+func TestLoadGatewayConfigDefaultsMetricsStore(t *testing.T) {
+	cfg, err := LoadGateway(strings.NewReader(validGatewayYAML("")))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if cfg.MetricsStore.Enabled {
+		t.Fatal("metrics_store.enabled = true, want false")
+	}
+	if cfg.MetricsStore.Type != "victoriametrics" {
+		t.Fatalf("metrics_store.type = %q, want victoriametrics", cfg.MetricsStore.Type)
+	}
+	if cfg.MetricsStore.DefaultRange != "1h" || cfg.MetricsStore.MaxRange != "7d" || cfg.MetricsStore.TimeoutMS != 3000 {
+		t.Fatalf("metrics store defaults = %+v", cfg.MetricsStore)
+	}
+}
+
 func TestLoadGatewayConfigTreatsMissingMaxLoadedAsAutomatic(t *testing.T) {
 	raw := `
 oss:

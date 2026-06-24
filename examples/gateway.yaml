@@ -11,6 +11,16 @@ tokens:
   # Optional. Defaults to tokens.agent when omitted.
   # llama_swap: agent-token
 
+# Optional historical metrics query store. Gateway still exposes /metrics;
+# vmagent should scrape it and remote_write to VictoriaMetrics.
+metrics_store:
+  enabled: false
+  type: victoriametrics
+  query_url: http://victoriametrics:8428
+  default_range: 1h
+  max_range: 7d
+  timeout_ms: 3000
+
 models:
   qwen3-32b-awq:
     priority: 10

@@ -49,6 +49,9 @@ func validateGateway(cfg GatewayConfig) error {
 	if cfg.Gateway.ProxyAttempts < 0 {
 		return fmt.Errorf("gateway.proxy_attempts must be non-negative")
 	}
+	if cfg.MetricsStore.Enabled && cfg.MetricsStore.Type != "victoriametrics" {
+		return fmt.Errorf("metrics_store.type must be victoriametrics")
+	}
 	if strings.TrimSpace(cfg.OSS.BaseURL) == "" {
 		return fmt.Errorf("oss.base_url is required")
 	}
@@ -112,6 +115,18 @@ func validModelRuntime(runtime string) bool {
 func applyGatewayDefaults(cfg *GatewayConfig) {
 	if cfg.Gateway.ProxyAttempts == 0 {
 		cfg.Gateway.ProxyAttempts = DefaultProxyAttempts
+	}
+	if cfg.MetricsStore.Type == "" {
+		cfg.MetricsStore.Type = "victoriametrics"
+	}
+	if cfg.MetricsStore.DefaultRange == "" {
+		cfg.MetricsStore.DefaultRange = "1h"
+	}
+	if cfg.MetricsStore.MaxRange == "" {
+		cfg.MetricsStore.MaxRange = "7d"
+	}
+	if cfg.MetricsStore.TimeoutMS <= 0 {
+		cfg.MetricsStore.TimeoutMS = 3000
 	}
 }
 
