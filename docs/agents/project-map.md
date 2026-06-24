@@ -442,12 +442,24 @@ Deployment helpers:
 
 - `deploy/docker-compose.metrics.yml`
 - `deploy/vmagent/promscrape.yml`
+- `Dockerfile.gateway`
+- `deploy/production/compose.yaml`
+- `deploy/production/vmagent/promscrape.yml`
 
 vmagent scrapes gateway `/metrics` and remote-writes to VictoriaMetrics. The
 default scrape target is `gateway:8080`; adjust it when gateway runs outside the
 compose network. Request and worker event JSONL files remain the source for
 request detail replay and recent event pages; VictoriaMetrics is for aggregate
 time-series history only.
+
+Production compose deployment runs gateway, VictoriaMetrics, and vmagent
+together. The gateway container mounts `/opt/llmswap/gateway.yaml` read-only and
+`/opt/llmswap/logs` read-write. VictoriaMetrics stores data under
+`/opt/llmswap/data/victoriametrics`. Start it from the repository root with:
+
+```bash
+docker compose -f deploy/production/compose.yaml up -d --build
+```
 
 ## Placement Rollout Notes
 

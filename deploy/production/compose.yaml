@@ -1,0 +1,46 @@
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.gateway
+    image: llmswap-gateway:local
+    container_name: llmswap-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /opt/llmswap/gateway.yaml:/opt/llmswap/gateway.yaml:ro
+      - /opt/llmswap/logs:/opt/llmswap/logs
+    depends_on:
+      - victoriametrics
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:stable
+    container_name: llmswap-victoriametrics
+    command:
+      - -storageDataPath=/victoria-metrics-data
+      - -retentionPeriod=30d
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8428:8428"
+    volumes:
+      - /opt/llmswap/data/victoriametrics:/victoria-metrics-data
+
+  vmagent:
+    image: victoriametrics/vmagent:stable
+    container_name: llmswap-vmagent
+    depends_on:
+      - gateway
+      - victoriametrics
+    command:
+      - -promscrape.config=/etc/vmagent/promscrape.yml
+      - -remoteWrite.url=http://victoriametrics:8428/api/v1/write
+    restart: unless-stopped
+    volumes:
+      - ./vmagent/promscrape.yml:/etc/vmagent/promscrape.yml:ro
