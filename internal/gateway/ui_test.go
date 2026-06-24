@@ -246,6 +246,50 @@ func TestUIMetricsModelQueriesVictoriaMetrics(t *testing.T) {
 	}
 }
 
+func TestUIMetricsSummaryQueriesModelRequestLatencyAndQueueSeries(t *testing.T) {
+	var queries []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("query"))
+		writeJSON(w, map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"result": []any{},
+			},
+		})
+	}))
+	defer backend.Close()
+
+	cfg := testUIGatewayConfig()
+	cfg.MetricsStore = config.MetricsStoreConfig{
+		Enabled:      true,
+		Type:         "victoriametrics",
+		QueryURL:     backend.URL,
+		DefaultRange: "1h",
+		MaxRange:     "7d",
+		TimeoutMS:    1000,
+	}
+	srv := NewServer(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/ui/metrics/summary?range=15m&step=15s", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	joined := strings.Join(queries, "\n")
+	for _, want := range []string{
+		"llm_swap_gateway_requests_total",
+		"llm_swap_gateway_request_duration_seconds_sum",
+		"llm_swap_gateway_model_queue_depth",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("summary queries missing %q:\n%s", want, joined)
+		}
+	}
+}
+
 func TestUIEndpointsAcceptBearerAgentToken(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)

@@ -547,6 +547,41 @@ func TestProxyRecordsQueueFullMetric(t *testing.T) {
 	assertMetricLine(t, body, `llm_swap_gateway_queue_events_total{model="qwen",result="queue_full"} 1`)
 }
 
+func TestMetricsReportsCurrentModelQueueDepth(t *testing.T) {
+	srv := NewServer(testProxyConfig())
+	firstRelease, err := srv.limiter.Acquire(context.Background(), "model:qwen", 1, 1)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer firstRelease()
+
+	acquired := make(chan func(), 1)
+	go func() {
+		release, err := srv.limiter.Acquire(context.Background(), "model:qwen", 1, 1)
+		if err == nil {
+			acquired <- release
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && srv.limiter.Queued("model:qwen") != 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := srv.limiter.Queued("model:qwen"); got != 1 {
+		t.Fatalf("queued = %d, want 1", got)
+	}
+
+	body := scrapeMetrics(t, srv)
+	assertMetricLine(t, body, `llm_swap_gateway_model_queue_depth{model="qwen"} 1`)
+
+	firstRelease()
+	select {
+	case release := <-acquired:
+		release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued acquire did not finish after release")
+	}
+}
+
 func TestProxyRecordsDispatchFailureMetric(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy", http.StatusServiceUnavailable)

@@ -48,6 +48,7 @@ type Metrics struct {
 	controlActions               *prometheus.CounterVec
 	modelLoadedReplicas          *prometheus.GaugeVec
 	modelUnderprovisioned        *prometheus.GaugeVec
+	modelQueueDepth              *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -190,9 +191,13 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_model_underprovisioned",
 		Help: "Whether a model is below its configured min_loaded target.",
 	}, []string{"model"})
+	modelQueueDepth := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_model_queue_depth",
+		Help: "Current number of queued requests at the gateway model gate.",
+	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth)
 
 	return &Metrics{
 		registry:                     registry,
@@ -230,6 +235,7 @@ func NewMetrics() *Metrics {
 		controlActions:               controlActions,
 		modelLoadedReplicas:          modelLoadedReplicas,
 		modelUnderprovisioned:        modelUnderprovisioned,
+		modelQueueDepth:              modelQueueDepth,
 	}
 }
 
@@ -343,6 +349,16 @@ func (m *Metrics) ObserveModelProvisioning(cfg config.GatewayConfig, workers []W
 			underprovisioned = 1
 		}
 		m.modelUnderprovisioned.WithLabelValues(modelName).Set(underprovisioned)
+	}
+}
+
+func (m *Metrics) ObserveModelQueues(cfg config.GatewayConfig, limiter *QueueLimiter) {
+	for modelName := range cfg.Models {
+		queued := 0
+		if limiter != nil {
+			queued = limiter.Queued("model:" + modelName)
+		}
+		m.modelQueueDepth.WithLabelValues(modelName).Set(float64(queued))
 	}
 }
 

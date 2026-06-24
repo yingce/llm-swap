@@ -182,6 +182,9 @@ func (s *Server) handleUIMetricsSummary(w http.ResponseWriter, r *http.Request) 
 	queries := []historicalQuery{
 		{Name: "requests_rate", Query: `sum(rate(llm_swap_gateway_requests_total[5m]))`},
 		{Name: "errors_rate", Query: `sum(rate(llm_swap_gateway_requests_total{status_code=~"5.."}[5m]))`},
+		{Name: "model_requests", Query: `sum(increase(llm_swap_gateway_requests_total[5m])) by (model)`},
+		{Name: "model_avg_duration_ms", Query: `1000 * sum(rate(llm_swap_gateway_request_duration_seconds_sum[5m])) by (model) / clamp_min(sum(rate(llm_swap_gateway_request_duration_seconds_count[5m])) by (model), 1)`},
+		{Name: "model_queue_depth", Query: `llm_swap_gateway_model_queue_depth`},
 		{Name: "active_requests", Query: `sum(llm_swap_gateway_active_requests)`},
 		{Name: "healthy_workers", Query: `sum(llm_swap_gateway_worker_up)`},
 		{Name: "loaded_replicas", Query: `sum(llm_swap_gateway_model_loaded_replicas)`},
