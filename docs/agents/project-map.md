@@ -76,6 +76,8 @@ JSONL files for request accounting and worker events.
   - Extracts the requested model, normalizes some SGLang request fields, applies
     queue/concurrency gates, schedules a worker, proxies to llama-swap, records
     request stats, records pressure observations, and emits metrics/logs.
+  - Retryable proxy failures mark only the failing replica as cooled down for
+    30 seconds, then retry another ready replica when available.
   - `top_k: 0` is normalized to `-1` for SGLang-backed models.
   - Transformers-style `image`, `video`, and `audio` content parts are converted
     to OpenAI-style URL objects for SGLang compatibility.
@@ -84,6 +86,8 @@ JSONL files for request accounting and worker events.
   - Owns request placement and async control-action planning.
   - Request placement only returns workers that can handle the current request.
   - Starting/loading runtimes count as occupied but are not routable.
+  - Active replica cooldowns exclude only the affected `worker_id + model`
+    ready replica from request routing.
   - Omitted `max_loaded` is treated as an automatic ceiling bounded by eligible
     workers and protected model floors.
   - `min_loaded=0` models behave as opportunity cache: they can remain loaded
@@ -99,6 +103,12 @@ JSONL files for request accounting and worker events.
   - Computes conservative demand scores used by Placement warm scale-out.
   - Rolling queue pressure is not persisted and starts empty after gateway
     restart.
+
+- `internal/gateway/replica_cooldown.go`
+  - Tracks short-lived gateway-local cooldowns for retryable proxy failures on
+    a specific `worker_id + model` replica.
+  - Cooldown affects request routing only. It does not change worker heartbeat
+    health and does not trigger unloads by itself.
 
 - `internal/gateway/scheduler.go`
   - Compatibility adapter over Placement.
@@ -399,6 +409,9 @@ HTTP-only cookie scoped to `/ui`.
 - Requests route only to ready workers for the requested model.
 - Starting/loading workers are visible as occupied replicas but do not receive
   current requests.
+- Retryable proxy failures mark only the failing `worker_id + model` replica as
+  cooled down for 30 seconds. Requests skip cooled-down ready replicas, while
+  reconciliation remains gateway-owned and policy-driven.
 - The gateway proactively warms `min_loaded` floors on empty eligible workers;
   worker-local startup hooks are not used for this.
 - Omitted `max_loaded` now means automatic expansion rather than `min_loaded`.
