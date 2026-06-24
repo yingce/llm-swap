@@ -213,6 +213,69 @@ func TestPlacementPlanControlActionsEvictsMinLoadedZeroBeforeProtectedFloor(t *t
 	}
 }
 
+func TestPlacementPlansWarmForMinLoadedOnEmptyWorker(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"hot": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"hot"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://empty",
+		Artifacts:    map[string]string{"hot": "ready"},
+	}, now)
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker()}).PlanControlActions(now)
+	if len(actions) != 1 {
+		t.Fatalf("actions = %#v, want one warm action", actions)
+	}
+	if actions[0].Type != ControlActionWarm || actions[0].Worker.ID != "empty" || actions[0].Model != "hot" {
+		t.Fatalf("action = %#v, want warm hot on empty", actions[0])
+	}
+	if actions[0].Reason != "warm_for_min_loaded_empty_worker" {
+		t.Fatalf("reason = %q, want warm_for_min_loaded_empty_worker", actions[0].Reason)
+	}
+}
+
+func TestPlacementDoesNotDuplicateWarmForMinLoadedWhenModelAlreadyLoading(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"hot": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"hot"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "loading",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://loading",
+		Artifacts:    map[string]string{"hot": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "hot", State: "loading"},
+		},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://empty",
+		Artifacts:    map[string]string{"hot": "ready"},
+	}, now)
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker()}).PlanControlActions(now)
+	if len(actions) != 0 {
+		t.Fatalf("actions = %#v, want no duplicate warm while hot is already loading", actions)
+	}
+}
+
 func TestPlacementDoesNotUnloadMinLoadedZeroWhenNoCapacityIsNeeded(t *testing.T) {
 	now := time.Now()
 	cfg := config.GatewayConfig{
@@ -518,7 +581,7 @@ func TestPlacementDoesNotPlanWarmWhenTargetAlreadyLoading(t *testing.T) {
 	}
 }
 
-func TestPlacementDoesNotPredictivelyWarmWhenAnyMinLoadedFloorIsUnderloaded(t *testing.T) {
+func TestPlacementPrioritizesMinLoadedFloorOverPredictiveWarm(t *testing.T) {
 	now := time.Unix(1000, 0)
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{
@@ -558,7 +621,13 @@ func TestPlacementDoesNotPredictivelyWarmWhenAnyMinLoadedFloorIsUnderloaded(t *t
 	})
 
 	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(10 * time.Second))
-	if len(actions) != 0 {
-		t.Fatalf("actions = %#v, want no predictive warm while a min_loaded floor is underloaded", actions)
+	if len(actions) != 1 {
+		t.Fatalf("actions = %#v, want one min_loaded warm action", actions)
+	}
+	if actions[0].Type != ControlActionWarm || actions[0].Model != "hot" {
+		t.Fatalf("action = %#v, want warm for hot min_loaded floor", actions[0])
+	}
+	if actions[0].Reason != "warm_for_min_loaded_empty_worker" {
+		t.Fatalf("reason = %q, want warm_for_min_loaded_empty_worker", actions[0].Reason)
 	}
 }

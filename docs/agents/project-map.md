@@ -44,8 +44,9 @@ JSONL files for request accounting and worker events.
   models, warm model, worker defaults, and tag-level concurrency.
 - `running_model`: llama-swap reported model state, usually `loading` or
   `ready`.
-- `min_loaded`: target floor for ready replicas. The async control loop tries
-  to satisfy it when capacity allows.
+- `min_loaded`: target floor for replicas. Ready plus starting/loading replicas
+  count toward the floor; the async control loop tries to satisfy it when
+  capacity allows.
 - `max_loaded`: optional hard ceiling. When omitted, Placement treats the
   ceiling as automatic and bounded by eligible workers, other models'
   `min_loaded`, and priority protection.
@@ -88,6 +89,8 @@ JSONL files for request accounting and worker events.
   - `min_loaded=0` models behave as opportunity cache: they can remain loaded
     while capacity is spare, and are preferred eviction candidates when another
     model needs capacity.
+  - Plans gateway-owned `min_loaded` warm actions on empty eligible workers
+    before evicting another model for capacity.
   - Plans conservative predictive warm actions when sustained demand beats the
     current replica value plus switch cost.
 
@@ -116,8 +119,8 @@ JSONL files for request accounting and worker events.
 - `internal/gateway/reconcile.go`
   - Loaded-replica reconciler.
   - Unloads excess idle replicas over explicit hard `max_loaded`.
-  - Executes Placement control actions to free capacity for models below
-    `min_loaded`.
+  - Executes Placement control actions to warm models below `min_loaded` on
+    empty eligible workers or free capacity when no empty worker is available.
   - Executes at most one predictive warm action per cycle after hard ceiling and
     min_loaded capacity actions.
   - Records gateway-initiated unload/warm success/failure as worker events.
@@ -396,6 +399,8 @@ HTTP-only cookie scoped to `/ui`.
 - Requests route only to ready workers for the requested model.
 - Starting/loading workers are visible as occupied replicas but do not receive
   current requests.
+- The gateway proactively warms `min_loaded` floors on empty eligible workers;
+  worker-local startup hooks are not used for this.
 - Omitted `max_loaded` now means automatic expansion rather than `min_loaded`.
   Use explicit `max_loaded` to cap expensive models.
 - `min_loaded=0` models behave as opportunity cache and can remain loaded until

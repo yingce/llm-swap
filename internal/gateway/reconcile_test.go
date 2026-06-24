@@ -259,6 +259,56 @@ func TestLoadedReconcilerKeepsOpportunityCacheWhenNoModelNeedsCapacity(t *testin
 	}
 }
 
+func TestLoadedReconcilerWarmsMinLoadedOnEmptyWorker(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var loadCalls atomic.Int32
+	loadServer := loadServerForModel(t, "qwen", &loadCalls)
+	defer loadServer.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: loadServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	var plannedFields map[string]any
+
+	reconciler := LoadedReconciler{
+		Config:  cfg,
+		Workers: reg,
+		Client:  LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:  NewAccessTracker(),
+		LogEvent: func(event string, fields map[string]any) {
+			if event == "control_action_planned" {
+				plannedFields = fields
+			}
+		},
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if loadCalls.Load() != 1 {
+		t.Fatalf("load calls = %d, want 1", loadCalls.Load())
+	}
+	if plannedFields == nil {
+		t.Fatal("control_action_planned log was not captured")
+	}
+	if plannedFields["reason"] != "warm_for_min_loaded_empty_worker" {
+		t.Fatalf("planned reason = %v, want warm_for_min_loaded_empty_worker", plannedFields["reason"])
+	}
+}
+
 func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 	now := time.Unix(1000, 0)
 	var loadCalls atomic.Int32
@@ -322,7 +372,7 @@ func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 		},
 	}
 
-	if err := reconciler.Reconcile(context.Background(), now.Add(10 * time.Second)); err != nil {
+	if err := reconciler.Reconcile(context.Background(), now.Add(10*time.Second)); err != nil {
 		t.Fatalf("Reconcile returned error: %v", err)
 	}
 	if loadCalls.Load() != 1 {

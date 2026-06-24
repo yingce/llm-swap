@@ -169,10 +169,23 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 		if model.MinLoaded <= 0 {
 			continue
 		}
-		if loadedCounts[modelName] >= model.MinLoaded {
+		occupiedCount := occupiedModelCount(workers, now, p.Workers, modelName)
+		if occupiedCount >= model.MinLoaded {
+			continue
+		}
+		maxLoaded, _ := p.effectiveMaxLoaded(model, workers, modelName, now)
+		if maxLoaded <= 0 || occupiedCount >= maxLoaded {
 			continue
 		}
 		underloadedFloor = true
+		if worker, ok := p.pickEmptyWarmWorker(now, workers, active, modelName); ok {
+			return []ControlAction{{
+				Type:   ControlActionWarm,
+				Worker: worker,
+				Model:  modelName,
+				Reason: "warm_for_min_loaded_empty_worker",
+			}}
+		}
 		victim, victimModel, ok := p.pickEvictionVictimForModel(now, workers, active, loadedCounts, modelName)
 		if !ok {
 			continue
@@ -191,6 +204,18 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 		return []ControlAction{action}
 	}
 	return nil
+}
+
+func (p Placement) pickEmptyWarmWorker(now time.Time, workers []Worker, active map[string]int, modelName string) (Worker, bool) {
+	for _, worker := range sortedWorkersByID(workers) {
+		if !p.warmEligibleWorker(worker, now, active, modelName) {
+			continue
+		}
+		if len(worker.RunningModels) == 0 {
+			return worker, true
+		}
+	}
+	return Worker{}, false
 }
 
 func (p Placement) planWarmAction(now time.Time, workers []Worker, active map[string]int, loadedCounts map[string]int) (ControlAction, bool) {
@@ -220,19 +245,14 @@ func (p Placement) planWarmAction(now time.Time, workers []Worker, active map[st
 			continue
 		}
 
-		for _, worker := range workers {
-			if !p.warmEligibleWorker(worker, now, active, modelName) {
-				continue
-			}
-			if len(worker.RunningModels) == 0 {
-				return ControlAction{
-					Type:        ControlActionWarm,
-					Worker:      worker,
-					Model:       modelName,
-					Reason:      "empty_worker_predictive_scaleout",
-					DemandScore: demandScore,
-				}, true
-			}
+		if worker, ok := p.pickEmptyWarmWorker(now, workers, active, modelName); ok {
+			return ControlAction{
+				Type:        ControlActionWarm,
+				Worker:      worker,
+				Model:       modelName,
+				Reason:      "empty_worker_predictive_scaleout",
+				DemandScore: demandScore,
+			}, true
 		}
 
 		if action, ok := p.planWarmEviction(now, workers, active, loadedCounts, modelName, demandScore); ok {
