@@ -62,7 +62,12 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		now := time.Now()
-		decision, err := (Scheduler{Config: s.config, Workers: s.workers, Access: s.access}).PickDecision(model, now, exclude)
+		decision, err := (Scheduler{
+			Config:    s.config,
+			Workers:   s.workers,
+			Access:    s.access,
+			Cooldowns: s.replicaCooldowns.Snapshot(now),
+		}).PickDecision(model, now, exclude)
 		if err != nil {
 			break
 		}
@@ -125,6 +130,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		if retry {
 			if dispatchFailure != nil {
 				s.metrics.ObserveDispatchFailure(model, worker.ID, dispatchFailure.code)
+				s.markReplicaCooldown(requestID, model, worker, dispatchFailure, statusCode, dispatchAttempts)
 			}
 			continue
 		}
@@ -139,6 +145,9 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		entry.StatusCode = statusCode
 		entry.DurationMS = time.Since(start).Milliseconds()
 		entry.RetryCount = dispatchAttempts - 1
+		if statusCode > 0 && statusCode < http.StatusInternalServerError {
+			s.clearReplicaCooldown(requestID, model, worker)
+		}
 		s.recordRequestStats(entry)
 		s.metrics.ObserveRequest(model, worker.ID, statusCode, time.Since(start))
 		s.logEvent("request", map[string]any{
@@ -166,6 +175,44 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	protocol.WriteOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_worker", "no healthy worker is available for the requested model")
+}
+
+func (s *Server) markReplicaCooldown(requestID, model string, worker Worker, failure *proxyDispatchFailure, statusCode int, attempt int) {
+	if s == nil || s.replicaCooldowns == nil || failure == nil {
+		return
+	}
+	now := time.Now()
+	entry, marked := s.replicaCooldowns.Mark(worker.ID, model, failure.code, now)
+	if !marked {
+		return
+	}
+	s.logEvent("replica_unhealthy_marked", map[string]any{
+		"request_id":       requestID,
+		"model":            model,
+		"worker_id":        worker.ID,
+		"reason":           failure.code,
+		"status_code":      statusCode,
+		"attempt":          attempt,
+		"cooldown_seconds": entry.RemainingSeconds,
+		"cooldown_until":   entry.CooldownUntil.UTC(),
+		"failure_count":    entry.FailureCount,
+	})
+}
+
+func (s *Server) clearReplicaCooldown(requestID, model string, worker Worker) {
+	if s == nil || s.replicaCooldowns == nil {
+		return
+	}
+	entry, ok := s.replicaCooldowns.Clear(worker.ID, model, time.Now())
+	if !ok {
+		return
+	}
+	s.logEvent("replica_unhealthy_cleared", map[string]any{
+		"request_id": requestID,
+		"model":      model,
+		"worker_id":  worker.ID,
+		"reason":     entry.Reason,
+	})
 }
 
 func (s *Server) recordRequestStats(entry RequestLogEntry) {

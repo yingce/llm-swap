@@ -590,6 +590,79 @@ func TestProxyForwardsJSON404WithoutRetry(t *testing.T) {
 	}
 }
 
+func TestProxyMarksRetryableFailureCooldownAndSkipsReplicaOnNextRequest(t *testing.T) {
+	var firstRequests atomic.Int32
+	var secondRequests atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstRequests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests.Add(1)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if !srv.replicaCooldowns.Active("first", "qwen", time.Now()) {
+		t.Fatal("first replica cooldown is not active after retryable failure")
+	}
+
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if firstRequests.Load() != 1 {
+		t.Fatalf("first requests = %d, want 1 because cooldown skips second request", firstRequests.Load())
+	}
+	if secondRequests.Load() != 2 {
+		t.Fatalf("second requests = %d, want 2", secondRequests.Load())
+	}
+}
+
+func TestProxyClearReplicaCooldownHelperClearsActiveEntry(t *testing.T) {
+	srv := NewServer(testProxyConfig())
+	worker := Worker{ID: "worker-a"}
+	srv.replicaCooldowns.Mark("worker-a", "qwen", "connection_error", time.Now())
+
+	srv.clearReplicaCooldown("req-test", "qwen", worker)
+
+	if srv.replicaCooldowns.Active("worker-a", "qwen", time.Now()) {
+		t.Fatal("cooldown remained active after clear helper")
+	}
+}
+
+func TestProxyDoesNotCooldownNonRetryableJSON404(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"model_not_found"}}`))
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+	if srv.replicaCooldowns.Active("worker-a", "qwen", time.Now()) {
+		t.Fatal("JSON 404 should not mark cooldown")
+	}
+}
+
 func TestProxyAllWorkersReturn503ReportsUpstreamRetryExhausted(t *testing.T) {
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
