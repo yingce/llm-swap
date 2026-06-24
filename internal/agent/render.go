@@ -20,7 +20,6 @@ type llamaSwapConfig struct {
 	GlobalTTL          int                       `yaml:"globalTTL"`
 	APIKeys            []string                  `yaml:"apiKeys,omitempty"`
 	Performance        llamaSwapPerformance      `yaml:"performance"`
-	Hooks              map[string]any            `yaml:"hooks,omitempty"`
 	Models             map[string]llamaSwapModel `yaml:"models"`
 }
 
@@ -49,13 +48,6 @@ func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, 
 	}
 	if token != "" {
 		out.APIKeys = []string{token}
-	}
-	if resp.TagPolicy.WarmWhenIdle != "" {
-		out.Hooks = map[string]any{
-			"on_startup": map[string]any{
-				"preload": []string{resp.TagPolicy.WarmWhenIdle},
-			},
-		}
 	}
 
 	for _, modelName := range resp.TagPolicy.AllowedModels {

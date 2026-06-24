@@ -61,11 +61,8 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 		t.Fatalf("performance.every = %#v, want 5s", performance["every"])
 	}
 
-	hooks := doc["hooks"].(map[string]any)
-	onStartup := hooks["on_startup"].(map[string]any)
-	preload := onStartup["preload"].([]any)
-	if len(preload) != 1 || preload[0] != "qwen" {
-		t.Fatalf("hooks.on_startup.preload = %#v, want [qwen]", preload)
+	if _, ok := doc["hooks"]; ok {
+		t.Fatalf("hooks rendered from warm_when_idle; gateway should own warm decisions: %#v", doc["hooks"])
 	}
 
 	models := doc["models"].(map[string]any)

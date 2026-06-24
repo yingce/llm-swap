@@ -52,8 +52,9 @@ JSONL files for request accounting and worker events.
 - `min_loaded=0`: opportunity-cache model. It is not proactively protected, but
   loaded replicas can remain while capacity is spare and are preferred eviction
   candidates when another model needs capacity.
-- `warm_when_idle`: tag policy model preloaded through rendered llama-swap
-  startup hooks. It can still be unloaded if policy and traffic justify it.
+- `warm_when_idle`: legacy tag policy hint retained in config responses.
+  Agent no longer renders it as a worker-local llama-swap startup hook because
+  model warm/load decisions must stay gateway-owned.
 
 ## Gateway Modules
 
@@ -189,6 +190,7 @@ JSONL files for request accounting and worker events.
   - `check_endpoint` maps to llama-swap `checkEndpoint`.
   - `cmd_stop` maps to llama-swap `cmdStop`; normal model stopping should still
     rely on llama-swap unless custom cleanup is needed.
+  - Does not render tag `warm_when_idle` into llama-swap startup hooks.
 
 - `internal/agent/llamaswap_client.go`
   - Reads local llama-swap health and running models.
