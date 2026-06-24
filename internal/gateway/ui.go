@@ -705,11 +705,21 @@ const gatewayUIHTML = `<!doctype html>
     .detail-block { min-width: 0; }
     .detail-title { color: var(--muted); font-size: 11px; margin-bottom: 5px; }
     .problem { margin-top: 8px; padding: 8px; border-radius: 6px; background: #fff0ef; color: var(--bad); overflow-wrap: anywhere; }
-    .history-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 12px; }
-    .history-item { border: 1px solid #edf1f5; border-radius: 8px; padding: 10px; min-width: 0; }
-    .history-name { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
-    .history-value { font-size: 18px; font-weight: 760; }
-    .history-meta { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
+    .section-head h2 { border-bottom: 0; }
+    .range-buttons { display: flex; gap: 6px; padding-right: 12px; }
+    .range-buttons button { padding: 5px 8px; font-size: 12px; }
+    .range-buttons button.active { color: var(--info); border-color: #8cb7dc; background: #edf6ff; }
+    .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; padding: 12px; }
+    .chart-card { border: 1px solid #edf1f5; border-radius: 8px; padding: 10px; min-width: 0; }
+    .chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+    .chart-name { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+    .chart-value { font-size: 18px; font-weight: 760; }
+    .chart-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .chart-svg { display: block; width: 100%; height: 130px; background: #fbfdff; border: 1px solid #edf1f5; border-radius: 6px; }
+    .chart-gridline { stroke: #e7edf3; stroke-width: 1; }
+    .chart-line { fill: none; stroke: var(--info); stroke-width: 2.2; vector-effect: non-scaling-stroke; }
+    .chart-point { fill: var(--info); }
     .traffic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; }
     .traffic-grid span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 650; border: 1px solid transparent; white-space: nowrap; }
@@ -733,6 +743,9 @@ const gatewayUIHTML = `<!doctype html>
       header { align-items: flex-start; flex-direction: column; }
       main { width: calc(100vw - 28px); padding: 14px 0; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .section-head { align-items: flex-start; flex-direction: column; gap: 0; }
+      .range-buttons { padding: 0 12px 12px; flex-wrap: wrap; }
+      .chart-grid { grid-template-columns: 1fr; }
       .worker-card-grid { grid-template-columns: 1fr; }
       .worker-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .worker-detail-grid { grid-template-columns: 1fr; }
@@ -750,7 +763,10 @@ const gatewayUIHTML = `<!doctype html>
   <main>
     <div id="summary" class="summary"></div>
     <section>
-      <h2>History</h2>
+      <div class="section-head">
+        <h2>History</h2>
+        <div id="metricsRangeButtons" class="range-buttons"><button type="button" data-range="15m">15m</button><button type="button" data-range="1h" class="active">1h</button><button type="button" data-range="6h">6h</button><button type="button" data-range="24h">24h</button></div>
+      </div>
       <div id="history"></div>
     </section>
     <div class="dashboard-stack">
@@ -772,7 +788,13 @@ const gatewayUIHTML = `<!doctype html>
   <script>
     const statusURL = "/ui/status";
     const eventsURL = "/ui/events";
-    const metricsSummaryURL = "/ui/metrics/summary?range=1h&step=1m";
+    const metricsRanges = [
+      { label: "15m", range: "15m", step: "15s" },
+      { label: "1h", range: "1h", step: "1m" },
+      { label: "6h", range: "6h", step: "5m" },
+      { label: "24h", range: "24h", step: "15m" },
+    ];
+    let metricsRange = metricsRanges[1];
     const eventLimit = 50;
     let eventOffset = 0;
     let eventItems = [];
@@ -817,14 +839,31 @@ const gatewayUIHTML = `<!doctype html>
     function renderHistory(data) {
       const series = data.series || [];
       if (!series.length) { document.getElementById("history").innerHTML = '<div class="empty">No historical metrics yet.</div>'; return; }
-      document.getElementById("history").innerHTML = '<div class="history-grid">' + series.map((s) => {
+      document.getElementById("history").innerHTML = '<div class="chart-grid">' + series.map((s) => {
         const points = s.points || [];
         const last = points.length ? points[points.length - 1] : null;
         const label = historyLabel(s);
         const value = last ? compactNumber(last.value) : "-";
         const when = last ? new Date(last.ts * 1000).toLocaleTimeString() : "-";
-        return '<div class="history-item"><div class="history-name">' + esc(label) + '</div><div class="history-value">' + esc(value) + '</div><div class="history-meta mono">' + esc(data.range || "") + ' / ' + esc(data.step || "") + ' last ' + esc(when) + '</div></div>';
+        return '<div class="chart-card"><div class="chart-head"><div><div class="chart-name">' + esc(label) + '</div><div class="chart-value">' + esc(value) + '</div></div><div class="chart-meta mono">' + esc(data.range || "") + ' / ' + esc(data.step || "") + '<br>last ' + esc(when) + '</div></div>' + renderChart(points) + '</div>';
       }).join("") + '</div>';
+    }
+    function renderChart(points) {
+      const clean = (points || []).map((p) => ({ ts: Number(p.ts), value: Number(p.value) })).filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.value));
+      if (!clean.length) return '<div class="empty">No points.</div>';
+      const width = 320, height = 120, pad = 10;
+      const minX = clean[0].ts, maxX = clean[clean.length - 1].ts || minX + 1;
+      let minY = Math.min(...clean.map((p) => p.value));
+      let maxY = Math.max(...clean.map((p) => p.value));
+      if (minY === maxY) {
+        minY = minY - 1;
+        maxY = maxY + 1;
+      }
+      const x = (ts) => pad + ((ts - minX) / Math.max(1, maxX - minX)) * (width - pad * 2);
+      const y = (value) => height - pad - ((value - minY) / Math.max(1, maxY - minY)) * (height - pad * 2);
+      const line = clean.map((p) => x(p.ts).toFixed(1) + "," + y(p.value).toFixed(1)).join(" ");
+      const last = clean[clean.length - 1];
+      return '<svg class="chart-svg" viewBox="0 0 320 120" preserveAspectRatio="none" role="img"><line class="chart-gridline" x1="10" y1="20" x2="310" y2="20"></line><line class="chart-gridline" x1="10" y1="60" x2="310" y2="60"></line><line class="chart-gridline" x1="10" y1="100" x2="310" y2="100"></line><polyline class="chart-line" points="' + esc(line) + '"></polyline><circle class="chart-point" cx="' + x(last.ts).toFixed(1) + '" cy="' + y(last.value).toFixed(1) + '" r="3"></circle></svg>';
     }
     function historyLabel(series) {
       const labels = series.labels || {};
@@ -911,6 +950,7 @@ const gatewayUIHTML = `<!doctype html>
     }
     async function loadHistory() {
       try {
+        const metricsSummaryURL = "/ui/metrics/summary?range=" + encodeURIComponent(metricsRange.range) + "&step=" + encodeURIComponent(metricsRange.step);
         const res = await fetch(metricsSummaryURL, { cache: "no-store" });
         if (res.status === 503) {
           document.getElementById("history").innerHTML = '<div class="empty">Metrics store disabled.</div>';
@@ -921,6 +961,18 @@ const gatewayUIHTML = `<!doctype html>
       } catch (err) {
         document.getElementById("history").innerHTML = '<div class="errorbox">Failed to load /ui/metrics/summary: ' + esc(err.message) + '</div>';
       }
+    }
+    function renderMetricsRangeButtons() {
+      document.getElementById("metricsRangeButtons").innerHTML = metricsRanges.map((item) => '<button type="button" data-range="' + esc(item.range) + '" class="' + (item.range === metricsRange.range ? "active" : "") + '">' + esc(item.label) + '</button>').join("");
+      document.querySelectorAll("#metricsRangeButtons button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const selected = metricsRanges.find((item) => item.range === button.dataset.range);
+          if (!selected) return;
+          metricsRange = selected;
+          renderMetricsRangeButtons();
+          loadHistory();
+        });
+      });
     }
     async function load() {
       try {
@@ -939,6 +991,7 @@ const gatewayUIHTML = `<!doctype html>
       eventExpanded = true;
       loadEvents(false);
     });
+    renderMetricsRangeButtons();
     load();
     loadHistory();
     loadEvents(true);

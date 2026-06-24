@@ -338,7 +338,7 @@ func TestUIPageServesDashboardHTML(t *testing.T) {
 		t.Fatalf("content-type = %q, want text/html", got)
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"LLM Swap Gateway", "/ui/status", "/ui/metrics/summary", "Models", "Workers", "History", "Recent worker events", "worker-card-grid", "model-table", "breakable", "renderHistory"} {
+	for _, want := range []string{"LLM Swap Gateway", "/ui/status", "/ui/metrics/summary", "Models", "Workers", "History", "Recent worker events", "worker-card-grid", "model-table", "breakable", "renderHistory", "renderChart", "chart-grid", "metricsRangeButtons", `data-range="1h"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q:\n%s", want, body)
 		}
