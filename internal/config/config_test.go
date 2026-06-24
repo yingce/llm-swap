@@ -155,7 +155,7 @@ tag_policies:
 	if cfg.Models["qwen"].Runtime != "sglang" {
 		t.Fatalf("runtime = %q, want sglang", cfg.Models["qwen"].Runtime)
 	}
-	if got := cfg.Models["qwen"].RuntimeArgs; len(got) != 4 || got[0] != "--trust-remote-code" || got[3] != "bfloat16" {
+	if got := cfg.Models["qwen"].RuntimeArgs; len(got) != 3 || got[0] != "--trust-remote-code" || got[2] != "bfloat16" {
 		t.Fatalf("runtime_args = %#v, want parsed args", got)
 	}
 }
