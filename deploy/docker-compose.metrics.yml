@@ -1,0 +1,27 @@
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:stable
+    container_name: llmswap-victoriametrics
+    command:
+      - -storageDataPath=/victoria-metrics-data
+      - -retentionPeriod=30d
+    ports:
+      - "8428:8428"
+    volumes:
+      - victoriametrics-data:/victoria-metrics-data
+    restart: unless-stopped
+
+  vmagent:
+    image: victoriametrics/vmagent:stable
+    container_name: llmswap-vmagent
+    depends_on:
+      - victoriametrics
+    command:
+      - -promscrape.config=/etc/vmagent/promscrape.yml
+      - -remoteWrite.url=http://victoriametrics:8428/api/v1/write
+    volumes:
+      - ./vmagent/promscrape.yml:/etc/vmagent/promscrape.yml:ro
+    restart: unless-stopped
+
+volumes:
+  victoriametrics-data:
