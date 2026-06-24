@@ -242,6 +242,9 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 	if s.access != nil {
 		s.access.RecordRequest(entry)
 	}
+	if s.metrics != nil {
+		s.metrics.ObserveRequestTokens(entry)
+	}
 	if s.pressure != nil {
 		s.pressure.RecordRequest(PressureRequestObservation{
 			Time:        entry.Time,

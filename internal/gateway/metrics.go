@@ -15,6 +15,7 @@ import (
 type Metrics struct {
 	registry                     *prometheus.Registry
 	activeRequests               *prometheus.GaugeVec
+	modelActiveRequests          *prometheus.GaugeVec
 	workerUp                     *prometheus.GaugeVec
 	workerActive                 *prometheus.GaugeVec
 	workerLastHeartbeat          *prometheus.GaugeVec
@@ -35,6 +36,7 @@ type Metrics struct {
 	workerPerformanceSamples     *prometheus.CounterVec
 	workerScrapeErrors           *prometheus.CounterVec
 	requests                     *prometheus.CounterVec
+	modelTokens                  *prometheus.CounterVec
 	requestDuration              *prometheus.HistogramVec
 	queueEvents                  *prometheus.CounterVec
 	queueWaitDuration            *prometheus.HistogramVec
@@ -43,6 +45,7 @@ type Metrics struct {
 	replicaCooldownMarks         *prometheus.CounterVec
 	replicaCooldownClears        *prometheus.CounterVec
 	proxyRetries                 *prometheus.CounterVec
+	controlActions               *prometheus.CounterVec
 	modelLoadedReplicas          *prometheus.GaugeVec
 	modelUnderprovisioned        *prometheus.GaugeVec
 }
@@ -52,6 +55,10 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_active_requests",
 		Help: "Current active requests handled by the gateway, labeled by worker and model.",
 	}, []string{"worker_id", "model"})
+	modelActiveRequests := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_model_active_requests",
+		Help: "Current active requests handled by the gateway, labeled by model.",
+	}, []string{"model"})
 	workerUp := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_swap_gateway_worker_up",
 		Help: "Whether the gateway currently considers a worker healthy.",
@@ -133,6 +140,10 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_requests_total",
 		Help: "Requests handled by the gateway.",
 	}, []string{"model", "worker_id", "status_code"})
+	modelTokens := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_model_tokens_total",
+		Help: "Tokens reported in gateway proxied OpenAI-compatible responses.",
+	}, []string{"model", "type"})
 	requestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "llm_swap_gateway_request_duration_seconds",
 		Help:    "End-to-end gateway request duration.",
@@ -167,6 +178,10 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_proxy_retries_total",
 		Help: "Gateway proxy retries by worker, model, and reason.",
 	}, []string{"worker_id", "model", "reason"})
+	controlActions := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_control_actions_total",
+		Help: "Gateway model control actions by action, worker, model, reason, and result.",
+	}, []string{"action", "worker_id", "model", "reason", "result"})
 	modelLoadedReplicas := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_swap_gateway_model_loaded_replicas",
 		Help: "Number of healthy workers reporting a model as loaded and ready.",
@@ -177,11 +192,12 @@ func NewMetrics() *Metrics {
 	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, modelLoadedReplicas, modelUnderprovisioned)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned)
 
 	return &Metrics{
 		registry:                     registry,
 		activeRequests:               activeRequests,
+		modelActiveRequests:          modelActiveRequests,
 		workerUp:                     workerUp,
 		workerActive:                 workerActive,
 		workerLastHeartbeat:          workerLastHeartbeat,
@@ -202,6 +218,7 @@ func NewMetrics() *Metrics {
 		workerPerformanceSamples:     workerPerformanceSamples,
 		workerScrapeErrors:           workerScrapeErrors,
 		requests:                     requests,
+		modelTokens:                  modelTokens,
 		requestDuration:              requestDuration,
 		queueEvents:                  queueEvents,
 		queueWaitDuration:            queueWaitDuration,
@@ -210,6 +227,7 @@ func NewMetrics() *Metrics {
 		replicaCooldownMarks:         replicaCooldownMarks,
 		replicaCooldownClears:        replicaCooldownClears,
 		proxyRetries:                 proxyRetries,
+		controlActions:               controlActions,
 		modelLoadedReplicas:          modelLoadedReplicas,
 		modelUnderprovisioned:        modelUnderprovisioned,
 	}
@@ -217,9 +235,12 @@ func NewMetrics() *Metrics {
 
 func (m *Metrics) AcquireActiveRequest(workerID, model string) func() {
 	active := m.activeRequests.WithLabelValues(workerID, model)
+	modelActive := m.modelActiveRequests.WithLabelValues(model)
 	active.Inc()
+	modelActive.Inc()
 	return func() {
 		active.Dec()
+		modelActive.Dec()
 	}
 }
 
@@ -233,6 +254,37 @@ func (m *Metrics) ObserveRequest(model, workerID string, statusCode int, duratio
 	}
 	m.requests.WithLabelValues(model, workerID, strconv.Itoa(statusCode)).Inc()
 	m.requestDuration.WithLabelValues(model, workerID).Observe(duration.Seconds())
+}
+
+func (m *Metrics) ObserveRequestTokens(entry RequestLogEntry) {
+	if entry.PromptTokens > 0 {
+		m.modelTokens.WithLabelValues(entry.Model, "prompt").Add(float64(entry.PromptTokens))
+	}
+	if entry.CompletionTokens > 0 {
+		m.modelTokens.WithLabelValues(entry.Model, "completion").Add(float64(entry.CompletionTokens))
+	}
+	if entry.TotalTokens > 0 {
+		m.modelTokens.WithLabelValues(entry.Model, "total").Add(float64(entry.TotalTokens))
+	}
+	if entry.CacheTokens > 0 {
+		m.modelTokens.WithLabelValues(entry.Model, "cache").Add(float64(entry.CacheTokens))
+	}
+	if entry.ReasoningTokens > 0 {
+		m.modelTokens.WithLabelValues(entry.Model, "reasoning").Add(float64(entry.ReasoningTokens))
+	}
+}
+
+func (m *Metrics) ObserveControlAction(action, model, workerID, reason, result string) {
+	if action == "" {
+		action = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	if result == "" {
+		result = "unknown"
+	}
+	m.controlActions.WithLabelValues(action, workerID, model, reason, result).Inc()
 }
 
 func (m *Metrics) ObserveQueueEvent(model, result string) {

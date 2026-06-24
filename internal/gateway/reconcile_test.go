@@ -309,6 +309,45 @@ func TestLoadedReconcilerWarmsMinLoadedOnEmptyWorker(t *testing.T) {
 	}
 }
 
+func TestLoadedReconcilerRecordsControlActionMetrics(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var loadCalls atomic.Int32
+	loadServer := loadServerForModel(t, "qwen", &loadCalls)
+	defer loadServer.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	srv := NewServer(cfg)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "empty",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: loadServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	reconciler := LoadedReconciler{
+		Config:  cfg,
+		Workers: srv.workers,
+		Client:  LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:  NewAccessTracker(),
+		Metrics: srv.metrics,
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	body := scrapeMetrics(t, srv)
+	assertMetricLine(t, body, `llm_swap_gateway_control_actions_total{action="warm",model="qwen",reason="warm_for_min_loaded_empty_worker",result="planned",worker_id="empty"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_control_actions_total{action="warm",model="qwen",reason="warm_for_min_loaded_empty_worker",result="done",worker_id="empty"} 1`)
+}
+
 func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 	now := time.Unix(1000, 0)
 	var loadCalls atomic.Int32

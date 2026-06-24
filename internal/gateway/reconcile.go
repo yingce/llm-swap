@@ -17,6 +17,7 @@ type LoadedReconciler struct {
 	Client      LlamaSwapClient
 	Access      *AccessTracker
 	Pressure    *PressureTracker
+	Metrics     *Metrics
 	RecordEvent func(workerID string, event protocol.AgentEvent)
 	LogEvent    func(event string, fields map[string]any)
 }
@@ -65,12 +66,15 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			if active[worker.ID] > 0 {
 				continue
 			}
+			r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "planned")
 			if err := r.Client.Unload(ctx, worker.LlamaSwapURL, modelName); err != nil {
 				r.recordUnloadEvent(worker.ID, modelName, "gateway_model_unload_error", err)
+				r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "error")
 				outErr = errors.Join(outErr, err)
 				continue
 			}
 			r.recordUnloadEvent(worker.ID, modelName, "gateway_model_unload_done", nil)
+			r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "done")
 			excess--
 		}
 	}
@@ -82,31 +86,47 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			if actionActive[action.Worker.ID] > 0 {
 				continue
 			}
+			r.logControlAction("control_action_planned", action, nil)
+			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
 			if err := r.Client.Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
 				r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_error", err)
+				r.logControlAction("control_action_error", action, err)
+				r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
 				outErr = errors.Join(outErr, err)
 				continue
 			}
 			r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_done", nil)
+			r.logControlAction("control_action_done", action, nil)
+			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "done")
 		case ControlActionWarm:
 			if actionActive[action.Worker.ID] > 0 {
 				continue
 			}
 			r.logControlAction("control_action_planned", action, nil)
+			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
 			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_start", nil)
 			if err := r.Client.Load(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
 				r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_error", err)
 				r.logControlAction("control_action_error", action, err)
+				r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
 				outErr = errors.Join(outErr, err)
 				continue
 			}
 			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_done", nil)
 			r.logControlAction("control_action_done", action, nil)
+			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "done")
 		default:
 			continue
 		}
 	}
 	return outErr
+}
+
+func (r LoadedReconciler) observeControlAction(action, model, workerID, reason, result string) {
+	if r.Metrics == nil {
+		return
+	}
+	r.Metrics.ObserveControlAction(action, model, workerID, reason, result)
 }
 
 func (r LoadedReconciler) unloadColdModelsForUnderloadedHotModels(ctx context.Context, now time.Time, workers []Worker, active map[string]int) error {
@@ -270,6 +290,7 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 		Client:      LlamaSwapClient{BearerToken: s.config.Tokens.LlamaSwap},
 		Access:      s.access,
 		Pressure:    s.pressure,
+		Metrics:     s.metrics,
 		RecordEvent: s.recordGatewayWorkerEvent,
 		LogEvent:    s.logEvent,
 	}

@@ -292,6 +292,7 @@ func TestMetricsRouteReportsActiveProxiedRequestByWorkerAndModel(t *testing.T) {
 	}
 
 	waitForActiveRequestMetric(t, srv, "metrics-worker", "qwen", 1)
+	assertMetricLine(t, scrapeMetrics(t, srv), `llm_swap_gateway_model_active_requests{model="qwen"} 1`)
 
 	release()
 	select {
@@ -490,7 +491,16 @@ func TestMetricsReportsModelUnderprovisionedWhenMinLoadedIsNotMet(t *testing.T) 
 
 func TestProxyRecordsRequestQueueAndDispatchMetrics(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"ok": true})
+		writeJSON(w, map[string]any{
+			"ok": true,
+			"usage": map[string]any{
+				"prompt_tokens":     11,
+				"completion_tokens": 7,
+				"total_tokens":      18,
+				"cache_tokens":      4,
+				"reasoning_tokens":  2,
+			},
+		})
 	}))
 	defer upstream.Close()
 
@@ -506,6 +516,11 @@ func TestProxyRecordsRequestQueueAndDispatchMetrics(t *testing.T) {
 	body := scrapeMetrics(t, srv)
 	assertMetricLine(t, body, `llm_swap_gateway_requests_total{model="qwen",status_code="200",worker_id="worker-a"} 1`)
 	assertMetricContains(t, body, `llm_swap_gateway_request_duration_seconds_count{model="qwen",worker_id="worker-a"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_model_tokens_total{model="qwen",type="cache"} 4`)
+	assertMetricLine(t, body, `llm_swap_gateway_model_tokens_total{model="qwen",type="completion"} 7`)
+	assertMetricLine(t, body, `llm_swap_gateway_model_tokens_total{model="qwen",type="prompt"} 11`)
+	assertMetricLine(t, body, `llm_swap_gateway_model_tokens_total{model="qwen",type="reasoning"} 2`)
+	assertMetricLine(t, body, `llm_swap_gateway_model_tokens_total{model="qwen",type="total"} 18`)
 }
 
 func TestProxyRecordsQueueFullMetric(t *testing.T) {
