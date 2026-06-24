@@ -71,10 +71,14 @@ type uiModelTraffic struct {
 }
 
 type uiModelWorker struct {
-	WorkerID       string `json:"worker_id"`
-	ArtifactStatus string `json:"artifact_status"`
-	RunningState   string `json:"running_state,omitempty"`
-	Health         string `json:"health"`
+	WorkerID                 string    `json:"worker_id"`
+	ArtifactStatus           string    `json:"artifact_status"`
+	RunningState             string    `json:"running_state,omitempty"`
+	Health                   string    `json:"health"`
+	CooldownActive           bool      `json:"cooldown_active"`
+	CooldownReason           string    `json:"cooldown_reason,omitempty"`
+	CooldownRemainingSeconds int64     `json:"cooldown_remaining_seconds,omitempty"`
+	CooldownUntil            time.Time `json:"cooldown_until,omitempty"`
 }
 
 type uiWorker struct {
@@ -96,6 +100,7 @@ type uiWorker struct {
 	ScrapeBackoffSeconds int64                   `json:"scrape_backoff_seconds,omitempty"`
 	AllowedModels        []string                `json:"allowed_models"`
 	HealthProblem        string                  `json:"health_problem,omitempty"`
+	ReplicaCooldowns     []ReplicaCooldown       `json:"replica_cooldowns"`
 }
 
 type uiAgentEvent struct {
@@ -171,17 +176,21 @@ func (s *Server) buildUIStatus(now time.Time) uiStatusResponse {
 	workers := s.workers.Snapshot(now)
 	active := s.workers.ActiveSnapshot()
 	events := s.recentAgentEvents()
+	cooldowns := ReplicaCooldownSnapshot{}
+	if s.replicaCooldowns != nil {
+		cooldowns = s.replicaCooldowns.Snapshot(now)
+	}
 	resp := uiStatusResponse{
 		GeneratedAt: now.UTC(),
-		Models:      s.buildUIModels(workers, now),
-		Workers:     s.buildUIWorkers(workers, active, now),
+		Models:      s.buildUIModels(workers, cooldowns, now),
+		Workers:     s.buildUIWorkers(workers, active, cooldowns, now),
 		Events:      events,
 	}
 	resp.Summary = buildUISummary(resp.Models, resp.Workers, events)
 	return resp
 }
 
-func (s *Server) buildUIModels(workers []Worker, now time.Time) []uiModelStatus {
+func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapshot, now time.Time) []uiModelStatus {
 	models := make([]uiModelStatus, 0, len(s.config.Models))
 	for name, model := range s.config.Models {
 		item := uiModelStatus{
@@ -207,12 +216,19 @@ func (s *Server) buildUIModels(workers []Worker, now time.Time) []uiModelStatus 
 			}
 			runningState := runningStateForModel(worker, name)
 			health := workerHealth(worker, now)
-			item.WorkerStatuses = append(item.WorkerStatuses, uiModelWorker{
+			status := uiModelWorker{
 				WorkerID:       worker.ID,
 				ArtifactStatus: artifactStatus,
 				RunningState:   runningState,
 				Health:         health,
-			})
+			}
+			if cooldown, ok := cooldowns.Get(worker.ID, name, now); ok {
+				status.CooldownActive = true
+				status.CooldownReason = cooldown.Reason
+				status.CooldownRemainingSeconds = cooldown.RemainingSeconds
+				status.CooldownUntil = cooldown.CooldownUntil.UTC()
+			}
+			item.WorkerStatuses = append(item.WorkerStatuses, status)
 			switch artifactStatus {
 			case "ready":
 				item.ReadyWorkers++
@@ -243,7 +259,7 @@ func (s *Server) buildUIModels(workers []Worker, now time.Time) []uiModelStatus 
 	return models
 }
 
-func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, now time.Time) []uiWorker {
+func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldowns ReplicaCooldownSnapshot, now time.Time) []uiWorker {
 	out := make([]uiWorker, 0, len(workers))
 	for _, worker := range workers {
 		backoffSeconds := int64(0)
@@ -269,6 +285,7 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, now tim
 			ScrapeBackoffSeconds: backoffSeconds,
 			AllowedModels:        allowedModelsForWorker(s.config, worker),
 			HealthProblem:        workerHealthProblem(worker, now),
+			ReplicaCooldowns:     cooldownsForWorker(cooldowns, worker.ID, now),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -276,6 +293,29 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, now tim
 			return healthRank(out[i].Health) < healthRank(out[j].Health)
 		}
 		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func cooldownsForWorker(cooldowns ReplicaCooldownSnapshot, workerID string, now time.Time) []ReplicaCooldown {
+	byModel := cooldowns[workerID]
+	if len(byModel) == 0 {
+		return []ReplicaCooldown{}
+	}
+	out := make([]ReplicaCooldown, 0, len(byModel))
+	for model := range byModel {
+		cooldown, ok := cooldowns.Get(workerID, model, now)
+		if !ok {
+			continue
+		}
+		cooldown.CooldownUntil = cooldown.CooldownUntil.UTC()
+		out = append(out, cooldown)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Model != out[j].Model {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].Reason < out[j].Reason
 	})
 	return out
 }
@@ -654,7 +694,10 @@ const gatewayUIHTML = `<!doctype html>
       models = models || [];
       if (!models.length) { document.getElementById("models").innerHTML = '<div class="empty">No configured models.</div>'; return; }
       document.getElementById("models").innerHTML = '<div class="table-wrap"><table class="model-table"><thead><tr><th>Model</th><th>Availability</th><th>Workers</th><th>Policy</th><th>Traffic</th><th>Artifact</th></tr></thead><tbody>' + models.map((m) => {
-        const workers = (m.worker_statuses || []).map((w) => '<span class="pill ' + esc(w.artifact_status) + '">' + esc(w.worker_id + " " + w.artifact_status + (w.running_state ? "/" + w.running_state : "")) + '</span>').join("");
+        const workers = (m.worker_statuses || []).map((w) => {
+          const cooldown = w.cooldown_active ? " cooldown " + w.cooldown_remaining_seconds + "s " + w.cooldown_reason : "";
+          return '<span class="pill ' + esc(w.cooldown_active ? "error" : w.artifact_status) + '">' + esc(w.worker_id + " " + w.artifact_status + (w.running_state ? "/" + w.running_state : "") + cooldown) + '</span>';
+        }).join("");
         const t = m.traffic || {};
         const traffic = '<div class="traffic-grid mono"><span>req=' + esc(compact(t.requests)) + '</span><span>tok=' + esc(compact(t.total_tokens)) + '</span><span>avg=' + esc(t.avg_duration_ms || 0) + 'ms</span><span>max=' + esc(t.max_duration_ms || 0) + 'ms</span><span>2xx=' + esc(t.status_2xx || 0) + '</span><span>4xx=' + esc(t.status_4xx || 0) + ' 5xx=' + esc(t.status_5xx || 0) + '</span><span>cache=' + esc(compact(t.cache_tokens)) + '</span><span>last=' + esc(eventTime(t.last_access)) + '</span></div>';
         return '<tr><td><div class="stack breakable"><strong>' + esc(m.name) + '</strong><span class="muted mono">priority ' + esc(m.priority) + '</span></div></td><td>' + pill(m.availability_note, m.available ? "available" : "unavailable") + '<div class="muted">ready ' + esc(m.ready_workers) + ', running ' + esc(m.running_workers) + '</div></td><td><div class="workers">' + workers + '</div></td><td class="mono">min_loaded=' + esc(m.min_loaded) + '<br>max_loaded=' + esc(m.max_loaded || "-") + '<br>concurrency=' + esc(m.max_concurrency || "-") + '<br>queue=' + esc(m.max_queue || "-") + '</td><td>' + traffic + '</td><td><div class="stack"><span>' + esc(m.artifact.kind) + '</span><span class="muted mono breakable">' + esc(m.artifact.object) + '</span></div></td></tr>';
@@ -667,7 +710,8 @@ const gatewayUIHTML = `<!doctype html>
         const tags = (w.tags || []).map((tag) => '<span class="pill muted">' + esc(tag) + '</span>').join("");
         const running = (w.running_models || []).map((m) => '<span class="pill ready">' + esc(m.model + ":" + m.state) + '</span>').join("") || '<span class="muted">none</span>';
         const artifacts = Object.entries(w.artifacts || {}).map(([model, status]) => '<span class="pill ' + esc(status) + '">' + esc(model + " " + status) + '</span>').join("") || '<span class="muted">none</span>';
-        return '<article class="worker-card"><div class="worker-card-head"><div class="worker-title"><strong>' + esc(w.id) + '</strong><span class="muted mono worker-url" title="' + esc(w.llama_swap_url) + '">' + esc(w.llama_swap_url) + '</span><div class="workers">' + tags + '</div></div>' + pill(w.health, w.health) + '</div><div class="worker-stats"><div class="stat"><div class="stat-label">Heartbeat</div><div class="stat-value">' + esc(age(w.last_heartbeat_age_ms)) + '</div></div><div class="stat"><div class="stat-label">Active</div><div class="stat-value">' + esc(w.active_requests) + '</div></div><div class="stat"><div class="stat-label">Max concurrency</div><div class="stat-value">' + esc(w.capacity.max_concurrency || "-") + '</div></div><div class="stat"><div class="stat-label">Scrape failures</div><div class="stat-value">' + esc(w.scrape_failures) + '</div></div></div>' + (w.health_problem ? '<div class="problem">' + esc(w.health_problem) + '</div>' : '') + '<div class="worker-detail-grid"><div class="detail-block"><div class="detail-title">Running models</div><div class="workers">' + running + '</div></div><div class="detail-block"><div class="detail-title">Artifacts</div><div class="workers">' + artifacts + '</div></div></div></article>';
+        const cooldowns = (w.replica_cooldowns || []).map((c) => '<span class="pill error">' + esc(c.model + " " + c.remaining_seconds + "s " + c.reason) + '</span>').join("") || '<span class="muted">none</span>';
+        return '<article class="worker-card"><div class="worker-card-head"><div class="worker-title"><strong>' + esc(w.id) + '</strong><span class="muted mono worker-url" title="' + esc(w.llama_swap_url) + '">' + esc(w.llama_swap_url) + '</span><div class="workers">' + tags + '</div></div>' + pill(w.health, w.health) + '</div><div class="worker-stats"><div class="stat"><div class="stat-label">Heartbeat</div><div class="stat-value">' + esc(age(w.last_heartbeat_age_ms)) + '</div></div><div class="stat"><div class="stat-label">Active</div><div class="stat-value">' + esc(w.active_requests) + '</div></div><div class="stat"><div class="stat-label">Max concurrency</div><div class="stat-value">' + esc(w.capacity.max_concurrency || "-") + '</div></div><div class="stat"><div class="stat-label">Scrape failures</div><div class="stat-value">' + esc(w.scrape_failures) + '</div></div></div>' + (w.health_problem ? '<div class="problem">' + esc(w.health_problem) + '</div>' : '') + '<div class="worker-detail-grid"><div class="detail-block"><div class="detail-title">Running models</div><div class="workers">' + running + '</div></div><div class="detail-block"><div class="detail-title">Artifacts</div><div class="workers">' + artifacts + '</div></div><div class="detail-block"><div class="detail-title">Cooldowns</div><div class="workers">' + cooldowns + '</div></div></div></article>';
       }).join("") + '</div>';
     }
     function renderEvents(events, hasMore) {

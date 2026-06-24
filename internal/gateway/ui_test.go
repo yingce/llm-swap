@@ -125,6 +125,42 @@ func TestUIEventsEndpointPaginatesPersistedWorkerEvents(t *testing.T) {
 	}
 }
 
+func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	now := time.Now()
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	})
+	srv.replicaCooldowns.Mark("gpu-01", "qwen", "upstream_retry_exhausted", now)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	var status uiStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	model, ok := findUIModel(status.Models, "qwen")
+	if !ok || len(model.WorkerStatuses) != 1 {
+		t.Fatalf("model statuses = %+v, want qwen worker status", status.Models)
+	}
+	if !model.WorkerStatuses[0].CooldownActive || model.WorkerStatuses[0].CooldownReason != "upstream_retry_exhausted" {
+		t.Fatalf("model worker cooldown = %+v, want active upstream_retry_exhausted", model.WorkerStatuses[0])
+	}
+	if len(status.Workers) != 1 || len(status.Workers[0].ReplicaCooldowns) != 1 {
+		t.Fatalf("worker cooldowns = %+v, want one cooldown", status.Workers)
+	}
+}
+
 func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 
