@@ -68,8 +68,11 @@ func validateGateway(cfg GatewayConfig) error {
 		if model.Artifact.CRC64ECMA == "" {
 			return fmt.Errorf("model %s artifact.crc64ecma is required", name)
 		}
-		if strings.TrimSpace(model.Run) == "" {
-			return fmt.Errorf("model %s run is required", name)
+		if strings.TrimSpace(model.Run) == "" && strings.TrimSpace(model.Runtime) == "" {
+			return fmt.Errorf("model %s run or runtime is required", name)
+		}
+		if strings.TrimSpace(model.Runtime) != "" && !validModelRuntime(model.Runtime) {
+			return fmt.Errorf("model %s runtime must be vllm, sglang, or llamacpp", name)
 		}
 		if model.MaxLoadedSet && model.MinLoaded > model.MaxLoaded {
 			return fmt.Errorf("model %s min_loaded cannot exceed max_loaded", name)
@@ -95,6 +98,15 @@ func validateGateway(cfg GatewayConfig) error {
 		}
 	}
 	return nil
+}
+
+func validModelRuntime(runtime string) bool {
+	switch strings.ToLower(strings.TrimSpace(runtime)) {
+	case "vllm", "sglang", "llamacpp":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyGatewayDefaults(cfg *GatewayConfig) {

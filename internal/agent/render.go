@@ -2,11 +2,13 @@ package agent
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
 
@@ -61,12 +63,11 @@ func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, 
 		if !ok {
 			return nil, fmt.Errorf("allowed model %q missing from config models", modelName)
 		}
-		if strings.TrimSpace(model.Run) == "" {
-			return nil, fmt.Errorf("allowed model %q has empty run command", modelName)
-		}
-
 		modelPath := filepath.ToSlash(filepath.Join(modelRoot, modelName))
-		cmd := strings.ReplaceAll(model.Run, "{{model_path}}", modelPath)
+		cmd, err := modelCommand(modelName, model, modelPath)
+		if err != nil {
+			return nil, err
+		}
 		rendered := llamaSwapModel{
 			Cmd: loggedShellCommand(modelName, cmd),
 			TTL: model.TTL,
@@ -76,11 +77,67 @@ func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, 
 		}
 		if model.CheckEndpoint != "" {
 			rendered.CheckEndpoint = model.CheckEndpoint
+		} else if defaultEndpoint := defaultRuntimeCheckEndpoint(model.Runtime); defaultEndpoint != "" {
+			rendered.CheckEndpoint = defaultEndpoint
 		}
 		out.Models[modelName] = rendered
 	}
 
 	return yaml.Marshal(out)
+}
+
+func defaultRuntimeCheckEndpoint(runtime string) string {
+	switch strings.ToLower(strings.TrimSpace(runtime)) {
+	case "sglang":
+		return "/model_info"
+	default:
+		return ""
+	}
+}
+
+func modelCommand(modelName string, model config.Model, modelPath string) (string, error) {
+	if strings.TrimSpace(model.Run) != "" {
+		return strings.ReplaceAll(model.Run, "{{model_path}}", modelPath), nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(model.Runtime)) {
+	case "vllm":
+		return runtimeCommand("/opt/llmswap/bin/vllm.server", append([]string{
+			modelPath,
+			"--served-model-name", modelName,
+		}, model.RuntimeArgs...)...), nil
+	case "sglang":
+		return runtimeCommand("/opt/llmswap/bin/sglang.server", append([]string{
+			modelPath,
+			"--served-model-name", modelName,
+		}, model.RuntimeArgs...)...), nil
+	case "llamacpp":
+		return runtimeCommand("/opt/llmswap/bin/llamacpp.server", append([]string{
+			llamaCppModelPath(modelPath, model.Artifact),
+			"--alias", modelName,
+		}, model.RuntimeArgs...)...), nil
+	default:
+		return "", fmt.Errorf("allowed model %q has empty run command and unsupported runtime %q", modelName, model.Runtime)
+	}
+}
+
+func runtimeCommand(binary string, args ...string) string {
+	parts := []string{"PORT=${PORT}", shellArg(binary)}
+	for _, arg := range args {
+		parts = append(parts, shellArg(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func llamaCppModelPath(modelPath string, artifact config.Artifact) string {
+	if artifact.Kind != "file" {
+		return modelPath
+	}
+	base := path.Base(strings.TrimSpace(artifact.Object))
+	if base == "." || base == "/" || base == "" {
+		return modelPath
+	}
+	return filepath.ToSlash(filepath.Join(modelPath, base))
 }
 
 func shellCommand(cmd string) string {

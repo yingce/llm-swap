@@ -133,6 +133,116 @@ func TestRenderLlamaSwapConfigOmitsAPIKeysWhenTokenEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderLlamaSwapConfigBuildsRuntimeCommand(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"qwen": {
+				Runtime: "sglang",
+				RuntimeArgs: []string{
+					"--trust-remote-code",
+					"--dtype", "bfloat16",
+					"--json-model-override-args", `{"init_vision":true}`,
+				},
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"qwen"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	qwen := models["qwen"].(map[string]any)
+	cmd := qwen["cmd"].(string)
+	for _, want := range []string{
+		"PORT=${PORT}",
+		"/opt/llmswap/bin/sglang.server",
+		"/models/qwen",
+		"--served-model-name",
+		"qwen",
+		"--json-model-override-args",
+		`{"init_vision":true}`,
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("runtime cmd missing %q: %q", want, cmd)
+		}
+	}
+	if qwen["checkEndpoint"] != "/model_info" {
+		t.Fatalf("checkEndpoint = %#v, want sglang default /model_info", qwen["checkEndpoint"])
+	}
+}
+
+func TestRenderLlamaSwapConfigBuildsLlamaCppFileRuntimeCommand(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"qwen-gguf": {
+				Runtime: "llamacpp",
+				Artifact: config.Artifact{
+					Object: "models/Qwen3.6-35B-q4_K_M.gguf",
+					Kind:   "file",
+				},
+				RuntimeArgs: []string{"--cache-type-k", "q8_0"},
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"qwen-gguf"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	cmd := models["qwen-gguf"].(map[string]any)["cmd"].(string)
+	for _, want := range []string{
+		"PORT=${PORT}",
+		"/opt/llmswap/bin/llamacpp.server",
+		"/models/qwen-gguf/Qwen3.6-35B-q4_K_M.gguf",
+		"--alias",
+		"qwen-gguf",
+		"--cache-type-k",
+		"q8_0",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("llamacpp runtime cmd missing %q: %q", want, cmd)
+		}
+	}
+}
+
+func TestRenderLlamaSwapConfigRunOverridesRuntime(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"qwen": {
+				Run:     "custom-server --model {{model_path}} --port ${PORT}",
+				Runtime: "vllm",
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"qwen"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	cmd := models["qwen"].(map[string]any)["cmd"].(string)
+	if !strings.Contains(cmd, "custom-server --model /models/qwen --port ${PORT}") {
+		t.Fatalf("cmd = %q, want custom run command", cmd)
+	}
+	if strings.Contains(cmd, "/opt/llmswap/bin/vllm.server") {
+		t.Fatalf("cmd = %q, want run to override runtime", cmd)
+	}
+}
+
 func TestRenderLlamaSwapConfigMissingAllowedModelReturnsError(t *testing.T) {
 	resp := protocol.AgentConfigResponse{
 		Models: map[string]config.Model{

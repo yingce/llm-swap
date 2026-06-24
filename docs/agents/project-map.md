@@ -207,8 +207,15 @@ Gateway config:
 - `tokens.agent` is for internal agent routes and the UI.
 - `tokens.llama_swap` is optional. If omitted, it defaults to `tokens.agent`.
 - `models.<name>.run` is the command rendered into llama-swap config.
+- `models.<name>.runtime` can be used instead of `run` for standard wrappers:
+  `vllm`, `sglang`, or `llamacpp`. The agent generates `PORT=${PORT}`,
+  model path, served model name/alias, and appends `runtime_args`.
+- `run` remains the escape hatch and takes precedence when both `run` and
+  `runtime` are set.
 - `models.<name>.check_endpoint` should be set for runtimes whose health route
   is not `/health`, for example SGLang `/model_info`.
+- `runtime: sglang` defaults `check_endpoint` to `/model_info` unless explicitly
+  overridden.
 - `models.<name>.max_loaded` omitted means automatic expansion bounded by
   eligible workers, protected `min_loaded` floors, and priority policy. Set it
   explicitly to impose a hard ceiling.

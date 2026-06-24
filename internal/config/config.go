@@ -36,6 +36,8 @@ type Model struct {
 	TTL            int      `yaml:"ttl" json:"ttl"`
 	Artifact       Artifact `yaml:"artifact" json:"artifact"`
 	Run            string   `yaml:"run" json:"run"`
+	Runtime        string   `yaml:"runtime" json:"runtime,omitempty"`
+	RuntimeArgs    []string `yaml:"runtime_args" json:"runtime_args,omitempty"`
 	CmdStop        string   `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
 	CheckEndpoint  string   `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
 }

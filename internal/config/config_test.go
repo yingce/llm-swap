@@ -124,6 +124,95 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayConfigAcceptsRuntimeWithoutRun(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+  llama_swap: worker-token
+models:
+  qwen:
+    min_loaded: 1
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    runtime: sglang
+    runtime_args:
+      - --trust-remote-code
+      - --dtype
+      - bfloat16
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	cfg, err := LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if cfg.Models["qwen"].Runtime != "sglang" {
+		t.Fatalf("runtime = %q, want sglang", cfg.Models["qwen"].Runtime)
+	}
+	if got := cfg.Models["qwen"].RuntimeArgs; len(got) != 4 || got[0] != "--trust-remote-code" || got[3] != "bfloat16" {
+		t.Fatalf("runtime_args = %#v, want parsed args", got)
+	}
+}
+
+func TestLoadGatewayConfigRejectsModelWithoutRunOrRuntime(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+models:
+  qwen:
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "run or runtime") {
+		t.Fatalf("error = %v, want run/runtime", err)
+	}
+}
+
+func TestLoadGatewayConfigRejectsUnsupportedRuntime(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+models:
+  qwen:
+    artifact:
+      object: qwen.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    runtime: unknown
+tag_policies:
+  gpu-4090:
+    allowed_models: [qwen]
+`
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "runtime must be vllm, sglang, or llamacpp") {
+		t.Fatalf("error = %v, want runtime validation", err)
+	}
+}
+
 func TestLoadGatewayConfigRejectsExplicitMaxLoadedBelowMinLoaded(t *testing.T) {
 	raw := `
 oss:
