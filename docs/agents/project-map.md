@@ -348,8 +348,9 @@ Client-facing queue errors currently use OpenAI error code `queue_full` for
 both full and timeout cases. Internal logs and metrics still distinguish
 `queue_full` from `queue_timeout`. Conservative warm scale-out uses rolling
 request and queue pressure, including `admitted_after_wait`, `queue_full`,
-`queue_timeout`, p95 `wait_ms`, ready replicas, occupied replicas, active depth,
-token volume, and model priority. It avoids expanding from a single burst.
+`queue_timeout`, p95 `wait_ms`, p95 request duration, ready replicas, occupied
+replicas, active depth, and model priority. It avoids expanding from a single
+burst.
 
 Control action logs use:
 

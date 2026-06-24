@@ -119,6 +119,60 @@ func TestPlacementMissingMaxLoadedUsesEligibleWorkerCountAsAutoCeiling(t *testin
 	}
 }
 
+func TestPlacementAutoMaxLoadedWarmDoesNotEvictAnotherModelMinLoadedFloor(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"hot":   {Priority: 200, MinLoaded: 0},
+			"floor": {Priority: 10, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"hot", "floor"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "hot-worker",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://hot-worker",
+		Artifacts:    map[string]string{"hot": "ready", "floor": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "hot", State: "ready"},
+		},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "floor-worker",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://floor-worker",
+		Artifacts:    map[string]string{"hot": "ready", "floor": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "floor", State: "ready"},
+		},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests+3; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:       now.Add(time.Duration(i) * time.Second),
+			Model:      "hot",
+			DurationMS: 5000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "hot",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    1,
+		OccupiedReplicas: 1,
+		ActiveBefore:     1,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(10 * time.Second))
+	if len(actions) != 0 {
+		t.Fatalf("actions = %#v, want no predictive warm eviction of floor model at min_loaded", actions)
+	}
+}
+
 func TestPlacementPlanControlActionsEvictsMinLoadedZeroBeforeProtectedFloor(t *testing.T) {
 	now := time.Now()
 	cfg := config.GatewayConfig{

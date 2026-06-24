@@ -47,6 +47,7 @@ type PressureSnapshot struct {
 	WaitedRequests   int
 	QueueErrors      int
 	P95WaitMS        int64
+	P95DurationMS    int64
 	ReadyReplicas    int
 	OccupiedReplicas int
 	MaxActive        int
@@ -107,12 +108,16 @@ func (p *PressureTracker) Model(model string, now time.Time) PressureSnapshot {
 
 	snapshot := PressureSnapshot{Model: model}
 	var waits []int64
+	var durations []int64
 	for _, obs := range p.requests {
 		if obs.Model != model {
 			continue
 		}
 		snapshot.RecentRequests++
 		snapshot.RecentTokens += maxInt(obs.TotalTokens, 0)
+		if obs.DurationMS > 0 {
+			durations = append(durations, obs.DurationMS)
+		}
 		if obs.Time.After(snapshot.LastAccess) {
 			snapshot.LastAccess = obs.Time
 		}
@@ -144,6 +149,7 @@ func (p *PressureTracker) Model(model string, now time.Time) PressureSnapshot {
 		}
 	}
 	snapshot.P95WaitMS = percentile95(waits)
+	snapshot.P95DurationMS = percentile95(durations)
 	return snapshot
 }
 
@@ -155,7 +161,7 @@ func DemandScore(snapshot PressureSnapshot, input DemandScoreInput) int {
 
 	score := input.Priority
 	score += minInt(snapshot.RecentRequests*10, 60)
-	score += minInt(snapshot.RecentTokens/200, 40)
+	score += minInt(int(snapshot.P95DurationMS/100), 50)
 	score += minInt(snapshot.WaitedRequests*25, 75)
 	score += minInt(snapshot.QueueErrors*40, 80)
 	score += minInt(int(snapshot.P95WaitMS/100), 40)

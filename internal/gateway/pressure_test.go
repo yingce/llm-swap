@@ -81,6 +81,45 @@ func TestPressureDemandScoreRequiresSustainedRequests(t *testing.T) {
 	}
 }
 
+func TestPressureDemandScoreIgnoresTokenVolume(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tracker := NewPressureTracker(5 * time.Minute)
+	for i := 0; i < minScaleOutRequests; i++ {
+		tracker.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "qwen",
+			TotalTokens: 100000,
+		})
+	}
+
+	snapshot := tracker.Model("qwen", now.Add(time.Minute))
+	score := DemandScore(snapshot, DemandScoreInput{Priority: 60, ReadyReplicas: 1, OccupiedReplicas: 1})
+	if score >= minScaleOutScore {
+		t.Fatalf("DemandScore = %d, want below scale-out threshold without wait or duration pressure", score)
+	}
+}
+
+func TestPressureDemandScoreUsesRequestDuration(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tracker := NewPressureTracker(5 * time.Minute)
+	for i := 0; i < minScaleOutRequests; i++ {
+		tracker.RecordRequest(PressureRequestObservation{
+			Time:       now.Add(time.Duration(i) * time.Second),
+			Model:      "qwen",
+			DurationMS: 5000,
+		})
+	}
+
+	snapshot := tracker.Model("qwen", now.Add(time.Minute))
+	if snapshot.P95DurationMS != 5000 {
+		t.Fatalf("P95DurationMS = %d, want 5000", snapshot.P95DurationMS)
+	}
+	score := DemandScore(snapshot, DemandScoreInput{Priority: 60, ReadyReplicas: 1, OccupiedReplicas: 1})
+	if score < minScaleOutScore {
+		t.Fatalf("DemandScore = %d, want at least scale-out threshold from sustained request duration", score)
+	}
+}
+
 func TestPressureDemandScoreCountsQueuePressureTowardSustainedDemand(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tracker := NewPressureTracker(5 * time.Minute)
