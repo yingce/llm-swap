@@ -553,6 +553,32 @@ func TestProxyRecordsDispatchFailureMetric(t *testing.T) {
 	assertMetricLine(t, body, `llm_swap_gateway_dispatch_failures_total{model="qwen",reason="upstream_retry_exhausted",worker_id="worker-a"} 1`)
 }
 
+func TestProxyReportsCooldownAndRetryMetrics(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	body := scrapeMetrics(t, srv)
+	assertMetricLine(t, body, `llm_swap_gateway_replica_unhealthy{model="qwen",reason="upstream_retry_exhausted",worker_id="first"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_replica_cooldown_marks_total{model="qwen",reason="upstream_retry_exhausted",worker_id="first"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_proxy_retries_total{model="qwen",reason="upstream_retry_exhausted",worker_id="first"} 1`)
+}
+
 func protocolHeartbeat(workerID, workerURL string) protocol.HeartbeatRequest {
 	return protocol.HeartbeatRequest{
 		AgentID:      workerID,

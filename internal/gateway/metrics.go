@@ -39,6 +39,10 @@ type Metrics struct {
 	queueEvents                  *prometheus.CounterVec
 	queueWaitDuration            *prometheus.HistogramVec
 	dispatchFailures             *prometheus.CounterVec
+	replicaUnhealthy             *prometheus.GaugeVec
+	replicaCooldownMarks         *prometheus.CounterVec
+	replicaCooldownClears        *prometheus.CounterVec
+	proxyRetries                 *prometheus.CounterVec
 	modelLoadedReplicas          *prometheus.GaugeVec
 	modelUnderprovisioned        *prometheus.GaugeVec
 }
@@ -147,6 +151,22 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_dispatch_failures_total",
 		Help: "Gateway dispatch failures by selected worker and reason.",
 	}, []string{"model", "worker_id", "reason"})
+	replicaUnhealthy := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_replica_unhealthy",
+		Help: "Whether a worker/model replica is temporarily excluded by gateway cooldown.",
+	}, []string{"worker_id", "model", "reason"})
+	replicaCooldownMarks := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_replica_cooldown_marks_total",
+		Help: "Replica cooldown marks by worker, model, and reason.",
+	}, []string{"worker_id", "model", "reason"})
+	replicaCooldownClears := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_replica_cooldown_clears_total",
+		Help: "Replica cooldown clears by worker, model, and reason.",
+	}, []string{"worker_id", "model", "reason"})
+	proxyRetries := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_proxy_retries_total",
+		Help: "Gateway proxy retries by worker, model, and reason.",
+	}, []string{"worker_id", "model", "reason"})
 	modelLoadedReplicas := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_swap_gateway_model_loaded_replicas",
 		Help: "Number of healthy workers reporting a model as loaded and ready.",
@@ -157,7 +177,7 @@ func NewMetrics() *Metrics {
 	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, modelLoadedReplicas, modelUnderprovisioned)
+	registry.MustRegister(activeRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, modelLoadedReplicas, modelUnderprovisioned)
 
 	return &Metrics{
 		registry:                     registry,
@@ -186,6 +206,10 @@ func NewMetrics() *Metrics {
 		queueEvents:                  queueEvents,
 		queueWaitDuration:            queueWaitDuration,
 		dispatchFailures:             dispatchFailures,
+		replicaUnhealthy:             replicaUnhealthy,
+		replicaCooldownMarks:         replicaCooldownMarks,
+		replicaCooldownClears:        replicaCooldownClears,
+		proxyRetries:                 proxyRetries,
 		modelLoadedReplicas:          modelLoadedReplicas,
 		modelUnderprovisioned:        modelUnderprovisioned,
 	}
@@ -225,6 +249,28 @@ func (m *Metrics) ObserveQueueWait(model, keyType, result string, wait time.Dura
 
 func (m *Metrics) ObserveDispatchFailure(model, workerID, reason string) {
 	m.dispatchFailures.WithLabelValues(model, workerID, reason).Inc()
+}
+
+func (m *Metrics) ObserveReplicaCooldowns(snapshot ReplicaCooldownSnapshot, now time.Time) {
+	for workerID, byModel := range snapshot {
+		for model, entry := range byModel {
+			if entry.CooldownUntil.After(now) {
+				m.replicaUnhealthy.WithLabelValues(workerID, model, entry.Reason).Set(1)
+			}
+		}
+	}
+}
+
+func (m *Metrics) ObserveReplicaCooldownMark(entry ReplicaCooldown) {
+	m.replicaCooldownMarks.WithLabelValues(entry.WorkerID, entry.Model, entry.Reason).Inc()
+}
+
+func (m *Metrics) ObserveReplicaCooldownClear(entry ReplicaCooldown) {
+	m.replicaCooldownClears.WithLabelValues(entry.WorkerID, entry.Model, entry.Reason).Inc()
+}
+
+func (m *Metrics) ObserveProxyRetry(model, workerID, reason string) {
+	m.proxyRetries.WithLabelValues(workerID, model, reason).Inc()
 }
 
 func (m *Metrics) ObserveModelProvisioning(cfg config.GatewayConfig, workers []Worker, now time.Time) {

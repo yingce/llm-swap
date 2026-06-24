@@ -130,6 +130,15 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		if retry {
 			if dispatchFailure != nil {
 				s.metrics.ObserveDispatchFailure(model, worker.ID, dispatchFailure.code)
+				s.metrics.ObserveProxyRetry(model, worker.ID, dispatchFailure.code)
+				s.logEvent("proxy_retry", map[string]any{
+					"request_id":  requestID,
+					"model":       model,
+					"worker_id":   worker.ID,
+					"reason":      dispatchFailure.code,
+					"status_code": statusCode,
+					"attempt":     dispatchAttempts,
+				})
 				s.markReplicaCooldown(requestID, model, worker, dispatchFailure, statusCode, dispatchAttempts)
 			}
 			continue
@@ -166,6 +175,11 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if lastDispatchFailure != nil {
 		s.metrics.ObserveDispatchFailure(model, "", lastDispatchFailure.code)
+		s.logEvent("proxy_retry_exhausted", map[string]any{
+			"request_id": requestID,
+			"model":      model,
+			"reason":     lastDispatchFailure.code,
+		})
 		lastDispatchFailure.write(w)
 		return
 	}
@@ -185,6 +199,9 @@ func (s *Server) markReplicaCooldown(requestID, model string, worker Worker, fai
 	entry, marked := s.replicaCooldowns.Mark(worker.ID, model, failure.code, now)
 	if !marked {
 		return
+	}
+	if s.metrics != nil {
+		s.metrics.ObserveReplicaCooldownMark(entry)
 	}
 	s.logEvent("replica_unhealthy_marked", map[string]any{
 		"request_id":       requestID,
@@ -206,6 +223,9 @@ func (s *Server) clearReplicaCooldown(requestID, model string, worker Worker) {
 	entry, ok := s.replicaCooldowns.Clear(worker.ID, model, time.Now())
 	if !ok {
 		return
+	}
+	if s.metrics != nil {
+		s.metrics.ObserveReplicaCooldownClear(entry)
 	}
 	s.logEvent("replica_unhealthy_cleared", map[string]any{
 		"request_id": requestID,

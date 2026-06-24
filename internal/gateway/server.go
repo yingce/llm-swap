@@ -115,6 +115,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return samples, err
 	})
 	s.metrics.ObserveModelProvisioning(s.config, workers, now)
+	s.metrics.ObserveReplicaCooldowns(s.replicaCooldowns.Snapshot(now), now)
 	s.metrics.Handler().ServeHTTP(w, r)
 }
 

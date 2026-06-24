@@ -630,6 +630,35 @@ func TestProxyMarksRetryableFailureCooldownAndSkipsReplicaOnNextRequest(t *testi
 	}
 }
 
+func TestProxyLogsRetryAndCooldownEvents(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-second","choices":[]}`))
+	}))
+	defer second.Close()
+
+	srv := NewServer(testProxyConfig())
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	registerProxyWorker(t, srv, "first", first.URL, true)
+	registerProxyWorker(t, srv, "second", second.URL, true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	logText := logs.String()
+	for _, want := range []string{`"event":"proxy_retry"`, `"event":"replica_unhealthy_marked"`, `"reason":"upstream_retry_exhausted"`, `"worker_id":"first"`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %s:\n%s", want, logText)
+		}
+	}
+}
+
 func TestProxyClearReplicaCooldownHelperClearsActiveEntry(t *testing.T) {
 	srv := NewServer(testProxyConfig())
 	worker := Worker{ID: "worker-a"}
