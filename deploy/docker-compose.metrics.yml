@@ -1,6 +1,6 @@
 services:
   victoriametrics:
-    image: victoriametrics/victoria-metrics:stable
+    image: victoriametrics/victoria-metrics:latest
     container_name: llmswap-victoriametrics
     command:
       - -storageDataPath=/victoria-metrics-data
@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
 
   vmagent:
-    image: victoriametrics/vmagent:stable
+    image: victoriametrics/vmagent:latest
     container_name: llmswap-vmagent
     depends_on:
       - victoriametrics

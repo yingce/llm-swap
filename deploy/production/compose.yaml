@@ -21,7 +21,7 @@ services:
       start_period: 10s
 
   victoriametrics:
-    image: victoriametrics/victoria-metrics:stable
+    image: victoriametrics/victoria-metrics:latest
     container_name: llmswap-victoriametrics
     command:
       - -storageDataPath=/victoria-metrics-data
@@ -33,7 +33,7 @@ services:
       - /opt/llmswap/data/victoriametrics:/victoria-metrics-data
 
   vmagent:
-    image: victoriametrics/vmagent:stable
+    image: victoriametrics/vmagent:latest
     container_name: llmswap-vmagent
     depends_on:
       - gateway
