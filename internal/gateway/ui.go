@@ -183,6 +183,8 @@ func (s *Server) handleUIMetricsSummary(w http.ResponseWriter, r *http.Request) 
 		{Name: "requests_rate", Query: `sum(rate(llm_swap_gateway_requests_total[5m]))`},
 		{Name: "errors_rate", Query: `sum(rate(llm_swap_gateway_requests_total{status_code=~"5.."}[5m]))`},
 		{Name: "active_requests", Query: `sum(llm_swap_gateway_active_requests)`},
+		{Name: "healthy_workers", Query: `sum(llm_swap_gateway_worker_up)`},
+		{Name: "loaded_replicas", Query: `sum(llm_swap_gateway_model_loaded_replicas)`},
 		{Name: "queue_wait_p95", Query: `histogram_quantile(0.95, sum(rate(llm_swap_gateway_queue_wait_seconds_bucket[5m])) by (le))`},
 	}
 	s.writeHistoricalMetrics(w, r, queries)
