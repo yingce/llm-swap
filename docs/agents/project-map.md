@@ -28,8 +28,10 @@ worker agent
   -> heartbeats worker state, artifacts, running models, and events to gateway
 ```
 
-There is no external database. Gateway state is in-process, with append-only
-JSONL files for request accounting and worker events.
+Gateway state is in-process, with append-only JSONL files for request
+accounting and worker events. Historical metrics storage is optional:
+VictoriaMetrics can be attached through vmagent scraping `/metrics`; when it is
+disabled the gateway still runs with no external database.
 
 ## Domain Vocabulary
 
@@ -153,12 +155,25 @@ JSONL files for request accounting and worker events.
   - Prometheus metrics for gateway, worker, model, queue, request, activity, and
     llama-swap performance data.
   - Scrapes worker llama-swap with the llama-swap token.
+  - Low-cardinality counters include gateway model tokens, model active
+    requests, queue observations, proxy retries, replica cooldowns, and control
+    actions.
+
+- `internal/gateway/metrics_store.go`
+  - Optional VictoriaMetrics query client for historical UI reads.
+  - Uses `/prometheus/api/v1/query_range`.
+  - Range and step are clamped by `metrics_store.default_range` and
+    `metrics_store.max_range`.
 
 - `internal/gateway/ui.go`
   - Minimal dashboard at `/ui`.
   - Shows model availability, traffic, workers, health, running models,
     artifacts, and recent worker events.
   - Recent events have columns: Received, Worker, Event, Model, Detail.
+  - Optional historical metrics endpoints:
+    `/ui/metrics/summary`, `/ui/metrics/model`, and `/ui/metrics/worker`.
+    These use the agent token like the rest of the UI and return 503 when the
+    metrics store is disabled.
 
 ## Agent Modules
 
@@ -400,9 +415,39 @@ UI routes:
 - `/ui`
 - `/ui/status`
 - `/ui/events?limit=50&offset=0`
+- `/ui/metrics/summary?range=1h&step=1m`
+- `/ui/metrics/model?model=<name>&range=1h&step=1m`
+- `/ui/metrics/worker?worker_id=<id>&range=1h&step=1m`
 
 UI authentication uses the agent token. `/ui?token=<agent-token>` sets an
 HTTP-only cookie scoped to `/ui`.
+
+## Historical Metrics Store
+
+VictoriaMetrics is optional and is disabled by default in `gateway.yaml`.
+
+Gateway config:
+
+```yaml
+metrics_store:
+  enabled: true
+  type: victoriametrics
+  query_url: http://victoriametrics:8428
+  default_range: 1h
+  max_range: 7d
+  timeout_ms: 3000
+```
+
+Deployment helpers:
+
+- `deploy/docker-compose.metrics.yml`
+- `deploy/vmagent/promscrape.yml`
+
+vmagent scrapes gateway `/metrics` and remote-writes to VictoriaMetrics. The
+default scrape target is `gateway:8080`; adjust it when gateway runs outside the
+compose network. Request and worker event JSONL files remain the source for
+request detail replay and recent event pages; VictoriaMetrics is for aggregate
+time-series history only.
 
 ## Placement Rollout Notes
 
