@@ -20,6 +20,7 @@ type Server struct {
 	accounting         *Accounting
 	limiter            *QueueLimiter
 	metrics            *Metrics
+	metricsStore       *VictoriaMetricsClient
 	scraper            *MetricsScraper
 	access             *AccessTracker
 	pressure           *PressureTracker
@@ -58,12 +59,18 @@ func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPa
 			recentEvents = loaded
 		}
 	}
+	var metricsStore *VictoriaMetricsClient
+	if cfg.MetricsStore.Enabled && strings.TrimSpace(cfg.MetricsStore.QueryURL) != "" {
+		metricsStore = NewVictoriaMetricsClient(cfg.MetricsStore.QueryURL, time.Duration(cfg.MetricsStore.TimeoutMS)*time.Millisecond)
+	}
+
 	s := &Server{
 		config:             cfg,
 		workers:            NewWorkerRegistry(6 * time.Second),
 		accounting:         NewAccounting(),
 		limiter:            NewQueueLimiter(),
 		metrics:            NewMetrics(),
+		metricsStore:       metricsStore,
 		scraper:            NewMetricsScraperWithToken(cfg.Tokens.LlamaSwap),
 		access:             access,
 		pressure:           NewPressureTracker(defaultPressureWindow),
@@ -80,6 +87,9 @@ func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPa
 	s.mux.Handle("GET /ui", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUI)))
 	s.mux.Handle("GET /ui/status", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIStatus)))
 	s.mux.Handle("GET /ui/events", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIEvents)))
+	s.mux.Handle("GET /ui/metrics/summary", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsSummary)))
+	s.mux.Handle("GET /ui/metrics/model", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsModel)))
+	s.mux.Handle("GET /ui/metrics/worker", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsWorker)))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))

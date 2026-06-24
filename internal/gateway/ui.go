@@ -126,6 +126,12 @@ type uiEventsResponse struct {
 	HasMore    bool           `json:"has_more"`
 }
 
+type uiMetricsResponse struct {
+	Range  string             `json:"range"`
+	Step   string             `json:"step"`
+	Series []HistoricalSeries `json:"series"`
+}
+
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -170,6 +176,112 @@ func (s *Server) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 		resp.Events = []uiAgentEvent{}
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) handleUIMetricsSummary(w http.ResponseWriter, r *http.Request) {
+	queries := []historicalQuery{
+		{Name: "requests_rate", Query: `sum(rate(llm_swap_gateway_requests_total[5m]))`},
+		{Name: "errors_rate", Query: `sum(rate(llm_swap_gateway_requests_total{status_code=~"5.."}[5m]))`},
+		{Name: "active_requests", Query: `sum(llm_swap_gateway_active_requests)`},
+		{Name: "queue_wait_p95", Query: `histogram_quantile(0.95, sum(rate(llm_swap_gateway_queue_wait_seconds_bucket[5m])) by (le))`},
+	}
+	s.writeHistoricalMetrics(w, r, queries)
+}
+
+func (s *Server) handleUIMetricsModel(w http.ResponseWriter, r *http.Request) {
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
+	if model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	label := promLabelValue(model)
+	queries := []historicalQuery{
+		{Name: "model_requests_rate", Query: `sum(rate(llm_swap_gateway_requests_total{model="` + label + `"}[5m])) by (model)`},
+		{Name: "model_errors_rate", Query: `sum(rate(llm_swap_gateway_requests_total{model="` + label + `",status_code=~"5.."}[5m])) by (model)`},
+		{Name: "model_duration_p95", Query: `histogram_quantile(0.95, sum(rate(llm_swap_gateway_request_duration_seconds_bucket{model="` + label + `"}[5m])) by (model, le))`},
+		{Name: "model_active_requests", Query: `sum(llm_swap_gateway_active_requests{model="` + label + `"}) by (model)`},
+		{Name: "model_tokens_rate", Query: `sum(rate(llm_swap_gateway_model_tokens_total{model="` + label + `"}[5m])) by (model, type)`},
+	}
+	s.writeHistoricalMetrics(w, r, queries)
+}
+
+func (s *Server) handleUIMetricsWorker(w http.ResponseWriter, r *http.Request) {
+	workerID := strings.TrimSpace(r.URL.Query().Get("worker_id"))
+	if workerID == "" {
+		http.Error(w, "worker_id is required", http.StatusBadRequest)
+		return
+	}
+	label := promLabelValue(workerID)
+	queries := []historicalQuery{
+		{Name: "worker_up", Query: `llm_swap_gateway_worker_up{worker_id="` + label + `"}`},
+		{Name: "worker_active_requests", Query: `llm_swap_gateway_worker_active_requests{worker_id="` + label + `"}`},
+		{Name: "worker_running_models", Query: `llm_swap_gateway_worker_running_models{worker_id="` + label + `"}`},
+		{Name: "worker_scrape_errors_rate", Query: `sum(rate(llm_swap_gateway_worker_metrics_scrape_errors_total{worker_id="` + label + `"}[5m])) by (worker_id)`},
+	}
+	s.writeHistoricalMetrics(w, r, queries)
+}
+
+type historicalQuery struct {
+	Name  string
+	Query string
+}
+
+func (s *Server) writeHistoricalMetrics(w http.ResponseWriter, r *http.Request, queries []historicalQuery) {
+	if s.metricsStore == nil {
+		http.Error(w, "metrics store is not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	now := time.Now()
+	start, end, step, rangeLabel := parseMetricsRange(
+		r.URL.Query().Get("range"),
+		r.URL.Query().Get("step"),
+		s.config.MetricsStore.DefaultRange,
+		s.config.MetricsStore.MaxRange,
+		now,
+	)
+	series := make([]HistoricalSeries, 0, len(queries))
+	for _, query := range queries {
+		items, err := s.metricsStore.QueryRange(r.Context(), query.Name, query.Query, start, end, step)
+		if err != nil {
+			http.Error(w, "failed to query metrics store", http.StatusBadGateway)
+			return
+		}
+		series = append(series, items...)
+	}
+	if series == nil {
+		series = []HistoricalSeries{}
+	}
+	writeJSON(w, uiMetricsResponse{
+		Range:  rangeLabel,
+		Step:   metricsStepLabel(r.URL.Query().Get("step"), step),
+		Series: series,
+	})
+}
+
+func promLabelValue(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+	return replacer.Replace(value)
+}
+
+func metricsStepLabel(raw string, step time.Duration) string {
+	_, label, ok := parseMetricsDurationWithLabel(raw)
+	if ok {
+		return label
+	}
+	return formatMetricsDuration(step)
+}
+
+func formatMetricsDuration(duration time.Duration) string {
+	if duration%(24*time.Hour) == 0 {
+		return strconv.Itoa(int(duration/(24*time.Hour))) + "d"
+	}
+	if duration%time.Hour == 0 {
+		return strconv.Itoa(int(duration/time.Hour)) + "h"
+	}
+	if duration%time.Minute == 0 {
+		return strconv.Itoa(int(duration/time.Minute)) + "m"
+	}
+	return strconv.Itoa(int(duration/time.Second)) + "s"
 }
 
 func (s *Server) buildUIStatus(now time.Time) uiStatusResponse {

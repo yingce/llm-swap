@@ -164,7 +164,7 @@ func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
 func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 
-	for _, path := range []string{"/ui", "/ui/status", "/ui/events"} {
+	for _, path := range []string{"/ui", "/ui/status", "/ui/events", "/ui/metrics/summary", "/ui/metrics/model", "/ui/metrics/worker"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 
@@ -173,6 +173,76 @@ func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("%s status = %d, want %d", path, rr.Code, http.StatusUnauthorized)
 		}
+	}
+}
+
+func TestUIMetricsSummaryReturnsServiceUnavailableWhenDisabled(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/ui/metrics/summary", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+}
+
+func TestUIMetricsModelQueriesVictoriaMetrics(t *testing.T) {
+	var gotPath string
+	var gotQuery string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query().Get("query")
+		writeJSON(w, map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"result": []any{
+					map[string]any{
+						"metric": map[string]string{"model": "qwen"},
+						"values": [][]any{{float64(1710000000), "3"}},
+					},
+				},
+			},
+		})
+	}))
+	defer backend.Close()
+
+	cfg := testUIGatewayConfig()
+	cfg.MetricsStore = config.MetricsStoreConfig{
+		Enabled:      true,
+		Type:         "victoriametrics",
+		QueryURL:     backend.URL,
+		DefaultRange: "2h",
+		MaxRange:     "7d",
+		TimeoutMS:    1000,
+	}
+	srv := NewServer(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/ui/metrics/model?model=qwen&range=30m&step=1m", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if gotPath != "/prometheus/api/v1/query_range" {
+		t.Fatalf("backend path = %q, want query_range", gotPath)
+	}
+	if !strings.Contains(gotQuery, `model="qwen"`) {
+		t.Fatalf("backend query = %q, want model filter", gotQuery)
+	}
+	var resp uiMetricsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode metrics response: %v", err)
+	}
+	if resp.Range != "30m" || resp.Step != "1m" {
+		t.Fatalf("range/step = %q/%q, want 30m/1m", resp.Range, resp.Step)
+	}
+	if len(resp.Series) == 0 || resp.Series[0].Name == "" || len(resp.Series[0].Points) != 1 {
+		t.Fatalf("series = %+v, want parsed VM series", resp.Series)
 	}
 }
 
