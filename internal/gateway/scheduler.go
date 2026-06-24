@@ -8,9 +8,10 @@ import (
 )
 
 type Scheduler struct {
-	Config  config.GatewayConfig
-	Workers *WorkerRegistry
-	Access  *AccessTracker
+	Config    config.GatewayConfig
+	Workers   *WorkerRegistry
+	Access    *AccessTracker
+	Cooldowns ReplicaCooldownSnapshot
 }
 
 func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (Worker, error) {
@@ -22,7 +23,7 @@ func (s Scheduler) Pick(model string, now time.Time, exclude map[string]bool) (W
 }
 
 func (s Scheduler) PickDecision(model string, now time.Time, exclude map[string]bool) (ScheduleDecision, error) {
-	decision, err := (Placement{Config: s.Config, Workers: s.Workers, Access: s.Access}).PickReadyWorker(model, now, exclude)
+	decision, err := (Placement{Config: s.Config, Workers: s.Workers, Access: s.Access, Cooldowns: s.Cooldowns}).PickReadyWorker(model, now, exclude)
 	if err != nil {
 		return ScheduleDecision{
 			ReadyReplicas:    decision.ReadyReplicas,

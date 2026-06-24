@@ -413,6 +413,46 @@ func TestSchedulerRespectsExcludeMap(t *testing.T) {
 	}
 }
 
+func TestSchedulerSkipsReadyReplicaInCooldown(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{"qwen": {MaxLoaded: 2}},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "bad",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://bad",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "good",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://good",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+	cooldowns := NewReplicaCooldowns(30 * time.Second)
+	cooldowns.Mark("bad", "qwen", "upstream_503", now)
+
+	decision, err := (Scheduler{Config: cfg, Workers: reg, Cooldowns: cooldowns.Snapshot(now)}).PickDecision("qwen", now, nil)
+	if err != nil {
+		t.Fatalf("PickDecision returned error: %v", err)
+	}
+	if decision.Worker.ID != "good" {
+		t.Fatalf("picked %s, want good", decision.Worker.ID)
+	}
+	for _, candidate := range decision.Candidates {
+		if candidate.WorkerID == "bad" {
+			t.Fatalf("cooled-down worker appeared in candidates: %+v", decision.Candidates)
+		}
+	}
+}
+
 func TestSchedulerRequiresReadyArtifactEvenWhenModelAlreadyRunning(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models:      map[string]config.Model{"qwen": {}},

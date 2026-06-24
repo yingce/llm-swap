@@ -11,10 +11,11 @@ import (
 )
 
 type Placement struct {
-	Config   config.GatewayConfig
-	Workers  *WorkerRegistry
-	Access   *AccessTracker
-	Pressure *PressureTracker
+	Config    config.GatewayConfig
+	Workers   *WorkerRegistry
+	Access    *AccessTracker
+	Pressure  *PressureTracker
+	Cooldowns ReplicaCooldownSnapshot
 }
 
 type PlacementDecision struct {
@@ -103,6 +104,9 @@ func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[stri
 			continue
 		}
 		if !artifactReady(worker, model) {
+			continue
+		}
+		if p.Cooldowns.Active(worker.ID, model, now) {
 			continue
 		}
 		state, running := runningModelState(worker, model)
