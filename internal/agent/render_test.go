@@ -140,8 +140,8 @@ func TestRenderLlamaSwapConfigBuildsRuntimeCommand(t *testing.T) {
 				Runtime: "sglang",
 				RuntimeArgs: []string{
 					"--trust-remote-code",
-					"--dtype", "bfloat16",
-					"--json-model-override-args", `{"init_vision":true}`,
+					"--dtype bfloat16",
+					`--json-model-override-args '{"init_vision":true}'`,
 				},
 			},
 		},

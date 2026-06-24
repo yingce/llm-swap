@@ -105,20 +105,81 @@ func modelCommand(modelName string, model config.Model, modelPath string) (strin
 		return runtimeCommand("/opt/llmswap/bin/vllm.server", append([]string{
 			modelPath,
 			"--served-model-name", modelName,
-		}, model.RuntimeArgs...)...), nil
+		}, expandRuntimeArgs(model.RuntimeArgs)...)...), nil
 	case "sglang":
 		return runtimeCommand("/opt/llmswap/bin/sglang.server", append([]string{
 			modelPath,
 			"--served-model-name", modelName,
-		}, model.RuntimeArgs...)...), nil
+		}, expandRuntimeArgs(model.RuntimeArgs)...)...), nil
 	case "llamacpp":
 		return runtimeCommand("/opt/llmswap/bin/llamacpp.server", append([]string{
 			llamaCppModelPath(modelPath, model.Artifact),
 			"--alias", modelName,
-		}, model.RuntimeArgs...)...), nil
+		}, expandRuntimeArgs(model.RuntimeArgs)...)...), nil
 	default:
 		return "", fmt.Errorf("allowed model %q has empty run command and unsupported runtime %q", modelName, model.Runtime)
 	}
+}
+
+func expandRuntimeArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		fields := splitRuntimeArg(arg)
+		if len(fields) == 0 {
+			continue
+		}
+		out = append(out, fields...)
+	}
+	return out
+}
+
+func splitRuntimeArg(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	var out []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	for _, r := range value {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if current.Len() > 0 {
+				out = append(out, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteRune(r)
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	if current.Len() > 0 {
+		out = append(out, current.String())
+	}
+	return out
 }
 
 func runtimeCommand(binary string, args ...string) string {

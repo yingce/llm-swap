@@ -210,6 +210,9 @@ Gateway config:
 - `models.<name>.runtime` can be used instead of `run` for standard wrappers:
   `vllm`, `sglang`, or `llamacpp`. The agent generates `PORT=${PORT}`,
   model path, served model name/alias, and appends `runtime_args`.
+- `runtime_args` accepts either raw argv entries (`["--dtype", "half"]`) or
+  compact shell-like entries (`["--dtype half"]`). Prefer one logical argument
+  pair per YAML item for readability; quote JSON values inside the string.
 - `run` remains the escape hatch and takes precedence when both `run` and
   `runtime` are set.
 - `models.<name>.check_endpoint` should be set for runtimes whose health route

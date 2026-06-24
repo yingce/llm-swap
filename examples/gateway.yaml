@@ -29,23 +29,15 @@ models:
     runtime: sglang
     runtime_args:
       - --trust-remote-code
-      - --tp-size
-      - "1"
-      - --dtype
-      - bfloat16
-      - --max-total-tokens
-      - "2048"
+      - --tp-size 1
+      - --dtype bfloat16
+      - --max-total-tokens 2048
       - --disable-cuda-graph
-      - --attention-backend
-      - triton
-      - --sampling-backend
-      - pytorch
-      - --sampling-defaults
-      - openai
-      - --max-running-requests
-      - "1"
-      - --max-queued-requests
-      - "8"
+      - --attention-backend triton
+      - --sampling-backend pytorch
+      - --sampling-defaults openai
+      - --max-running-requests 1
+      - --max-queued-requests 8
 
 tag_policies:
   gpu-sample:
