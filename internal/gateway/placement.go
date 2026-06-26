@@ -68,6 +68,7 @@ func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[stri
 	active := p.Workers.ActiveSnapshot()
 	readyCount := 0
 	occupiedCount := 0
+	eligibleCount := 0
 	for _, worker := range workers {
 		if !p.Workers.Healthy(worker.ID, now) {
 			continue
@@ -75,13 +76,14 @@ func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[stri
 		if !workerAllowsModel(p.Config, worker, model) {
 			continue
 		}
-		if !artifactReady(worker, model) {
-			continue
-		}
 		state, running := runningModelState(worker, model)
 		if running {
 			occupiedCount++
 		}
+		if !artifactReady(worker, model) {
+			continue
+		}
+		eligibleCount++
 		if strings.EqualFold(state, "ready") {
 			readyCount++
 		}
@@ -113,7 +115,7 @@ func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[stri
 		if running && !strings.EqualFold(state, "ready") {
 			continue
 		}
-		if readyCount > 0 && !running {
+		if !running {
 			continue
 		}
 		if loadingAtCeiling && !running {
@@ -129,7 +131,15 @@ func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[stri
 		})
 	}
 	if len(candidates) == 0 {
-		if occupiedCount > 0 || readyCount > 0 {
+		if readyCount > 0 {
+			return PlacementDecision{
+				ReadyReplicas:    readyCount,
+				OccupiedReplicas: occupiedCount,
+				MaxLoaded:        maxLoaded,
+				MaxLoadedAuto:    maxLoadedAuto,
+			}, fmt.Errorf("no healthy worker for model %q", model)
+		}
+		if eligibleCount > 0 || occupiedCount > 0 {
 			return PlacementDecision{
 				ReadyReplicas:    readyCount,
 				OccupiedReplicas: occupiedCount,

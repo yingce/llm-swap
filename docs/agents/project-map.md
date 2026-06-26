@@ -86,8 +86,8 @@ disabled the gateway still runs with no external database.
 
 - `internal/gateway/placement.go`
   - Owns request placement and async control-action planning.
-  - Request placement only returns workers that can handle the current request.
-  - Starting/loading runtimes count as occupied but are not routable.
+  - Request placement only returns ready workers that can handle the current request.
+  - Starting/loading runtimes count as occupied but are not routable, and empty workers are warmed only by the async reconcile loop.
   - Active replica cooldowns exclude only the affected `worker_id + model`
     ready replica from request routing.
   - Omitted `max_loaded` is treated as an automatic ceiling bounded by eligible
@@ -165,8 +165,12 @@ disabled the gateway still runs with no external database.
   - Range and step are clamped by `metrics_store.default_range` and
     `metrics_store.max_range`.
 
-- `internal/gateway/ui.go`
-  - Minimal dashboard at `/ui`.
+- `internal/gateway/ui.go` and `internal/gateway/ui_assets.go`
+  - Admin dashboard at `/ui`.
+  - Vite/React build output is embedded from `internal/gateway/admin_dist`.
+    When only the placeholder asset is present, the gateway falls back to the
+    older inline dashboard so Go tests and development builds still work before
+    running the frontend build.
   - Shows model availability, traffic, workers, health, running models,
     artifacts, and recent worker events.
   - Recent events have columns: Received, Worker, Event, Model, Detail.
@@ -174,6 +178,39 @@ disabled the gateway still runs with no external database.
     `/ui/metrics/summary`, `/ui/metrics/model`, and `/ui/metrics/worker`.
     These use the agent token like the rest of the UI and return 503 when the
     metrics store is disabled.
+
+- `internal/gateway/config_manager.go` and `config_admin.go`
+  - Own the gateway config snapshot used by gateway handlers.
+  - Config snapshots are versioned and normalized with the same important
+    defaults as startup config loading.
+  - Admin config routes under `/ui/api/config` support reading the current
+    config, validation/dry-run, and apply.
+  - Apply validates the submitted YAML and writes it to the configured
+    `gateway.yaml` path when available. If the change is hot-applicable, it then
+    atomically replaces the in-memory gateway config. If the dry-run contains a
+    process-level `requires_gateway_restart` change, apply only persists the
+    file and leaves the running config snapshot untouched.
+  - The config editor reads the original YAML from disk when available instead
+    of marshaling the runtime struct. This preserves omitted fields such as
+    `max_loaded`, where omission has distinct automatic-expansion semantics.
+  - Dry-run/apply responses include `apply_mode`: `hot_apply` for changes that
+    take effect immediately, or `save_requires_gateway_restart` when the YAML
+    was persisted but the running snapshot was intentionally left unchanged.
+  - The admin UI now treats config as a structured operations console by
+    default: `Config Ops` edits models and tag policies, while `Advanced` is a
+    read-only YAML viewer for full config inspection and copy/paste.
+  - Dry-run returns coarse impact changes plus loaded-worker impacts. Model
+    policy changes are hot-update candidates. Runtime command/artifact changes
+    only require worker restart/reload when the affected model is currently
+    loaded on a worker; the response lists those model/worker pairs in
+    `impacts`. Process-level fields such as listen address and tokens are marked
+    as requiring gateway restart. `gateway.proxy_attempts` can hot-apply from
+    YAML unless it was overridden by gateway env/CLI at process startup; in that
+    case UI apply persists the YAML but keeps the running override until restart.
+  - Admin action routes support worker drain/undrain, model warm/unload, and
+    replica cooldown clear. These actions stay gateway-owned, use the existing
+    llama-swap client for runtime actions, and record gateway worker events so
+    the UI/event log shows operator interventions.
 
 ## Agent Modules
 
@@ -339,6 +376,63 @@ Important env vars:
 - `LLMSWAP_UV_PYTHON_INSTALL_DIR`
 - `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
 
+## Agent Container Image
+
+`Dockerfile.agent` builds a worker image that preinstalls the same base
+dependencies, uv-managed Python environments, runtime wrappers, supervisor
+configuration, and `llm-swap-agent` binary that `scripts/install-worker.sh`
+would normally install on a host.
+
+Important properties:
+
+- Default base image is `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`.
+- The build runs `install-worker.sh` inside the image, so runtime installation
+  logic stays in one place.
+- The image preinstalls `vllm`, `sglang`, or `llamacpp` based on
+  `--build-arg LLMSWAP_RUNTIME=...`.
+- The image installs the Tailscale binaries by default, but does not run
+  `tailscale up` at build time.
+- The image removes the placeholder `agent.yaml` after build. At container
+  start, `scripts/agent-container-entrypoint.sh` writes `/opt/llmswap/agent.yaml`
+  from env only when the file is absent or `LLMSWAP_FORCE_CONFIG=1`.
+- `llama-swap` is not built from this repository. Provide it either with
+  `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` or mount
+  `/opt/llmswap/bin/llama-swap` at runtime.
+
+Typical build:
+
+```bash
+docker build \
+  -f Dockerfile.agent \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 \
+  --build-arg LLMSWAP_CUDA_VERSION=12.8 \
+  --build-arg LLMSWAP_RUNTIME=all \
+  --build-arg LLAMA_SWAP_DOWNLOAD_URL=https://example.invalid/llama-swap-linux-amd64 \
+  -t llmswap-agent:cu128 .
+```
+
+Typical runtime env when no config file is mounted:
+
+- `LLMSWAP_AGENT_ID`
+- `LLMSWAP_AGENT_TAGS`
+- `LLMSWAP_GATEWAY_URL`
+- `LLMSWAP_AGENT_TOKEN`
+- `LLMSWAP_LLAMA_SWAP_TOKEN` (optional; defaults to agent token)
+- `LLMSWAP_SWAP_PORT`
+- `LLMSWAP_SWAP_URL` or `SWAP_URL` (optional explicit public worker URL)
+- `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`
+- `LLMSWAP_ENABLE_TAILSCALE=1` and `LLMSWAP_TAILSCALE_AUTHKEY` only when
+  running Tailscale in the same container
+
+Default container startup path:
+
+- verifies `/opt/llmswap/bin/llm-swap-agent`;
+- verifies `/opt/llmswap/bin/llama-swap`;
+- optionally writes `/opt/llmswap/agent.yaml`;
+- optionally starts `tailscaled` and runs `tailscale up`;
+- starts `supervisord` in the foreground, which manages `llama-swap` and
+  `llm-swap-agent`.
+
 ## Runtime Wrappers
 
 - `vllm.server MODEL_PATH [args...]`
@@ -415,6 +509,15 @@ UI routes:
 - `/ui`
 - `/ui/status`
 - `/ui/events?limit=50&offset=0`
+- `/ui/api/config`
+- `/ui/api/config/validate`
+- `/ui/api/config/dry-run`
+- `/ui/api/config/apply`
+- `/ui/api/workers/{id}/drain`
+- `/ui/api/workers/{id}/undrain`
+- `/ui/api/models/{model}/warm`
+- `/ui/api/models/{model}/unload`
+- `/ui/api/cooldowns/clear`
 - `/ui/metrics/summary?range=1h&step=1m`
 - `/ui/metrics/model?model=<name>&range=1h&step=1m`
 - `/ui/metrics/worker?worker_id=<id>&range=1h&step=1m`
@@ -453,13 +556,18 @@ request detail replay and recent event pages; VictoriaMetrics is for aggregate
 time-series history only.
 
 Production compose deployment runs gateway, VictoriaMetrics, and vmagent
-together. The gateway container mounts `/opt/llmswap/gateway.yaml` read-only and
-`/opt/llmswap/logs` read-write. VictoriaMetrics stores data under
+together. The gateway container mounts `/opt/llmswap/gateway.yaml` read-write so
+admin config apply can persist changes, and mounts `/opt/llmswap/logs`
+read-write. VictoriaMetrics stores data under
 `/opt/llmswap/data/victoriametrics`. Start it from the repository root with:
 
 ```bash
 docker compose -f deploy/production/compose.yaml up -d --build
 ```
+
+The gateway Dockerfile builds `ui/admin` with Node/Vite before compiling the Go
+binary, then copies the generated `internal/gateway/admin_dist` into the Go
+build context so the admin UI is embedded in the final binary.
 
 ## Placement Rollout Notes
 

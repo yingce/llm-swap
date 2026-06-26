@@ -28,8 +28,8 @@ func TestInstallWorkerDryRunUsesCuda124TorchIndexAndSupervisor(t *testing.T) {
 func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
-	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git")
-	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git ffmpeg libavdevice58")
+	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git")
+	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git ffmpeg libavdevice58")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "command=/opt/llmswap/bin/llama-swap -config /opt/llmswap/llama-swap.yaml -listen :6006 -watch-config")
 	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/llama-swap.out.log")

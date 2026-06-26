@@ -58,6 +58,9 @@ gateway:
 	if runtime.Config.Gateway.ProxyAttempts != 4 {
 		t.Fatalf("proxy attempts = %d, want CLI value", runtime.Config.Gateway.ProxyAttempts)
 	}
+	if !runtime.Overrides.ListenAddr || !runtime.Overrides.ProxyAttempts || !runtime.Overrides.Tokens {
+		t.Fatalf("overrides = %+v, want listen/proxy/tokens marked", runtime.Overrides)
+	}
 	if runtime.Config.Tokens.Client != "env-client-token" {
 		t.Fatalf("client token = %q, want env override", runtime.Config.Tokens.Client)
 	}
@@ -112,6 +115,9 @@ func TestLoadGatewayRuntimeAcceptsShortGatewayEnvNames(t *testing.T) {
 	}
 	if runtime.Config.Gateway.ProxyAttempts != 5 {
 		t.Fatalf("proxy attempts = %d, want short env value", runtime.Config.Gateway.ProxyAttempts)
+	}
+	if !runtime.Overrides.ListenAddr || !runtime.Overrides.ProxyAttempts {
+		t.Fatalf("overrides = %+v, want short env overrides marked", runtime.Overrides)
 	}
 }
 

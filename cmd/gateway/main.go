@@ -19,10 +19,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	srv := gateway.NewServerWithGatewayPersistencePaths(
+	srv := gateway.NewServerWithGatewayPersistencePathsAndConfigPathAndOverrides(
 		runtime.Config,
 		gateway.DefaultGatewayRequestLogPath,
 		gateway.DefaultGatewayWorkerEventLogPath,
+		runtime.ConfigPath,
+		runtime.Overrides,
 	)
 	go srv.RunLoadedReconciler(context.Background(), 30*time.Second)
 

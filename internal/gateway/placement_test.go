@@ -108,8 +108,8 @@ func TestPlacementMissingMaxLoadedUsesEligibleWorkerCountAsAutoCeiling(t *testin
 	}
 
 	decision, err := (Placement{Config: cfg, Workers: reg}).PickReadyWorker("qwen", now, nil)
-	if err != nil {
-		t.Fatalf("PickReadyWorker returned error: %v", err)
+	if err == nil {
+		t.Fatalf("PickReadyWorker error = nil, want no ready worker")
 	}
 	if decision.MaxLoaded != 3 {
 		t.Fatalf("MaxLoaded = %d, want 3 eligible workers", decision.MaxLoaded)

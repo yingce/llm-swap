@@ -125,6 +125,48 @@ func TestUIEventsEndpointPaginatesPersistedWorkerEvents(t *testing.T) {
 	}
 }
 
+func TestUIRequestsEndpointPaginatesPersistedRequestLogs(t *testing.T) {
+	requestLogPath := filepath.Join(t.TempDir(), "request-logs.jsonl")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"id":     "chatcmpl-test",
+			"object": "chat.completion",
+			"choices": []map[string]any{{
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     1,
+				"completion_tokens": 1,
+				"total_tokens":      2,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	srv := NewServerWithGatewayPersistencePaths(testProxyConfig(), requestLogPath, "")
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	srv.ServeHTTP(httptest.NewRecorder(), proxyRequest(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`))
+	srv.ServeHTTP(httptest.NewRecorder(), proxyRequest(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"audio_url","audio_url":{"url":"https://example.com/a.mp3"}},{"type":"text","text":"hello"}]}]}`))
+
+	first := getUIRequests(t, srv, "/ui/requests?limit=1")
+	if len(first.Requests) != 1 || first.Requests[0].AudioCount != 1 {
+		t.Fatalf("first requests = %+v, want newest audio request", first.Requests)
+	}
+	if !first.HasMore || first.NextOffset != 1 {
+		t.Fatalf("first page = %+v, want has_more next_offset=1", first)
+	}
+
+	second := getUIRequests(t, srv, "/ui/requests?limit=1&offset=1")
+	if len(second.Requests) != 1 || second.Requests[0].ImageCount != 1 {
+		t.Fatalf("second requests = %+v, want older image request", second.Requests)
+	}
+	if second.HasMore || second.NextOffset != 2 {
+		t.Fatalf("second page = %+v, want no more next_offset=2", second)
+	}
+}
+
 func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	now := time.Now()
@@ -161,10 +203,43 @@ func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
 	}
 }
 
+func TestUIStatusShowsWorkerBackoffAfterReverseAccessFailure(t *testing.T) {
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "broken", "", true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("proxy status = %d, want 503: %s", rr.Code, rr.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	statusRR := httptest.NewRecorder()
+	srv.ServeHTTP(statusRR, req)
+	if statusRR.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", statusRR.Code, statusRR.Body.String())
+	}
+
+	var status uiStatusResponse
+	if err := json.NewDecoder(statusRR.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(status.Workers) != 1 {
+		t.Fatalf("workers = %+v, want one worker", status.Workers)
+	}
+	if status.Workers[0].Health != "backoff" {
+		t.Fatalf("worker health = %q, want backoff", status.Workers[0].Health)
+	}
+	if !strings.Contains(status.Workers[0].HealthProblem, "reverse access") {
+		t.Fatalf("worker health problem = %q, want reverse access detail", status.Workers[0].HealthProblem)
+	}
+}
+
 func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 
-	for _, path := range []string{"/ui", "/ui/status", "/ui/events", "/ui/metrics/summary", "/ui/metrics/model", "/ui/metrics/worker"} {
+	for _, path := range []string{"/ui", "/ui/assets/", "/ui/status", "/ui/events", "/ui/requests", "/ui/metrics/summary", "/ui/metrics/model", "/ui/metrics/worker", "/ui/api/config"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 
@@ -351,6 +426,22 @@ func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
 	return resp
 }
 
+func getUIRequests(t *testing.T, srv *Server, path string) uiRequestsResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp uiRequestsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode requests: %v", err)
+	}
+	return resp
+}
+
 func testUIGatewayConfig() config.GatewayConfig {
 	cfg := testGatewayConfig()
 	cfg.Tokens.Client = "client-secret"
@@ -382,21 +473,19 @@ func TestUIPageServesDashboardHTML(t *testing.T) {
 		t.Fatalf("content-type = %q, want text/html", got)
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"LLM Swap Gateway", "/ui/status", "/ui/metrics/summary", "Models", "Workers", "History", "Recent worker events", "worker-card-grid", "model-table", "breakable", "renderHistory", "renderChart", "chart-grid", "metricsRangeButtons", `data-range="1h"`} {
+	for _, want := range []string{"LLM Swap Admin", "llmswap-admin-root", "/ui/assets/"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q:\n%s", want, body)
 		}
-	}
-	if strings.Contains(body, "<th>Progress</th>") {
-		t.Fatalf("event table should not have a standalone Progress column")
-	}
-	if !strings.Contains(body, "progressDetail") {
-		t.Fatalf("body missing progress detail renderer:\n%s", body)
 	}
 }
 
 func TestUIStatusEndpointUsesEmptyArraysInsteadOfNull(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "gpu-empty",
+		LlamaSwapURL: "http://worker-empty",
+	})
 	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
 	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
@@ -412,6 +501,10 @@ func TestUIStatusEndpointUsesEmptyArraysInsteadOfNull(t *testing.T) {
 		`"workers":null`,
 		`"models":null`,
 		`"worker_statuses":null`,
+		`"tags":null`,
+		`"running_models":null`,
+		`"allowed_models":null`,
+		`"replica_cooldowns":null`,
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("body contains %s:\n%s", forbidden, body)

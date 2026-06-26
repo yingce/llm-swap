@@ -180,6 +180,30 @@ run() {
   "$@"
 }
 
+run_with_retry() {
+  local attempts="$1"
+  local sleep_seconds="$2"
+  shift 2
+
+  if [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
+    printf 'RUN %s\n' "$*"
+    return 0
+  fi
+
+  local attempt=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if [[ "$attempt" -ge "$attempts" ]]; then
+      return 1
+    fi
+    printf 'WARN command failed (attempt %s/%s): %s\n' "$attempt" "$attempts" "$*" >&2
+    sleep "$sleep_seconds"
+    attempt=$((attempt + 1))
+  done
+}
+
 write_file() {
   local path="$1"
   local content="$2"
@@ -281,12 +305,12 @@ install_base_packages() {
   print_uv_info
   ensure_runtime_dirs
   if command -v apt-get >/dev/null 2>&1 || [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
-    local packages=(ca-certificates curl gnupg python3 python3-venv python3-dev python3-pip supervisor git ffmpeg)
+    local packages=(ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git ffmpeg)
     if [[ "$LLMSWAP_DRY_RUN" == "1" ]] || apt-cache show libavdevice58 >/dev/null 2>&1; then
       packages+=(libavdevice58)
     fi
-    run apt-get update
-    run apt-get install -y "${packages[@]}"
+    run_with_retry 3 5 apt-get update
+    run_with_retry 3 5 apt-get install -y "${packages[@]}"
   else
     echo "apt-get not found; install ca-certificates, curl, python3, python3-venv, python3-dev, python3-pip, supervisor, git, and ffmpeg manually" >&2
   fi

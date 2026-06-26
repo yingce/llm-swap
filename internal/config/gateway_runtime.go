@@ -20,7 +20,15 @@ type GatewayRuntimeOptions struct {
 
 type GatewayRuntimeConfig struct {
 	Config     GatewayConfig
+	ConfigPath string
 	ListenAddr string
+	Overrides  GatewayRuntimeOverrides
+}
+
+type GatewayRuntimeOverrides struct {
+	ListenAddr    bool
+	ProxyAttempts bool
+	Tokens        bool
 }
 
 func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (GatewayRuntimeConfig, error) {
@@ -57,12 +65,19 @@ func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (Gatewa
 	_ = v.BindEnv("addr", "LLM_SWAP_GATEWAY_ADDR")
 	_ = v.BindEnv("proxy_attempts", "LLM_SWAP_GATEWAY_PROXY_ATTEMPTS")
 
+	overrides := GatewayRuntimeOverrides{
+		ListenAddr:    v.IsSet("addr") || v.IsSet("gateway.listen_addr"),
+		ProxyAttempts: v.IsSet("proxy_attempts") || v.IsSet("gateway.proxy_attempts"),
+		Tokens:        v.IsSet("tokens.client") || v.IsSet("tokens.agent") || v.IsSet("tokens.llama_swap"),
+	}
 	applyGatewayEnv(v, &cfg)
 	if flags.Changed("addr") {
 		cfg.Gateway.ListenAddr, _ = flags.GetString("addr")
+		overrides.ListenAddr = true
 	}
 	if flags.Changed("proxy-attempts") {
 		cfg.Gateway.ProxyAttempts, _ = flags.GetInt("proxy-attempts")
+		overrides.ProxyAttempts = true
 	}
 	applyGatewayDefaults(&cfg)
 	if err := validateGateway(cfg); err != nil {
@@ -71,7 +86,9 @@ func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (Gatewa
 
 	return GatewayRuntimeConfig{
 		Config:     cfg,
+		ConfigPath: configPath,
 		ListenAddr: firstNonEmpty(cfg.Gateway.ListenAddr, DefaultGatewayListenAddr),
+		Overrides:  overrides,
 	}, nil
 }
 

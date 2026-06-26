@@ -29,10 +29,21 @@ type llamaSwapPerformance struct {
 }
 
 type llamaSwapModel struct {
-	Cmd           string `yaml:"cmd"`
-	CmdStop       string `yaml:"cmdStop,omitempty"`
-	CheckEndpoint string `yaml:"checkEndpoint,omitempty"`
-	TTL           int    `yaml:"ttl"`
+	Cmd           literalString `yaml:"cmd"`
+	CmdStop       string        `yaml:"cmdStop,omitempty"`
+	CheckEndpoint string        `yaml:"checkEndpoint,omitempty"`
+	TTL           int           `yaml:"ttl"`
+}
+
+type literalString string
+
+func (s literalString) MarshalYAML() (any, error) {
+	return &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: string(s),
+		Style: yaml.LiteralStyle,
+	}, nil
 }
 
 func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, token string) ([]byte, error) {
@@ -61,7 +72,7 @@ func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, 
 			return nil, err
 		}
 		rendered := llamaSwapModel{
-			Cmd: loggedShellCommand(modelName, cmd),
+			Cmd: literalString(loggedShellCommand(modelName, cmd)),
 			TTL: model.TTL,
 		}
 		if model.CmdStop != "" {
@@ -87,9 +98,14 @@ func defaultRuntimeCheckEndpoint(runtime string) string {
 	}
 }
 
-func modelCommand(modelName string, model config.Model, modelPath string) (string, error) {
+type modelCommandSpec struct {
+	shell string
+	argv  []string
+}
+
+func modelCommand(modelName string, model config.Model, modelPath string) (modelCommandSpec, error) {
 	if strings.TrimSpace(model.Run) != "" {
-		return strings.ReplaceAll(model.Run, "{{model_path}}", modelPath), nil
+		return modelCommandSpec{shell: strings.ReplaceAll(model.Run, "{{model_path}}", modelPath)}, nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(model.Runtime)) {
@@ -109,7 +125,7 @@ func modelCommand(modelName string, model config.Model, modelPath string) (strin
 			"--alias", modelName,
 		}, expandRuntimeArgs(model.RuntimeArgs)...)...), nil
 	default:
-		return "", fmt.Errorf("allowed model %q has empty run command and unsupported runtime %q", modelName, model.Runtime)
+		return modelCommandSpec{}, fmt.Errorf("allowed model %q has empty run command and unsupported runtime %q", modelName, model.Runtime)
 	}
 }
 
@@ -174,12 +190,12 @@ func splitRuntimeArg(value string) []string {
 	return out
 }
 
-func runtimeCommand(binary string, args ...string) string {
-	parts := []string{"PORT=${PORT}", shellArg(binary)}
-	for _, arg := range args {
-		parts = append(parts, shellArg(arg))
+func runtimeCommand(binary string, args ...string) modelCommandSpec {
+	argv := append([]string{binary}, args...)
+	return modelCommandSpec{
+		shell: "PORT=${PORT} " + shellJoin(argv...),
+		argv:  argv,
 	}
-	return strings.Join(parts, " ")
 }
 
 func llamaCppModelPath(modelPath string, artifact config.Artifact) string {
@@ -197,7 +213,14 @@ func shellCommand(cmd string) string {
 	return "/bin/sh -c '" + strings.ReplaceAll(cmd, "'", "'\"'\"'") + "'"
 }
 
-func loggedShellCommand(modelName string, cmd string) string {
+func loggedShellCommand(modelName string, cmd modelCommandSpec) string {
+	if len(cmd.argv) > 0 {
+		return loggedArgvCommand(modelName, cmd.argv)
+	}
+	return loggedRawShellCommand(modelName, cmd.shell)
+}
+
+func loggedRawShellCommand(modelName string, cmd string) string {
 	logDir := filepath.ToSlash(filepath.Dir(runtimeLogPath))
 	modelArg := shellArg(modelName)
 	cmdArg := shellArg(cmd)
@@ -211,6 +234,25 @@ func loggedShellCommand(modelName string, cmd string) string {
 		runtimeLogPath,
 	)
 	return shellCommand(wrapped)
+}
+
+func loggedArgvCommand(modelName string, argv []string) string {
+	script := fmt.Sprintf(
+		"model_name=$1; shift; mkdir -p %s; LLMSWAP_MODEL_PORT=\"${PORT}\"; { printf \"===== start time=%%s model=%%s port=%%s =====\\n\" \"$(date -Is)\" \"$model_name\" \"$LLMSWAP_MODEL_PORT\"; printf \"cmd: PORT=%%s\" \"$LLMSWAP_MODEL_PORT\"; printf \" %%s\" \"$@\"; printf \"\\n\"; PORT=\"${PORT}\" \"$@\"; rc=$?; printf \"===== exit time=%%s model=%%s status=%%s =====\\n\" \"$(date -Is)\" \"$model_name\" \"$rc\"; exit \"$rc\"; } >> %s 2>&1",
+		filepath.ToSlash(filepath.Dir(runtimeLogPath)),
+		runtimeLogPath,
+	)
+	parts := []string{"/bin/sh", "-c", script, "llmswap-model", modelName}
+	parts = append(parts, argv...)
+	return shellJoin(parts...)
+}
+
+func shellJoin(args ...string) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, shellArg(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 func shellArg(value string) string {

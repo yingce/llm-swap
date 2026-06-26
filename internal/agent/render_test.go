@@ -156,7 +156,7 @@ func TestRenderLlamaSwapConfigBuildsRuntimeCommand(t *testing.T) {
 	qwen := models["qwen"].(map[string]any)
 	cmd := qwen["cmd"].(string)
 	for _, want := range []string{
-		"PORT=${PORT}",
+		`PORT="${PORT}" "$@"`,
 		"/opt/llmswap/bin/sglang.server",
 		"/models/qwen",
 		"--served-model-name",
@@ -168,8 +168,60 @@ func TestRenderLlamaSwapConfigBuildsRuntimeCommand(t *testing.T) {
 			t.Fatalf("runtime cmd missing %q: %q", want, cmd)
 		}
 	}
+	if strings.Contains(cmd, "LLMSWAP_MODEL_CMD") {
+		t.Fatalf("runtime cmd duplicated full command in LLMSWAP_MODEL_CMD: %q", cmd)
+	}
+	if strings.Contains(string(out), "''\"''") {
+		t.Fatalf("rendered YAML contains excessive nested quote escaping:\n%s", out)
+	}
 	if qwen["checkEndpoint"] != "/model_info" {
 		t.Fatalf("checkEndpoint = %#v, want sglang default /model_info", qwen["checkEndpoint"])
+	}
+}
+
+func TestRenderLlamaSwapConfigRuntimeJSONArgsStayReadable(t *testing.T) {
+	jsonOverride := `{"init_vision":true,"init_audio":false,"quantization_config":{"bits":4,"modules_to_not_convert":["vpm","resampler"]}}`
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"JoyFox-PawScope-VL-AWQ": {
+				Runtime: "sglang",
+				RuntimeArgs: []string{
+					"--trust-remote-code",
+					"--sampling-defaults openai",
+					"--json-model-override-args '" + jsonOverride + "'",
+				},
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"JoyFox-PawScope-VL-AWQ"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/opt/llmswap/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	raw := string(out)
+	for _, bad := range []string{
+		"LLMSWAP_MODEL_CMD",
+		"''\"''",
+		"\"''\"",
+	} {
+		if strings.Contains(raw, bad) {
+			t.Fatalf("rendered YAML contains excessive quote artifact %q:\n%s", bad, raw)
+		}
+	}
+	for _, want := range []string{
+		"cmd: |-",
+		"/opt/llmswap/bin/sglang.server",
+		"/opt/llmswap/models/JoyFox-PawScope-VL-AWQ",
+		"--json-model-override-args",
+		jsonOverride,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("rendered YAML missing %q:\n%s", want, raw)
+		}
 	}
 }
 
@@ -198,7 +250,7 @@ func TestRenderLlamaSwapConfigBuildsLlamaCppFileRuntimeCommand(t *testing.T) {
 	models := parseYAML(t, out)["models"].(map[string]any)
 	cmd := models["qwen-gguf"].(map[string]any)["cmd"].(string)
 	for _, want := range []string{
-		"PORT=${PORT}",
+		`PORT="${PORT}" "$@"`,
 		"/opt/llmswap/bin/llamacpp.server",
 		"/models/qwen-gguf/Qwen3.6-35B-q4_K_M.gguf",
 		"--alias",

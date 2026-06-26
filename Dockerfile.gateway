@@ -1,3 +1,13 @@
+FROM node:22-bookworm AS ui-build
+
+WORKDIR /src/ui/admin
+
+COPY ui/admin/package.json ui/admin/package-lock.json ./
+RUN npm ci
+
+COPY ui/admin ./
+RUN npm run build
+
 FROM golang:1.23-bookworm AS build
 
 WORKDIR /src
@@ -6,6 +16,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=ui-build /src/internal/gateway/admin_dist ./internal/gateway/admin_dist
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-gateway ./cmd/gateway
 
 FROM debian:bookworm-slim

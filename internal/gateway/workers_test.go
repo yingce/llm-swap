@@ -439,3 +439,25 @@ func TestWorkerRegistryAcquireReleaseDecrementsOnce(t *testing.T) {
 		t.Fatalf("active count = %d, want 0", got)
 	}
 }
+
+func TestWorkerRegistryReverseFailureBacksOffImmediatelyAndSuccessClears(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+	}, now)
+
+	if marked := reg.RecordReverseFailure("gpu-01", now.Add(time.Second)); !marked {
+		t.Fatal("first reverse failure should mark worker unavailable")
+	}
+	if reg.Healthy("gpu-01", now.Add(2*time.Second)) {
+		t.Fatal("worker should be unavailable during reverse-access backoff")
+	}
+
+	reg.RecordScrapeSuccess("gpu-01")
+	if !reg.Healthy("gpu-01", now.Add(2*time.Second)) {
+		t.Fatal("successful reverse access should clear backoff")
+	}
+}

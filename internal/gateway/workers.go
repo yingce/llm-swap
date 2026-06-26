@@ -34,17 +34,19 @@ type Worker struct {
 }
 
 type WorkerRegistry struct {
-	mu         sync.RWMutex
-	staleAfter time.Duration
-	workers    map[string]*Worker
-	active     map[string]int
+	mu           sync.RWMutex
+	staleAfter   time.Duration
+	workers      map[string]*Worker
+	active       map[string]int
+	manualDrains map[string]bool
 }
 
 func NewWorkerRegistry(staleAfter time.Duration) *WorkerRegistry {
 	return &WorkerRegistry{
-		staleAfter: staleAfter,
-		workers:    make(map[string]*Worker),
-		active:     make(map[string]int),
+		staleAfter:   staleAfter,
+		workers:      make(map[string]*Worker),
+		active:       make(map[string]int),
+		manualDrains: make(map[string]bool),
 	}
 }
 
@@ -69,13 +71,41 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 		w.ScrapeFailures = prev.ScrapeFailures
 		w.ScrapeBackoffUntil = prev.ScrapeBackoffUntil
 	}
-	if hb.NeedsRestart {
+	if hb.NeedsRestart || r.manualDrains[hb.AgentID] {
 		w.State = WorkerDraining
 	}
 	r.workers[hb.AgentID] = w
 
 	restartAllowed := hb.NeedsRestart && r.active[hb.AgentID] == 0
 	return protocol.HeartbeatResponse{WorkerState: string(w.State), RestartAllowed: restartAllowed}
+}
+
+func (r *WorkerRegistry) Drain(workerID string) (Worker, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	w, ok := r.workers[workerID]
+	if !ok {
+		return Worker{}, false
+	}
+	r.manualDrains[workerID] = true
+	w.State = WorkerDraining
+	return cloneWorker(*w), true
+}
+
+func (r *WorkerRegistry) Undrain(workerID string) (Worker, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	w, ok := r.workers[workerID]
+	if !ok {
+		return Worker{}, false
+	}
+	delete(r.manualDrains, workerID)
+	if !w.NeedsRestart {
+		w.State = WorkerActive
+	}
+	return cloneWorker(*w), true
 }
 
 func (r *WorkerRegistry) Healthy(id string, now time.Time) bool {
@@ -101,11 +131,7 @@ func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
 
 	out := make([]Worker, 0, len(r.workers))
 	for _, w := range r.workers {
-		cp := *w
-		cp.Tags = append([]string(nil), w.Tags...)
-		cp.RunningModels = append([]protocol.RunningModel(nil), w.RunningModels...)
-		cp.Artifacts = copyStringMap(w.Artifacts)
-		out = append(out, cp)
+		out = append(out, cloneWorker(*w))
 		_ = now
 	}
 	return out
@@ -183,6 +209,27 @@ func (r *WorkerRegistry) RecordScrapeFailure(workerID string, now time.Time) {
 	if worker.ScrapeFailures >= workerScrapeFailureBackoffThreshold {
 		worker.ScrapeBackoffUntil = now.Add(workerScrapeFailureBackoff)
 	}
+}
+
+func (r *WorkerRegistry) RecordReverseFailure(workerID string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	worker := r.workers[workerID]
+	if worker == nil {
+		return false
+	}
+	wasHealthy := !now.Before(worker.ScrapeBackoffUntil)
+	worker.ScrapeFailures++
+	worker.ScrapeBackoffUntil = now.Add(workerScrapeFailureBackoff)
+	return wasHealthy
+}
+
+func cloneWorker(w Worker) Worker {
+	w.Tags = append([]string(nil), w.Tags...)
+	w.RunningModels = append([]protocol.RunningModel(nil), w.RunningModels...)
+	w.Artifacts = copyStringMap(w.Artifacts)
+	return w
 }
 
 func copyStringMap(in map[string]string) map[string]string {

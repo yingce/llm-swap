@@ -1,3 +1,6 @@
 .worktrees/
 .tmp/
 .superpowers/
+node_modules/
+ui/admin/node_modules/
+*.tsbuildinfo

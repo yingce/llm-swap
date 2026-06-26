@@ -12,14 +12,15 @@ import (
 )
 
 type LoadedReconciler struct {
-	Config      config.GatewayConfig
-	Workers     *WorkerRegistry
-	Client      LlamaSwapClient
-	Access      *AccessTracker
-	Pressure    *PressureTracker
-	Metrics     *Metrics
-	RecordEvent func(workerID string, event protocol.AgentEvent)
-	LogEvent    func(event string, fields map[string]any)
+	Config             config.GatewayConfig
+	Workers            *WorkerRegistry
+	Client             LlamaSwapClient
+	Access             *AccessTracker
+	Pressure           *PressureTracker
+	Metrics            *Metrics
+	RecordEvent        func(workerID string, event protocol.AgentEvent)
+	RecordReachability func(workerID string, err error, now time.Time)
+	LogEvent           func(event string, fields map[string]any)
 }
 
 func (r LoadedReconciler) Run(ctx context.Context, interval time.Duration) {
@@ -68,10 +69,16 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			}
 			r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "planned")
 			if err := r.Client.Unload(ctx, worker.LlamaSwapURL, modelName); err != nil {
+				if r.RecordReachability != nil {
+					r.RecordReachability(worker.ID, err, time.Now())
+				}
 				r.recordUnloadEvent(worker.ID, modelName, "gateway_model_unload_error", err)
 				r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "error")
 				outErr = errors.Join(outErr, err)
 				continue
+			}
+			if r.RecordReachability != nil {
+				r.RecordReachability(worker.ID, nil, time.Now())
 			}
 			r.recordUnloadEvent(worker.ID, modelName, "gateway_model_unload_done", nil)
 			r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "done")
@@ -89,11 +96,17 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			r.logControlAction("control_action_planned", action, nil)
 			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
 			if err := r.Client.Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+				if r.RecordReachability != nil {
+					r.RecordReachability(action.Worker.ID, err, time.Now())
+				}
 				r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_error", err)
 				r.logControlAction("control_action_error", action, err)
 				r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
 				outErr = errors.Join(outErr, err)
 				continue
+			}
+			if r.RecordReachability != nil {
+				r.RecordReachability(action.Worker.ID, nil, time.Now())
 			}
 			r.recordUnloadEvent(action.Worker.ID, action.Model, "gateway_model_unload_done", nil)
 			r.logControlAction("control_action_done", action, nil)
@@ -106,11 +119,17 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
 			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_start", nil)
 			if err := r.Client.Load(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+				if r.RecordReachability != nil {
+					r.RecordReachability(action.Worker.ID, err, time.Now())
+				}
 				r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_error", err)
 				r.logControlAction("control_action_error", action, err)
 				r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
 				outErr = errors.Join(outErr, err)
 				continue
+			}
+			if r.RecordReachability != nil {
+				r.RecordReachability(action.Worker.ID, nil, time.Now())
 			}
 			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_done", nil)
 			r.logControlAction("control_action_done", action, nil)
@@ -284,15 +303,30 @@ func loadedWorkersForModel(workers []Worker, model string, now time.Time, reg *W
 }
 
 func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration) {
-	reconciler := LoadedReconciler{
-		Config:      s.config,
-		Workers:     s.workers,
-		Client:      LlamaSwapClient{BearerToken: s.config.Tokens.LlamaSwap},
-		Access:      s.access,
-		Pressure:    s.pressure,
-		Metrics:     s.metrics,
-		RecordEvent: s.recordGatewayWorkerEvent,
-		LogEvent:    s.logEvent,
+	if interval <= 0 {
+		interval = 30 * time.Second
 	}
-	reconciler.Run(ctx, interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		cfg := s.currentConfig()
+		reconciler := LoadedReconciler{
+			Config:             cfg,
+			Workers:            s.workers,
+			Client:             LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
+			Access:             s.access,
+			Pressure:           s.pressure,
+			Metrics:            s.metrics,
+			RecordEvent:        s.recordGatewayWorkerEvent,
+			RecordReachability: s.recordReverseAccessResult,
+			LogEvent:           s.logEvent,
+		}
+		_ = reconciler.Reconcile(ctx, time.Now())
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

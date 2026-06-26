@@ -23,6 +23,7 @@ var requestIDSequence uint64
 
 func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	cfg := s.currentConfig()
 	requestID := ensureRequestID(r)
 	w.Header().Set("X-Request-Id", requestID)
 
@@ -37,11 +38,11 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteOpenAIError(w, http.StatusBadRequest, "missing_model", "request body must include a non-empty model")
 		return
 	}
-	if _, ok := s.config.Models[model]; !ok {
+	if _, ok := cfg.Models[model]; !ok {
 		protocol.WriteOpenAIError(w, http.StatusNotFound, "model_not_available", "model is not available")
 		return
 	}
-	modelCfg := s.config.Models[model]
+	modelCfg := cfg.Models[model]
 	body = normalizeProxyRequestBody(body, modelCfg)
 	baseLogEntry := requestLogEntryFromBody(requestID, model, body)
 	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
@@ -63,7 +64,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 
 		now := time.Now()
 		decision, err := (Scheduler{
-			Config:    s.config,
+			Config:    cfg,
 			Workers:   s.workers,
 			Access:    s.access,
 			Cooldowns: s.replicaCooldowns.Snapshot(now),
@@ -74,8 +75,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		worker := decision.Worker
 		exclude[worker.ID] = true
 
-		tag := selectedWorkerTag(s.config, worker, model)
-		policy, _ := tagPolicy(s.config, tag)
+		tag := selectedWorkerTag(cfg, worker, model)
+		policy, _ := tagPolicy(cfg, tag)
 		tagLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "tag", "tag:"+tag, policy.MaxConcurrency, policy.MaxQueue, replicaStatsFromDecision(decision))
 		if err != nil {
 			if errors.Is(err, ErrQueueFull) {
@@ -119,7 +120,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		release := releaseOnce(workerRelease, accountingRelease, metricsRelease, workerLimitRelease, tagLimitRelease)
 
 		dispatchAttempts++
-		retry, dispatchFailure, err, statusCode, responseEntry := s.proxyAttempt(w, r, body, model, worker)
+		retry, dispatchFailure, err, statusCode, responseEntry := s.proxyAttempt(w, r, body, model, worker, cfg.Tokens.LlamaSwap)
 		release()
 		if dispatchFailure != nil {
 			lastDispatchFailure = dispatchFailure
@@ -242,6 +243,7 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 	if s.access != nil {
 		s.access.RecordRequest(entry)
 	}
+	s.recordRecentRequest(entry)
 	if s.metrics != nil {
 		s.metrics.ObserveRequestTokens(entry)
 	}
@@ -259,6 +261,19 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 		if err := appendRequestLog(s.requestLogPath, entry); err != nil {
 			s.logEvent("request_log_write_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})
 		}
+	}
+}
+
+func (s *Server) recordRecentRequest(entry RequestLogEntry) {
+	if s == nil || entry.Model == "" {
+		return
+	}
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+
+	s.recentRequests = append(s.recentRequests, entry)
+	if len(s.recentRequests) > uiEventLimit {
+		s.recentRequests = append([]RequestLogEntry(nil), s.recentRequests[len(s.recentRequests)-uiEventLimit:]...)
 	}
 }
 
@@ -303,7 +318,8 @@ func replicaStatsFromDecision(decision ScheduleDecision) queueReplicaStats {
 
 func (s *Server) replicaStats(model string, now time.Time) queueReplicaStats {
 	out := queueReplicaStats{}
-	modelCfg, ok := s.config.Models[model]
+	cfg := s.currentConfig()
+	modelCfg, ok := cfg.Models[model]
 	if ok {
 		out.maxLoaded = modelCfg.EffectiveMaxLoaded()
 	}
@@ -314,7 +330,7 @@ func (s *Server) replicaStats(model string, now time.Time) queueReplicaStats {
 		if !s.workers.Healthy(worker.ID, now) {
 			continue
 		}
-		if !workerAllowsModel(s.config, worker, model) || !artifactReady(worker, model) {
+		if !workerAllowsModel(cfg, worker, model) || !artifactReady(worker, model) {
 			continue
 		}
 		state, running := runningModelState(worker, model)
@@ -554,9 +570,10 @@ func upstreamRetryExhaustedFailure(status int) *proxyDispatchFailure {
 	}
 }
 
-func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker) (bool, *proxyDispatchFailure, error, int, RequestLogEntry) {
+func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker, llamaSwapToken string) (bool, *proxyDispatchFailure, error, int, RequestLogEntry) {
 	upstreamURL, err := upstreamRequestURL(worker.LlamaSwapURL, r.URL)
 	if err != nil {
+		s.recordReverseAccessResult(worker.ID, err, time.Now())
 		return true, workerUnavailableFailure(), err, 0, RequestLogEntry{}
 	}
 	entry := RequestLogEntry{UpstreamURL: upstreamURL}
@@ -569,8 +586,8 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 	req.Header.Set("X-Request-Id", requestIDFromHeader(r))
 	req.Header.Set("X-Gateway-Model", model)
 	req.Header.Set("X-Gateway-Worker", worker.ID)
-	if s.config.Tokens.LlamaSwap != "" {
-		req.Header.Set("Authorization", "Bearer "+s.config.Tokens.LlamaSwap)
+	if llamaSwapToken != "" {
+		req.Header.Set("Authorization", "Bearer "+llamaSwapToken)
 	} else {
 		req.Header.Del("Authorization")
 	}
@@ -578,12 +595,14 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 
 	resp, err := defaultProxyHTTPClient.Do(req)
 	if err != nil {
+		s.recordReverseAccessResult(worker.ID, err, time.Now())
 		if retryableProxyError(err, r.Context()) {
 			return true, workerUnavailableFailure(), err, 0, entry
 		}
 		return false, nil, err, 0, entry
 	}
 	defer resp.Body.Close()
+	s.recordReverseAccessResult(worker.ID, nil, time.Now())
 
 	if retryableUpstreamStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, resp.Body)

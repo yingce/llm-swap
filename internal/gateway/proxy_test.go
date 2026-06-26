@@ -752,6 +752,33 @@ func TestProxyMalformedWorkerURLReportsWorkerUnavailable(t *testing.T) {
 	}
 	assertOpenAIErrorCode(t, rr.Body.Bytes(), "worker_unavailable")
 	assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
+	if srv.workers.Healthy("broken", time.Now()) {
+		t.Fatal("worker with malformed reverse URL should be marked unavailable")
+	}
+}
+
+func TestProxySuccessfulReverseAccessClearsWorkerBackoff(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+	srv.workers.RecordReverseFailure("worker-a", time.Now())
+	srv.workers.RecordScrapeSuccess("worker-a")
+	srv.workers.RecordReverseFailure("worker-a", time.Now())
+
+	rr := httptest.NewRecorder()
+	srv.recordReverseAccessResult("worker-a", nil, time.Now())
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !srv.workers.Healthy("worker-a", time.Now()) {
+		t.Fatal("successful reverse access should clear worker backoff")
+	}
 }
 
 func TestProxyStripsRequestHeadersNamedByConnection(t *testing.T) {

@@ -1,0 +1,85 @@
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+
+FROM golang:1.23-bookworm AS agent-build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-agent ./cmd/agent
+
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-lc"]
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LLMSWAP_ROOT=/opt/llmswap
+ARG LLMSWAP_CUDA_VERSION=12.8
+ARG LLMSWAP_RUNTIME=all
+ARG LLMSWAP_PYTHON=3.12
+ARG LLMSWAP_INSTALL_TAILSCALE=1
+ARG LLMSWAP_LLAMA_CPP_BASE_URL=http://llmfs-bj.oss-cn-beijing.aliyuncs.com/models
+ARG LLMSWAP_LLAMA_CPP_CUDA=auto
+ARG LLMSWAP_LLAMA_CPP_ARCH=sm89
+ARG LLMSWAP_VLLM_PACKAGE=vllm[audio]
+ARG LLMSWAP_SGLANG_PACKAGE=sglang
+ARG LLMSWAP_SWAP_PORT=6006
+ARG LLAMA_SWAP_DOWNLOAD_URL=
+
+ENV LLMSWAP_ROOT=${LLMSWAP_ROOT}
+ENV LLMSWAP_LLAMA_CPP_ARCH=${LLMSWAP_LLAMA_CPP_ARCH}
+ENV LLMSWAP_VLLM_PACKAGE=${LLMSWAP_VLLM_PACKAGE}
+ENV LLMSWAP_SGLANG_PACKAGE=${LLMSWAP_SGLANG_PACKAGE}
+ENV LLMSWAP_UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
+ENV LLMSWAP_UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
+ENV UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
+ENV UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
+ENV UV_LINK_MODE=copy
+ENV PATH=${LLMSWAP_ROOT}/bin:/root/.local/bin:${PATH}
+
+WORKDIR /src
+
+COPY scripts/install-worker.sh /usr/local/bin/install-worker.sh
+COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
+COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
+
+RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-entrypoint.sh \
+ && /usr/local/bin/install-worker.sh \
+      --root "${LLMSWAP_ROOT}" \
+      --cuda-version "${LLMSWAP_CUDA_VERSION}" \
+      --runtime "${LLMSWAP_RUNTIME}" \
+      --python "${LLMSWAP_PYTHON}" \
+      --llamacpp-base-url "${LLMSWAP_LLAMA_CPP_BASE_URL}" \
+      --llamacpp-cuda "${LLMSWAP_LLAMA_CPP_CUDA}" \
+      --agent-binary /tmp/llm-swap-agent \
+      --agent-id "container-worker" \
+      --tags "gpu" \
+      --gateway-url "http://gateway.example.local:8080" \
+      --agent-token "agent-token" \
+      --llama-swap-token "agent-token" \
+      --swap-port "${LLMSWAP_SWAP_PORT}" \
+      --skip-tailscale \
+ && rm -f "${LLMSWAP_ROOT}/agent.yaml" \
+ && if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]; then \
+      /usr/local/bin/install-worker.sh \
+        --root "${LLMSWAP_ROOT}" \
+        --only tailscale \
+        --cuda-version "${LLMSWAP_CUDA_VERSION}" ; \
+    fi \
+ && if [[ -n "${LLAMA_SWAP_DOWNLOAD_URL}" ]]; then \
+      curl -fL --retry 5 --retry-delay 5 -o "${LLMSWAP_ROOT}/bin/llama-swap" "${LLAMA_SWAP_DOWNLOAD_URL}" \
+      && chmod 0755 "${LLMSWAP_ROOT}/bin/llama-swap" ; \
+    else \
+      printf 'WARN LLAMA_SWAP_DOWNLOAD_URL is empty; provide /opt/llmswap/bin/llama-swap via build arg or runtime volume.\n' ; \
+    fi \
+ && rm -f /tmp/llm-swap-agent
+
+WORKDIR ${LLMSWAP_ROOT}
+
+VOLUME ["/opt/llmswap/models", "/opt/llmswap/logs"]
+
+ENTRYPOINT ["/usr/local/bin/agent-container-entrypoint.sh"]
+CMD []

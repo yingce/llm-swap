@@ -126,6 +126,12 @@ type uiEventsResponse struct {
 	HasMore    bool           `json:"has_more"`
 }
 
+type uiRequestsResponse struct {
+	Requests   []RequestLogEntry `json:"requests"`
+	NextOffset int               `json:"next_offset"`
+	HasMore    bool              `json:"has_more"`
+}
+
 type uiMetricsResponse struct {
 	Range  string             `json:"range"`
 	Step   string             `json:"step"`
@@ -135,6 +141,10 @@ type uiMetricsResponse struct {
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	if html, ok := embeddedAdminIndex(); ok {
+		_, _ = w.Write(html)
+		return
+	}
 	_, _ = w.Write([]byte(gatewayUIHTML))
 }
 
@@ -174,6 +184,42 @@ func (s *Server) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.Events == nil {
 		resp.Events = []uiAgentEvent{}
+	}
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleUIRequests(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if s.requestLogPath == "" {
+		requests := s.recentRequestLogs()
+		if offset < 0 {
+			offset = 0
+		}
+		if limit <= 0 {
+			limit = uiEventLimit
+		}
+		if offset > len(requests) {
+			offset = len(requests)
+		}
+		end := offset + limit
+		if end > len(requests) {
+			end = len(requests)
+		}
+		writeJSON(w, uiRequestsResponse{
+			Requests:   append([]RequestLogEntry(nil), requests[offset:end]...),
+			NextOffset: end,
+			HasMore:    len(requests) > end,
+		})
+		return
+	}
+	resp, err := loadRequestLogPage(s.requestLogPath, offset, limit)
+	if err != nil {
+		http.Error(w, "failed to load request logs", http.StatusInternalServerError)
+		return
+	}
+	if resp.Requests == nil {
+		resp.Requests = []RequestLogEntry{}
 	}
 	writeJSON(w, resp)
 }
@@ -236,12 +282,13 @@ func (s *Server) writeHistoricalMetrics(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "metrics store is not enabled", http.StatusServiceUnavailable)
 		return
 	}
+	cfg := s.currentConfig()
 	now := time.Now()
 	start, end, step, rangeLabel := parseMetricsRange(
 		r.URL.Query().Get("range"),
 		r.URL.Query().Get("step"),
-		s.config.MetricsStore.DefaultRange,
-		s.config.MetricsStore.MaxRange,
+		cfg.MetricsStore.DefaultRange,
+		cfg.MetricsStore.MaxRange,
 		now,
 	)
 	series := make([]HistoricalSeries, 0, len(queries))
@@ -303,13 +350,23 @@ func (s *Server) buildUIStatus(now time.Time) uiStatusResponse {
 		Workers:     s.buildUIWorkers(workers, active, cooldowns, now),
 		Events:      events,
 	}
+	if resp.Models == nil {
+		resp.Models = []uiModelStatus{}
+	}
+	if resp.Workers == nil {
+		resp.Workers = []uiWorker{}
+	}
+	if resp.Events == nil {
+		resp.Events = []uiAgentEvent{}
+	}
 	resp.Summary = buildUISummary(resp.Models, resp.Workers, events)
 	return resp
 }
 
 func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapshot, now time.Time) []uiModelStatus {
-	models := make([]uiModelStatus, 0, len(s.config.Models))
-	for name, model := range s.config.Models {
+	cfg := s.currentConfig()
+	models := make([]uiModelStatus, 0, len(cfg.Models))
+	for name, model := range cfg.Models {
 		item := uiModelStatus{
 			Name:           name,
 			Priority:       model.Priority,
@@ -324,7 +381,7 @@ func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapsh
 			Traffic:        modelTrafficFromAccess(s.access.ModelRecord(name)),
 		}
 		for _, worker := range workers {
-			if !workerAllowsModel(s.config, worker, name) {
+			if !workerAllowsModel(cfg, worker, name) {
 				continue
 			}
 			artifactStatus := worker.Artifacts[name]
@@ -378,6 +435,7 @@ func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapsh
 
 func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldowns ReplicaCooldownSnapshot, now time.Time) []uiWorker {
 	out := make([]uiWorker, 0, len(workers))
+	cfg := s.currentConfig()
 	for _, worker := range workers {
 		backoffSeconds := int64(0)
 		if now.Before(worker.ScrapeBackoffUntil) {
@@ -385,14 +443,14 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 		}
 		out = append(out, uiWorker{
 			ID:                   worker.ID,
-			Tags:                 append([]string(nil), worker.Tags...),
+			Tags:                 stringsOrEmpty(worker.Tags),
 			Health:               workerHealth(worker, now),
 			State:                string(worker.State),
 			LlamaSwapURL:         worker.LlamaSwapURL,
 			LastHeartbeat:        worker.LastHeartbeat.UTC(),
 			LastHeartbeatAgeMS:   now.Sub(worker.LastHeartbeat).Milliseconds(),
 			ActiveRequests:       active[worker.ID],
-			RunningModels:        append([]protocol.RunningModel(nil), worker.RunningModels...),
+			RunningModels:        runningModelsOrEmpty(worker.RunningModels),
 			Artifacts:            copyStringMap(worker.Artifacts),
 			Capacity:             worker.Capacity,
 			NeedsRestart:         worker.NeedsRestart,
@@ -400,7 +458,7 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 			ScrapeFailures:       worker.ScrapeFailures,
 			ScrapeBackoffUntil:   worker.ScrapeBackoffUntil.UTC(),
 			ScrapeBackoffSeconds: backoffSeconds,
-			AllowedModels:        allowedModelsForWorker(s.config, worker),
+			AllowedModels:        stringsOrEmpty(allowedModelsForWorker(cfg, worker)),
 			HealthProblem:        workerHealthProblem(worker, now),
 			ReplicaCooldowns:     cooldownsForWorker(cooldowns, worker.ID, now),
 		})
@@ -435,6 +493,20 @@ func cooldownsForWorker(cooldowns ReplicaCooldownSnapshot, workerID string, now 
 		return out[i].Reason < out[j].Reason
 	})
 	return out
+}
+
+func stringsOrEmpty(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
+}
+
+func runningModelsOrEmpty(values []protocol.RunningModel) []protocol.RunningModel {
+	if len(values) == 0 {
+		return []protocol.RunningModel{}
+	}
+	return append([]protocol.RunningModel(nil), values...)
 }
 
 func buildUISummary(models []uiModelStatus, workers []uiWorker, events []uiAgentEvent) uiSummary {
@@ -534,7 +606,7 @@ func workerHealthProblem(worker Worker, now time.Time) string {
 	case "draining":
 		return "waiting for safe restart"
 	case "backoff":
-		return "worker metrics scrape is in backoff"
+		return "gateway temporarily marked worker unavailable after reverse access failures"
 	case "error":
 		return worker.LastError
 	default:

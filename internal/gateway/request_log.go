@@ -63,3 +63,72 @@ func appendRequestLog(path string, entry RequestLogEntry) error {
 	}
 	return nil
 }
+
+func loadRequestLogPage(path string, offset int, limit int) (uiRequestsResponse, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = uiEventLimit
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	lines, err := loadRecentLogLines(path, offset+limit+1)
+	if err != nil {
+		return uiRequestsResponse{}, err
+	}
+	requests := make([]RequestLogEntry, 0, len(lines))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var entry RequestLogEntry
+		if err := json.Unmarshal(lines[i], &entry); err != nil {
+			continue
+		}
+		requests = append(requests, entry)
+	}
+	if offset > len(requests) {
+		offset = len(requests)
+	}
+	end := offset + limit
+	if end > len(requests) {
+		end = len(requests)
+	}
+	page := append([]RequestLogEntry(nil), requests[offset:end]...)
+	return uiRequestsResponse{
+		Requests:   page,
+		NextOffset: offset + len(page),
+		HasMore:    len(requests) > end,
+	}, nil
+}
+
+func loadRecentRequestLogs(path string, limit int) ([]RequestLogEntry, error) {
+	lines, err := loadRecentLogLines(path, limit)
+	if err != nil {
+		return nil, err
+	}
+	requests := make([]RequestLogEntry, 0, len(lines))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var entry RequestLogEntry
+		if err := json.Unmarshal(lines[i], &entry); err != nil {
+			continue
+		}
+		requests = append(requests, entry)
+	}
+	return requests, nil
+}
+
+func (s *Server) recentRequestLogs() []RequestLogEntry {
+	if s == nil {
+		return []RequestLogEntry{}
+	}
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	if len(s.recentRequests) == 0 {
+		return []RequestLogEntry{}
+	}
+	out := append([]RequestLogEntry(nil), s.recentRequests...)
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}

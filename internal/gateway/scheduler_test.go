@@ -208,12 +208,12 @@ func TestSchedulerReturnsNoReadyWorkerInsteadOfColdWorkerWhenReadyWorkerExcluded
 	s := Scheduler{Config: cfg, Workers: reg}
 
 	_, err := s.Pick("qwen", now, map[string]bool{"loaded": true})
-	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
-		t.Fatalf("Pick error = %v, want no ready worker instead of routing current request to cold worker", err)
+	if err == nil || !strings.Contains(err.Error(), "no healthy worker") {
+		t.Fatalf("Pick error = %v, want no healthy worker instead of routing current request to cold worker", err)
 	}
 }
 
-func TestSchedulerUsesIdleWorkerForUnloadedModelWithoutMaxLoaded(t *testing.T) {
+func TestSchedulerDoesNotRouteUnloadedModelToIdleWorker(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{
 			"qwen":  {},
@@ -240,12 +240,53 @@ func TestSchedulerUsesIdleWorkerForUnloadedModelWithoutMaxLoaded(t *testing.T) {
 	}, now)
 	s := Scheduler{Config: cfg, Workers: reg}
 
-	pick, err := s.Pick("qwen", now, nil)
-	if err != nil {
-		t.Fatalf("Pick returned error: %v", err)
+	decision, err := s.PickDecision("qwen", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("PickDecision error = %v, want no ready worker", err)
 	}
-	if pick.ID != "worker-2" {
-		t.Fatalf("picked %s, want idle worker to avoid unloading other model", pick.ID)
+	if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 0 {
+		t.Fatalf("replicas ready=%d occupied=%d, want 0/0", decision.ReadyReplicas, decision.OccupiedReplicas)
+	}
+}
+
+func TestSchedulerDoesNotRouteToSwitchWorkerWhenAllMinLoadedFloorsAreOccupied(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"a": {MinLoaded: 1},
+			"b": {MinLoaded: 1},
+			"c": {MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu-4090": {AllowedModels: []string{"a", "b", "c"}},
+		},
+	}
+	reg := NewWorkerRegistry(6 * time.Second)
+	now := time.Unix(100, 0)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "worker-a",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-a",
+		RunningModels: []protocol.RunningModel{{Model: "a", State: "ready"}},
+		Artifacts:     map[string]string{"a": "ready", "b": "ready", "c": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "worker-b",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-b",
+		RunningModels: []protocol.RunningModel{{Model: "b", State: "ready"}},
+		Artifacts:     map[string]string{"a": "ready", "b": "ready", "c": "ready"},
+	}, now)
+	s := Scheduler{Config: cfg, Workers: reg}
+
+	decision, err := s.PickDecision("c", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("PickDecision error = %v, want no ready worker", err)
+	}
+	if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 0 || decision.MaxLoaded != 2 || !decision.MaxLoadedAuto {
+		t.Fatalf("decision = %+v, want no c replica with auto max_loaded=2", decision)
+	}
+	if len(decision.Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want no request-routable switch worker", decision.Candidates)
 	}
 }
 
@@ -358,12 +399,12 @@ func TestSchedulerIgnoresStaleAndDrainingWorkers(t *testing.T) {
 	}, now)
 	s := Scheduler{Config: cfg, Workers: reg}
 
-	pick, err := s.Pick("qwen", now, nil)
-	if err != nil {
-		t.Fatalf("Pick returned error: %v", err)
+	decision, err := s.PickDecision("qwen", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("PickDecision error = %v, want no ready worker", err)
 	}
-	if pick.ID != "healthy" {
-		t.Fatalf("picked %s, want healthy", pick.ID)
+	if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 0 {
+		t.Fatalf("decision = %+v, want no routable ready replica", decision)
 	}
 }
 
@@ -383,12 +424,12 @@ func TestSchedulerAllowsWorkerWithLastErrorWhenHealthyAndArtifactReady(t *testin
 	}, now)
 	s := Scheduler{Config: cfg, Workers: reg}
 
-	pick, err := s.Pick("qwen", now, nil)
-	if err != nil {
-		t.Fatalf("Pick returned error: %v", err)
+	decision, err := s.PickDecision("qwen", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("PickDecision error = %v, want no ready worker", err)
 	}
-	if pick.ID != "errored" {
-		t.Fatalf("picked %s, want errored", pick.ID)
+	if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 0 {
+		t.Fatalf("decision = %+v, want no routable ready replica", decision)
 	}
 }
 
@@ -408,8 +449,8 @@ func TestSchedulerRespectsExcludeMap(t *testing.T) {
 	s := Scheduler{Config: cfg, Workers: reg}
 
 	_, err := s.Pick("qwen", now, map[string]bool{"gpu-01": true})
-	if err == nil || !strings.Contains(err.Error(), "no healthy worker") {
-		t.Fatalf("error = %v, want no healthy worker", err)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("error = %v, want no ready worker", err)
 	}
 }
 
@@ -477,12 +518,12 @@ func TestSchedulerRequiresReadyArtifactEvenWhenModelAlreadyRunning(t *testing.T)
 		}, now)
 		s := Scheduler{Config: cfg, Workers: reg}
 
-		pick, err := s.Pick("qwen", now, nil)
-		if err != nil {
-			t.Fatalf("Pick returned error: %v", err)
+		decision, err := s.PickDecision("qwen", now, nil)
+		if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+			t.Fatalf("PickDecision error = %v, want no ready worker", err)
 		}
-		if pick.ID != "cold" {
-			t.Fatalf("picked %s, want cold", pick.ID)
+		if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 1 {
+			t.Fatalf("decision = %+v, want loading replica counted as occupied only", decision)
 		}
 	})
 
@@ -498,8 +539,8 @@ func TestSchedulerRequiresReadyArtifactEvenWhenModelAlreadyRunning(t *testing.T)
 		s := Scheduler{Config: cfg, Workers: reg}
 
 		_, err := s.Pick("qwen", now, nil)
-		if err == nil || !strings.Contains(err.Error(), "no healthy worker") {
-			t.Fatalf("error = %v, want no healthy worker", err)
+		if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+			t.Fatalf("error = %v, want no ready worker", err)
 		}
 	})
 }
@@ -525,11 +566,11 @@ func TestSchedulerTieBreaksDeterministicallyByWorkerID(t *testing.T) {
 	}, now)
 	s := Scheduler{Config: cfg, Workers: reg}
 
-	pick, err := s.Pick("qwen", now, nil)
-	if err != nil {
-		t.Fatalf("Pick returned error: %v", err)
+	decision, err := s.PickDecision("qwen", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "no ready worker") {
+		t.Fatalf("PickDecision error = %v, want no ready worker", err)
 	}
-	if pick.ID != "gpu-a" {
-		t.Fatalf("picked %s, want gpu-a", pick.ID)
+	if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 0 {
+		t.Fatalf("decision = %+v, want no routable ready replica", decision)
 	}
 }

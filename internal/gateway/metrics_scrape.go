@@ -11,6 +11,7 @@ import (
 
 // llama-swap /api/metrics is historical; keep recent rows without retaining one key per request forever.
 const defaultMaxSeenActivityKeys = 10000
+const defaultMetricsScrapeTimeout = 10 * time.Second
 
 type MetricsScraper struct {
 	client               *http.Client
@@ -55,7 +56,7 @@ func newMetricsScraperWithMaxSeenAndToken(maxSeenKeys int, token string) *Metric
 		maxSeenKeys = defaultMaxSeenActivityKeys
 	}
 	return &MetricsScraper{
-		client:               &http.Client{Timeout: 3 * time.Second},
+		client:               &http.Client{Timeout: defaultMetricsScrapeTimeout},
 		bearerToken:          token,
 		seen:                 make(map[string]struct{}),
 		seenOrder:            make([]string, 0, maxSeenKeys),
@@ -84,8 +85,8 @@ func (s *MetricsScraper) PullActivity(workerID string, baseURL string) (Activity
 		return ActivityStats{}, fmt.Errorf("worker metrics returned %s", resp.Status)
 	}
 
-	var rows []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+	rows, err := decodeRowPayload(resp.Body, "requests", "activity", "rows", "data")
+	if err != nil {
 		return ActivityStats{}, err
 	}
 
@@ -129,8 +130,8 @@ func (s *MetricsScraper) PullPerformance(workerID string, baseURL string) (int, 
 		return 0, fmt.Errorf("worker performance returned %s", resp.Status)
 	}
 
-	var rows []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+	rows, err := decodeRowPayload(resp.Body, "gpu_stats", "performance", "rows", "data")
+	if err != nil {
 		return 0, err
 	}
 
@@ -305,4 +306,54 @@ func nonNegativeNumber(value any) float64 {
 		return 0
 	}
 	return number
+}
+
+func decodeRowPayload(body interface{ Read([]byte) (int, error) }, objectKeys ...string) ([]map[string]any, error) {
+	decoder := json.NewDecoder(body)
+	decoder.UseNumber()
+
+	var raw any
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, err
+	}
+
+	switch typed := raw.(type) {
+	case []any:
+		return rowsFromSlice(typed)
+	case map[string]any:
+		for _, key := range objectKeys {
+			value, ok := typed[key]
+			if !ok {
+				continue
+			}
+			rows, err := rowsFromValue(value)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", key, err)
+			}
+			return rows, nil
+		}
+		return nil, fmt.Errorf("unsupported JSON object payload")
+	default:
+		return nil, fmt.Errorf("unsupported JSON payload type %T", raw)
+	}
+}
+
+func rowsFromValue(value any) ([]map[string]any, error) {
+	slice, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("expected array, got %T", value)
+	}
+	return rowsFromSlice(slice)
+}
+
+func rowsFromSlice(values []any) ([]map[string]any, error) {
+	rows := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		row, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("expected object row, got %T", value)
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }

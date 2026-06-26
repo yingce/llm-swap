@@ -181,6 +181,38 @@ func TestMetricsScraperDeduplicatesPerformanceSamples(t *testing.T) {
 	}
 }
 
+func TestMetricsScraperAcceptsPerformanceObjectWrapper(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/performance" {
+			t.Fatalf("path = %q, want /api/performance", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{
+			"enabled": true,
+			"gpu_stats": [
+				{"timestamp":"2026-06-21T00:00:00Z","device":"gpu0","metric":"util","value":50},
+				{"timestamp":"2026-06-21T00:00:00Z","device":"gpu0","metric":"util","value":50}
+			]
+		}`))
+	}))
+	defer worker.Close()
+
+	scraper := NewMetricsScraper()
+	first, err := scraper.PullPerformance("worker-a", worker.URL)
+	if err != nil {
+		t.Fatalf("first PullPerformance returned error: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("first PullPerformance = %d, want 1", first)
+	}
+	second, err := scraper.PullPerformance("worker-a", worker.URL)
+	if err != nil {
+		t.Fatalf("second PullPerformance returned error: %v", err)
+	}
+	if second != 0 {
+		t.Fatalf("second PullPerformance = %d, want 0", second)
+	}
+}
+
 func TestMetricsScraperSummarizesNewActivityRowsIncludingCacheTokens(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[
@@ -462,6 +494,29 @@ func TestMetricsScrapeFailuresPutWorkerInBackoffUntilSuccess(t *testing.T) {
 	srv.ServeHTTP(modelsRR, modelsReq)
 	if !strings.Contains(modelsRR.Body.String(), `"qwen"`) {
 		t.Fatalf("models body missing qwen after scrape success: %s", modelsRR.Body.String())
+	}
+}
+
+func TestMetricsSchemaMismatchDoesNotImmediatelyMarkWorkerUnavailable(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/metrics":
+			_, _ = w.Write([]byte(`[]`))
+		case "/api/performance":
+			_, _ = w.Write([]byte(`{"enabled":true}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer worker.Close()
+
+	srv := NewServer(testProxyConfig())
+	srv.workers.UpsertHeartbeat(protocolHeartbeat("worker-a", worker.URL), time.Now())
+
+	_ = scrapeMetrics(t, srv)
+
+	if !srv.workers.Healthy("worker-a", time.Now()) {
+		t.Fatal("single scrape schema mismatch should not immediately mark worker unavailable")
 	}
 }
 

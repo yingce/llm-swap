@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -15,7 +19,7 @@ import (
 )
 
 type Server struct {
-	config             config.GatewayConfig
+	configManager      *ConfigManager
 	workers            *WorkerRegistry
 	accounting         *Accounting
 	limiter            *QueueLimiter
@@ -31,22 +35,43 @@ type Server struct {
 	logger             *log.Logger
 	eventMu            sync.Mutex
 	recentEvents       []uiAgentEvent
+	requestMu          sync.Mutex
+	recentRequests     []RequestLogEntry
 	mux                *http.ServeMux
 }
 
 func NewServer(cfg config.GatewayConfig) *Server {
-	return newServer(cfg, "", "")
+	return newServerWithPaths(cfg, "", "", "", config.GatewayRuntimeOverrides{})
 }
 
 func NewServerWithGatewayPersistence(cfg config.GatewayConfig, requestLogPath string) *Server {
-	return newServer(cfg, requestLogPath, "")
+	return newServerWithPaths(cfg, requestLogPath, "", "", config.GatewayRuntimeOverrides{})
 }
 
 func NewServerWithGatewayPersistencePaths(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string) *Server {
-	return newServer(cfg, requestLogPath, workerEventLogPath)
+	return newServerWithPaths(cfg, requestLogPath, workerEventLogPath, "", config.GatewayRuntimeOverrides{})
 }
 
-func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string) *Server {
+func NewServerWithGatewayConfigPath(cfg config.GatewayConfig, configPath string) *Server {
+	return NewServerWithGatewayConfigPathAndOverrides(cfg, configPath, config.GatewayRuntimeOverrides{})
+}
+
+func NewServerWithGatewayConfigPathAndOverrides(cfg config.GatewayConfig, configPath string, overrides config.GatewayRuntimeOverrides) *Server {
+	return newServerWithPaths(cfg, "", "", configPath, overrides)
+}
+
+func NewServerWithGatewayPersistencePathsAndConfigPath(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string, configPath string) *Server {
+	return newServerWithPaths(cfg, requestLogPath, workerEventLogPath, configPath, config.GatewayRuntimeOverrides{})
+}
+
+func NewServerWithGatewayPersistencePathsAndConfigPathAndOverrides(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string, configPath string, overrides config.GatewayRuntimeOverrides) *Server {
+	return newServerWithPaths(cfg, requestLogPath, workerEventLogPath, configPath, overrides)
+}
+
+func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string, configPath string, overrides config.GatewayRuntimeOverrides) *Server {
+	if cfg.Tokens.LlamaSwap == "" {
+		cfg.Tokens.LlamaSwap = cfg.Tokens.Agent
+	}
 	access := NewAccessTracker()
 	if requestLogPath != "" {
 		if loaded, err := LoadAccessTrackerFromRequestLog(requestLogPath); err == nil {
@@ -59,13 +84,19 @@ func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPa
 			recentEvents = loaded
 		}
 	}
+	recentRequests := []RequestLogEntry{}
+	if requestLogPath != "" {
+		if loaded, err := loadRecentRequestLogs(requestLogPath, uiEventLimit); err == nil {
+			recentRequests = loaded
+		}
+	}
 	var metricsStore *VictoriaMetricsClient
 	if cfg.MetricsStore.Enabled && strings.TrimSpace(cfg.MetricsStore.QueryURL) != "" {
 		metricsStore = NewVictoriaMetricsClient(cfg.MetricsStore.QueryURL, time.Duration(cfg.MetricsStore.TimeoutMS)*time.Millisecond)
 	}
 
 	s := &Server{
-		config:             cfg,
+		configManager:      NewConfigManagerWithOverrides(cfg, configPath, overrides),
 		workers:            NewWorkerRegistry(6 * time.Second),
 		accounting:         NewAccounting(),
 		limiter:            NewQueueLimiter(),
@@ -80,22 +111,42 @@ func newServer(cfg config.GatewayConfig, requestLogPath string, workerEventLogPa
 		proxyAttempts:      configuredProxyAttempts(cfg),
 		logger:             log.New(os.Stdout, "", log.LstdFlags),
 		recentEvents:       recentEvents,
+		recentRequests:     recentRequests,
 		mux:                http.NewServeMux(),
 	}
 
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
 	s.mux.Handle("GET /ui", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUI)))
+	s.mux.Handle("GET /ui/assets/", uiAuth(cfg.Tokens.Agent, embeddedAdminAssetHandler()))
 	s.mux.Handle("GET /ui/status", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIStatus)))
+	s.mux.Handle("GET /ui/requests", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIRequests)))
 	s.mux.Handle("GET /ui/events", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIEvents)))
 	s.mux.Handle("GET /ui/metrics/summary", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsSummary)))
 	s.mux.Handle("GET /ui/metrics/model", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsModel)))
 	s.mux.Handle("GET /ui/metrics/worker", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsWorker)))
+	s.mux.Handle("GET /ui/api/config", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfig)))
+	s.mux.Handle("POST /ui/api/config/validate", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigValidate)))
+	s.mux.Handle("POST /ui/api/config/dry-run", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigDryRun)))
+	s.mux.Handle("POST /ui/api/config/apply", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigApply)))
+	s.mux.Handle("POST /ui/api/workers/{id}/drain", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIWorkerDrain)))
+	s.mux.Handle("POST /ui/api/workers/{id}/undrain", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIWorkerUndrain)))
+	s.mux.Handle("POST /ui/api/models/{model}/warm", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIModelWarm)))
+	s.mux.Handle("POST /ui/api/models/{model}/unload", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIModelUnload)))
+	s.mux.Handle("POST /ui/api/cooldowns/clear", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUICooldownClear)))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))
 	s.mux.Handle("POST /v1/chat/completions", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModelProxy)))
 
 	return s
+}
+
+func (s *Server) currentConfig() config.GatewayConfig {
+	if s.configManager == nil {
+		return config.GatewayConfig{}
+	}
+	cfg, _ := s.configManager.Snapshot()
+	return cfg
 }
 
 func configuredProxyAttempts(cfg config.GatewayConfig) int {
@@ -107,6 +158,7 @@ func configuredProxyAttempts(cfg config.GatewayConfig) int {
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
+	cfg := s.currentConfig()
 	workers := s.workers.Snapshot(now)
 	active := s.workers.ActiveSnapshot()
 	s.metrics.ObserveWorkers(workers, active, now, func(worker Worker) (ActivityStats, error) {
@@ -124,8 +176,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		s.recordScrapeResult(worker.ID, err, time.Now())
 		return samples, err
 	})
-	s.metrics.ObserveModelProvisioning(s.config, workers, now)
-	s.metrics.ObserveModelQueues(s.config, s.limiter)
+	s.metrics.ObserveModelProvisioning(cfg, workers, now)
+	s.metrics.ObserveModelQueues(cfg, s.limiter)
 	s.metrics.ObserveReplicaCooldowns(s.replicaCooldowns.Snapshot(now), now)
 	s.metrics.Handler().ServeHTTP(w, r)
 }
@@ -135,10 +187,62 @@ func (s *Server) recordScrapeResult(workerID string, err error, now time.Time) {
 		return
 	}
 	if err != nil {
+		if isReverseAccessFailure(err) {
+			s.recordReverseAccessFailure(workerID, err, now)
+			return
+		}
 		s.workers.RecordScrapeFailure(workerID, now)
 		return
 	}
 	s.workers.RecordScrapeSuccess(workerID)
+}
+
+func (s *Server) recordReverseAccessResult(workerID string, err error, now time.Time) {
+	if err == nil {
+		if s.workers != nil {
+			s.workers.RecordScrapeSuccess(workerID)
+		}
+		return
+	}
+	if !isReverseAccessFailure(err) {
+		return
+	}
+	s.recordReverseAccessFailure(workerID, err, now)
+}
+
+func (s *Server) recordReverseAccessFailure(workerID string, err error, now time.Time) {
+	if s == nil || s.workers == nil || workerID == "" || err == nil {
+		return
+	}
+	if marked := s.workers.RecordReverseFailure(workerID, now); marked {
+		s.logEvent("worker_reverse_access_unavailable", map[string]any{
+			"worker_id": workerID,
+			"error":     err.Error(),
+		})
+		s.recordGatewayWorkerEvent(workerID, protocol.AgentEvent{
+			Event: "gateway_worker_reverse_access_unavailable",
+			Error: err.Error(),
+		})
+	}
+}
+
+func isReverseAccessFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var statusErr HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return false
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 type modelsResponse struct {
@@ -154,9 +258,10 @@ type modelEntry struct {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	models := make([]modelEntry, 0, len(s.config.Models))
-	scheduler := Scheduler{Config: s.config, Workers: s.workers}
-	for name := range s.config.Models {
+	cfg := s.currentConfig()
+	models := make([]modelEntry, 0, len(cfg.Models))
+	scheduler := Scheduler{Config: cfg, Workers: s.workers}
+	for name := range cfg.Models {
 		if _, err := scheduler.Pick(name, now, nil); err != nil {
 			continue
 		}
@@ -177,14 +282,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
-	tag, policy, ok := s.matchedTagPolicy(r.URL.Query().Get("tags"))
+	cfg := s.currentConfig()
+	tag, policy, ok := s.matchedTagPolicy(cfg, r.URL.Query().Get("tags"))
 	if !ok {
 		http.Error(w, "exactly one configured tag must match", http.StatusBadRequest)
 		return
 	}
 
 	resp := protocol.AgentConfigResponse{
-		OSS:    s.config.OSS,
+		OSS:    cfg.OSS,
 		Models: make(map[string]config.Model, len(policy.AllowedModels)),
 		TagPolicy: protocol.AgentTagPolicy{
 			Tag:            tag,
@@ -194,7 +300,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	for _, modelName := range policy.AllowedModels {
-		model, ok := s.config.Models[modelName]
+		model, ok := cfg.Models[modelName]
 		if ok {
 			resp.Models[modelName] = model
 		}
@@ -203,14 +309,14 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-func (s *Server) matchedTagPolicy(tagsParam string) (string, config.TagPolicy, bool) {
+func (s *Server) matchedTagPolicy(cfg config.GatewayConfig, tagsParam string) (string, config.TagPolicy, bool) {
 	matches := make(map[string]config.TagPolicy)
 	for _, rawTag := range strings.Split(tagsParam, ",") {
 		tag := strings.TrimSpace(rawTag)
 		if tag == "" {
 			continue
 		}
-		policy, ok := s.config.TagPolicies[tag]
+		policy, ok := cfg.TagPolicies[tag]
 		if ok {
 			matches[tag] = policy
 		}
