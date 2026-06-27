@@ -395,9 +395,14 @@ Important properties:
 - The image removes the placeholder `agent.yaml` after build. At container
   start, `scripts/agent-container-entrypoint.sh` writes `/opt/llmswap/agent.yaml`
   from env only when the file is absent or `LLMSWAP_FORCE_CONFIG=1`.
-- `llama-swap` is not built from this repository. Provide it either with
-  `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` or mount
-  `/opt/llmswap/bin/llama-swap` at runtime.
+- `llama-swap` is not built from this repository, but `Dockerfile.agent`
+  requires a build-time `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` so the image
+  always carries a bundled `/opt/llmswap/bin/llama-swap.bundled`.
+- On container start, `scripts/agent-container-entrypoint.sh` restores
+  `/opt/llmswap/bin/llama-swap` from the bundled binary by default.
+- If runtime env `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` or `LLAMA_SWAP_DOWNLOAD_URL`
+  is set, entrypoint downloads that binary and replaces the active
+  `/opt/llmswap/bin/llama-swap` before starting supervisor.
 
 Typical build:
 
@@ -418,6 +423,8 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_GATEWAY_URL`
 - `LLMSWAP_AGENT_TOKEN`
 - `LLMSWAP_LLAMA_SWAP_TOKEN` (optional; defaults to agent token)
+- `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` (optional runtime override for the active
+  llama-swap binary; when omitted, the bundled binary is used)
 - `LLMSWAP_SWAP_PORT`
 - `LLMSWAP_SWAP_URL` or `SWAP_URL` (optional explicit public worker URL)
 - `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`

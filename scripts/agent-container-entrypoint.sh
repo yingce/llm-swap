@@ -5,6 +5,7 @@ LLMSWAP_ROOT="${LLMSWAP_ROOT:-/opt/llmswap}"
 LLMSWAP_BIN_DIR="${LLMSWAP_BIN_DIR:-$LLMSWAP_ROOT/bin}"
 LLMSWAP_AGENT_BIN="${LLMSWAP_AGENT_BIN:-$LLMSWAP_BIN_DIR/llm-swap-agent}"
 LLMSWAP_LLAMA_SWAP_BIN="${LLMSWAP_LLAMA_SWAP_BIN:-$LLMSWAP_BIN_DIR/llama-swap}"
+LLMSWAP_BUNDLED_LLAMA_SWAP_BIN="${LLMSWAP_BUNDLED_LLAMA_SWAP_BIN:-$LLMSWAP_BIN_DIR/llama-swap.bundled}"
 LLMSWAP_AGENT_CONFIG="${LLMSWAP_AGENT_CONFIG:-$LLMSWAP_ROOT/agent.yaml}"
 LLMSWAP_MODEL_ROOT="${LLMSWAP_MODEL_ROOT:-$LLMSWAP_ROOT/models}"
 LLMSWAP_LLAMA_SWAP_CONFIG="${LLMSWAP_LLAMA_SWAP_CONFIG:-$LLMSWAP_ROOT/llama-swap.yaml}"
@@ -19,6 +20,7 @@ LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_ENABLE_TAILSCALE="${LLMSWAP_ENABLE_TAILSCALE:-0}"
 LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
 LLMSWAP_TAILSCALE_HOSTNAME="${LLMSWAP_TAILSCALE_HOSTNAME:-}"
+LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL="${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}"
 
 first_non_empty() {
   local value
@@ -128,6 +130,29 @@ start_tailscale_if_requested() {
   fi
 }
 
+prepare_llama_swap_binary() {
+  local runtime_download_url
+  runtime_download_url="$(first_non_empty "${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}" "${LLAMA_SWAP_DOWNLOAD_URL:-}" || true)"
+
+  if [[ ! -x "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" ]]; then
+    printf 'missing bundled llama-swap binary: %s\n' "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" >&2
+    printf 'build the image with LLAMA_SWAP_DOWNLOAD_URL so it carries a default llama-swap binary\n' >&2
+    exit 1
+  fi
+
+  if [[ -n "${runtime_download_url// }" ]]; then
+    local tmp_bin
+    tmp_bin="$(mktemp "$LLMSWAP_BIN_DIR/llama-swap.runtime.XXXXXX")"
+    curl -fL --retry 5 --retry-delay 5 -o "$tmp_bin" "$runtime_download_url"
+    chmod 0755 "$tmp_bin"
+    install -m 0755 "$tmp_bin" "$LLMSWAP_LLAMA_SWAP_BIN"
+    rm -f "$tmp_bin"
+    return 0
+  fi
+
+  install -m 0755 "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" "$LLMSWAP_LLAMA_SWAP_BIN"
+}
+
 main() {
   install -d "$LLMSWAP_BIN_DIR" "$LLMSWAP_MODEL_ROOT" "$LLMSWAP_LOG_DIR"
 
@@ -135,9 +160,9 @@ main() {
     printf 'missing agent binary: %s\n' "$LLMSWAP_AGENT_BIN" >&2
     exit 1
   fi
+  prepare_llama_swap_binary
   if [[ ! -x "$LLMSWAP_LLAMA_SWAP_BIN" ]]; then
-    printf 'missing llama-swap binary: %s\n' "$LLMSWAP_LLAMA_SWAP_BIN" >&2
-    printf 'set LLAMA_SWAP_DOWNLOAD_URL at build time or mount the binary at runtime\n' >&2
+    printf 'missing llama-swap binary after preparation: %s\n' "$LLMSWAP_LLAMA_SWAP_BIN" >&2
     exit 1
   fi
 

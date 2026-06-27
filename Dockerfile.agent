@@ -69,12 +69,13 @@ RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-e
         --only tailscale \
         --cuda-version "${LLMSWAP_CUDA_VERSION}" ; \
     fi \
- && if [[ -n "${LLAMA_SWAP_DOWNLOAD_URL}" ]]; then \
-      curl -fL --retry 5 --retry-delay 5 -o "${LLMSWAP_ROOT}/bin/llama-swap" "${LLAMA_SWAP_DOWNLOAD_URL}" \
-      && chmod 0755 "${LLMSWAP_ROOT}/bin/llama-swap" ; \
-    else \
-      printf 'WARN LLAMA_SWAP_DOWNLOAD_URL is empty; provide /opt/llmswap/bin/llama-swap via build arg or runtime volume.\n' ; \
+ && if [[ -z "${LLAMA_SWAP_DOWNLOAD_URL}" ]]; then \
+      printf 'ERROR LLAMA_SWAP_DOWNLOAD_URL is required when building Dockerfile.agent so the image always carries a bundled llama-swap binary.\n' >&2 ; \
+      exit 1 ; \
     fi \
+ && curl -fL --retry 5 --retry-delay 5 -o "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLAMA_SWAP_DOWNLOAD_URL}" \
+ && chmod 0755 "${LLMSWAP_ROOT}/bin/llama-swap.bundled" \
+ && install -m 0755 "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLMSWAP_ROOT}/bin/llama-swap" \
  && rm -f /tmp/llm-swap-agent
 
 WORKDIR ${LLMSWAP_ROOT}
