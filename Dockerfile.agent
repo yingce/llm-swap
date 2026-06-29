@@ -19,6 +19,7 @@ ENV http_proxy=${http_proxy}
 ENV https_proxy=${https_proxy}
 ENV no_proxy=${no_proxy}
 ENV all_proxy=${all_proxy}
+ENV HOME=/root
 
 WORKDIR /src
 
@@ -71,6 +72,7 @@ ENV http_proxy=${http_proxy}
 ENV https_proxy=${https_proxy}
 ENV no_proxy=${no_proxy}
 ENV all_proxy=${all_proxy}
+ENV HOME=/root
 ENV LLMSWAP_LLAMA_CPP_ARCH=${LLMSWAP_LLAMA_CPP_ARCH}
 ENV LLMSWAP_VLLM_PACKAGE=${LLMSWAP_VLLM_PACKAGE}
 ENV LLMSWAP_SGLANG_PACKAGE=${LLMSWAP_SGLANG_PACKAGE}

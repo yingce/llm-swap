@@ -329,11 +329,12 @@ install_base_packages() {
 }
 
 install_uv() {
+  local candidate
   if command -v uv >/dev/null 2>&1; then
     printf 'uv already installed: %s\n' "$(command -v uv)"
     return 0
   fi
-  for candidate in "$HOME/.local/bin/uv"; do
+  for candidate in "${HOME:-}/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
     if [[ -x "$candidate" ]]; then
       export PATH="$(dirname "$candidate"):$PATH"
       printf 'uv already installed: %s\n' "$candidate"
@@ -341,7 +342,15 @@ install_uv() {
     fi
   done
   run sh -c "timeout $LLMSWAP_UV_INSTALL_TIMEOUT sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv"
-  export PATH="$HOME/.local/bin:$PATH"
+  for candidate in "${HOME:-}/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
+    if [[ -x "$candidate" ]]; then
+      export PATH="$(dirname "$candidate"):$PATH"
+      printf 'uv installed: %s\n' "$candidate"
+      return 0
+    fi
+  done
+  echo "uv installation succeeded but no uv binary was found in HOME/.local/bin, /usr/local/bin, or /usr/bin" >&2
+  exit 1
 }
 
 install_tailscale() {
