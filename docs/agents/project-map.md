@@ -472,6 +472,10 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`
 - `LLMSWAP_ENABLE_TAILSCALE=1` and `LLMSWAP_TAILSCALE_AUTHKEY` only when
   running Tailscale in the same container
+- `LLMSWAP_TAILSCALE_HOSTNAME` when `tailscale up` should register a specific
+  name
+- `LLMSWAP_TAILSCALE_SOCKET` and `LLMSWAP_TAILSCALE_PORT` when the container
+  should use a non-default tailscaled socket or port
 
 Default container startup path:
 
@@ -481,6 +485,16 @@ Default container startup path:
 - optionally starts `tailscaled` and runs `tailscale up`;
 - starts `supervisord` in the foreground, which manages `llama-swap` and
   `llm-swap-agent`.
+
+Build-time vs runtime split:
+
+- Build args such as proxy settings, Python/package mirrors, torch index
+  selection, runtime package names, and llama.cpp archive selectors are used
+  only while building the image. They are not persisted as final runtime env in
+  the container.
+- Runtime env controls instance identity and networking only: agent id, tags,
+  gateway URL/token, swap URL/port, optional runtime llama-swap override URL,
+  and optional Tailscale startup parameters.
 
 ## Runtime Wrappers
 

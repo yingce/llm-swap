@@ -20,6 +20,8 @@ LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_ENABLE_TAILSCALE="${LLMSWAP_ENABLE_TAILSCALE:-0}"
 LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
 LLMSWAP_TAILSCALE_HOSTNAME="${LLMSWAP_TAILSCALE_HOSTNAME:-}"
+LLMSWAP_TAILSCALE_SOCKET="${LLMSWAP_TAILSCALE_SOCKET:-/run/tailscale/tailscaled.sock}"
+LLMSWAP_TAILSCALE_PORT="${LLMSWAP_TAILSCALE_PORT:-41641}"
 LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL="${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}"
 
 first_non_empty() {
@@ -101,28 +103,28 @@ start_tailscale_if_requested() {
     exit 1
   fi
 
-  install -d "$LLMSWAP_ROOT/tailscale" /run/tailscale "$LLMSWAP_LOG_DIR"
+  install -d "$LLMSWAP_ROOT/tailscale" "$(dirname "$LLMSWAP_TAILSCALE_SOCKET")" "$LLMSWAP_LOG_DIR"
   if ! pgrep -x tailscaled >/dev/null 2>&1; then
     tailscaled \
       --state="$LLMSWAP_ROOT/tailscale/tailscaled.state" \
-      --socket=/run/tailscale/tailscaled.sock \
-      --port=41641 \
+      --socket="$LLMSWAP_TAILSCALE_SOCKET" \
+      --port="$LLMSWAP_TAILSCALE_PORT" \
       >>"$LLMSWAP_LOG_DIR/tailscaled.out.log" \
       2>>"$LLMSWAP_LOG_DIR/tailscaled.err.log" &
   fi
 
   local tries=0
-  until [[ -S /run/tailscale/tailscaled.sock ]]; do
+  until [[ -S "$LLMSWAP_TAILSCALE_SOCKET" ]]; do
     tries=$((tries + 1))
     if [[ "$tries" -ge 30 ]]; then
-      printf 'tailscaled did not create /run/tailscale/tailscaled.sock in time\n' >&2
+      printf 'tailscaled did not create %s in time\n' "$LLMSWAP_TAILSCALE_SOCKET" >&2
       exit 1
     fi
     sleep 1
   done
 
   if [[ -n "$LLMSWAP_TAILSCALE_AUTHKEY" ]]; then
-    local args=(tailscale up --auth-key "$LLMSWAP_TAILSCALE_AUTHKEY")
+    local args=(tailscale --socket="$LLMSWAP_TAILSCALE_SOCKET" up --auth-key "$LLMSWAP_TAILSCALE_AUTHKEY")
     if [[ -n "$LLMSWAP_TAILSCALE_HOSTNAME" ]]; then
       args+=(--hostname "$LLMSWAP_TAILSCALE_HOSTNAME")
     fi
@@ -158,7 +160,23 @@ prepare_llama_swap_binary() {
   exit 1
 }
 
+should_passthrough_shell() {
+  if [[ $# -eq 0 ]]; then
+    return 1
+  fi
+  case "${1##*/}" in
+    bash|sh)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 main() {
+  if should_passthrough_shell "$@"; then
+    exec "$@"
+  fi
+
   install -d "$LLMSWAP_BIN_DIR" "$LLMSWAP_MODEL_ROOT" "$LLMSWAP_LOG_DIR"
 
   if [[ ! -x "$LLMSWAP_AGENT_BIN" ]]; then

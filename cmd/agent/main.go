@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +20,10 @@ func main() {
 		Args: os.Args[1:],
 	})
 	if err != nil {
+		if errors.Is(err, config.ErrHelpRequested) {
+			fmt.Print(config.AgentRuntimeUsage(config.AgentRuntimeOptions{}))
+			return
+		}
 		log.Fatal(err)
 	}
 

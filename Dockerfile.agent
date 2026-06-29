@@ -11,21 +11,15 @@ ARG https_proxy=
 ARG no_proxy=
 ARG all_proxy=
 
-ENV HTTP_PROXY=${HTTP_PROXY}
-ENV HTTPS_PROXY=${HTTPS_PROXY}
-ENV NO_PROXY=${NO_PROXY}
-ENV ALL_PROXY=${ALL_PROXY}
-ENV http_proxy=${http_proxy}
-ENV https_proxy=${https_proxy}
-ENV no_proxy=${no_proxy}
-ENV all_proxy=${all_proxy}
 ENV HOME=/root
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ && go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
@@ -67,32 +61,7 @@ ARG LLMSWAP_TORCH_INDEX_URL=
 ARG LLMSWAP_TORCH_INDEX_URL_BASE=
 
 ENV LLMSWAP_ROOT=${LLMSWAP_ROOT}
-ENV HTTP_PROXY=${HTTP_PROXY}
-ENV HTTPS_PROXY=${HTTPS_PROXY}
-ENV NO_PROXY=${NO_PROXY}
-ENV ALL_PROXY=${ALL_PROXY}
-ENV http_proxy=${http_proxy}
-ENV https_proxy=${https_proxy}
-ENV no_proxy=${no_proxy}
-ENV all_proxy=${all_proxy}
 ENV HOME=/root
-ENV LLMSWAP_LLAMA_CPP_ARCH=${LLMSWAP_LLAMA_CPP_ARCH}
-ENV LLMSWAP_VLLM_PACKAGE=${LLMSWAP_VLLM_PACKAGE}
-ENV LLMSWAP_SGLANG_PACKAGE=${LLMSWAP_SGLANG_PACKAGE}
-ENV LLMSWAP_UV_PYTHON_INSTALL_MIRROR=${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}
-ENV LLMSWAP_TORCH_INDEX_URL=${LLMSWAP_TORCH_INDEX_URL}
-ENV LLMSWAP_TORCH_INDEX_URL_BASE=${LLMSWAP_TORCH_INDEX_URL_BASE}
-ENV LLAMA_SWAP_REF=${LLAMA_SWAP_REF}
-ENV LLAMA_SWAP_RELEASE_URL=${LLAMA_SWAP_RELEASE_URL}
-ENV LLMSWAP_UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
-ENV LLMSWAP_UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
-ENV UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
-ENV UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
-ENV UV_INDEX_URL=${UV_INDEX_URL}
-ENV UV_EXTRA_INDEX_URL=${UV_EXTRA_INDEX_URL}
-ENV PIP_INDEX_URL=${PIP_INDEX_URL}
-ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
-ENV UV_LINK_MODE=copy
 ENV PATH=${LLMSWAP_ROOT}/bin:/root/.local/bin:${PATH}
 
 WORKDIR /src
@@ -101,7 +70,22 @@ COPY scripts/install-worker.sh /usr/local/bin/install-worker.sh
 COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
 COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
 
-RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-entrypoint.sh \
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+          LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH}" \
+          LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE}" \
+          LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE}" \
+          LLMSWAP_UV_PYTHON_INSTALL_MIRROR="${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}" \
+          LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL}" \
+          LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE}" \
+          UV_INDEX_URL="${UV_INDEX_URL}" \
+          UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}" \
+          PIP_INDEX_URL="${PIP_INDEX_URL}" \
+          PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
+          UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" \
+          UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" \
+          UV_LINK_MODE=copy \
+ && chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-entrypoint.sh \
  && /usr/local/bin/install-worker.sh \
       --root "${LLMSWAP_ROOT}" \
       --cuda-version "${LLMSWAP_CUDA_VERSION}" \

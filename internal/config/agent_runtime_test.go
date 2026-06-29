@@ -2,8 +2,11 @@ package config
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -175,5 +178,24 @@ agent:
 	}
 	if cfg.Agent.ID != "env-config-id" {
 		t.Fatalf("id = %q, want env config file value", cfg.Agent.ID)
+	}
+}
+
+func TestLoadAgentRuntimeHelpRequestedReturnsSentinelAndUsage(t *testing.T) {
+	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
+		Args: []string{"-help"},
+	})
+	if !errors.Is(err, ErrHelpRequested) {
+		t.Fatalf("LoadAgentRuntime() error = %v, want ErrHelpRequested", err)
+	}
+	if !reflect.DeepEqual(cfg, AgentConfig{}) {
+		t.Fatalf("LoadAgentRuntime() config = %#v, want zero value on help", cfg)
+	}
+
+	usage := AgentRuntimeUsage(AgentRuntimeOptions{})
+	for _, want := range []string{"Usage of agent:", "--gateway-url", "--llama-swap-token"} {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("usage = %q, want substring %q", usage, want)
+		}
 	}
 }

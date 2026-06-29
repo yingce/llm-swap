@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ const DefaultModelRoot = DefaultAgentRoot + "/models"
 const DefaultLlamaSwapConfig = DefaultAgentRoot + "/llama-swap.yaml"
 const DefaultSwapPort = 6006
 
+var ErrHelpRequested = errors.New("help requested")
+
 type AgentRuntimeOptions struct {
 	ConfigPath  string
 	Args        []string
@@ -38,26 +41,15 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 	v.AutomaticEnv()
 
-	flags := pflag.NewFlagSet("agent", pflag.ContinueOnError)
-	flags.SetOutput(io.Discard)
 	configDefault := opts.ConfigPath
 	if configDefault == "" {
 		configDefault = firstNonEmpty(os.Getenv("LLM_SWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
 	}
-	flags.String("config", configDefault, "agent config path")
-	flags.String("id", "", "agent id")
-	flags.StringSlice("tags", nil, "agent tags")
-	flags.String("model-root", "", "local model root")
-	flags.String("llama-swap-config", "", "rendered llama-swap config path")
-	flags.String("llama-swap-service", "", "llama-swap system service")
-	flags.String("restart-command", "", "restart shell command")
-	flags.String("swap-url", "", "public llama-swap URL advertised to gateway")
-	flags.String("llama-swap-url", "", "deprecated alias for swap-url")
-	flags.Int("swap-port", 0, "llama-swap port used when swap-url is omitted")
-	flags.String("gateway-url", "", "gateway URL")
-	flags.String("token", "", "gateway agent token")
-	flags.String("llama-swap-token", "", "llama-swap internal token")
+	flags := newAgentRuntimeFlagSet(configDefault, io.Discard)
 	if err := flags.Parse(opts.Args); err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return AgentConfig{}, ErrHelpRequested
+		}
 		return AgentConfig{}, err
 	}
 
@@ -130,6 +122,40 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+func AgentRuntimeUsage(opts AgentRuntimeOptions) string {
+	configDefault := opts.ConfigPath
+	if configDefault == "" {
+		configDefault = firstNonEmpty(os.Getenv("LLM_SWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
+	}
+	var out bytes.Buffer
+	flags := newAgentRuntimeFlagSet(configDefault, &out)
+	flags.Usage()
+	return out.String()
+}
+
+func newAgentRuntimeFlagSet(configDefault string, output io.Writer) *pflag.FlagSet {
+	flags := pflag.NewFlagSet("agent", pflag.ContinueOnError)
+	flags.SetOutput(output)
+	flags.String("config", configDefault, "agent config path")
+	flags.String("id", "", "agent id")
+	flags.StringSlice("tags", nil, "agent tags")
+	flags.String("model-root", "", "local model root")
+	flags.String("llama-swap-config", "", "rendered llama-swap config path")
+	flags.String("llama-swap-service", "", "llama-swap system service")
+	flags.String("restart-command", "", "restart shell command")
+	flags.String("swap-url", "", "public llama-swap URL advertised to gateway")
+	flags.String("llama-swap-url", "", "deprecated alias for swap-url")
+	flags.Int("swap-port", 0, "llama-swap port used when swap-url is omitted")
+	flags.String("gateway-url", "", "gateway URL")
+	flags.String("token", "", "gateway agent token")
+	flags.String("llama-swap-token", "", "llama-swap internal token")
+	flags.Usage = func() {
+		fmt.Fprintf(flags.Output(), "Usage of %s:\n", flags.Name())
+		flags.PrintDefaults()
+	}
+	return flags
 }
 
 func ResolveSwapURL(ctx context.Context, explicit string, port int, tailscaleIP func(context.Context) (string, bool), localIP func() (string, error)) (string, error) {

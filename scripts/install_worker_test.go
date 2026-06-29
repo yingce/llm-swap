@@ -30,8 +30,10 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git")
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git ffmpeg libavdevice58")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/llama-swap-supervisor.sh")
+	assertContains(t, out, "while [[ ! -s \"$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
-	assertContains(t, out, "command=/opt/llmswap/bin/llama-swap -config /opt/llmswap/llama-swap.yaml -listen :6006 -watch-config")
+	assertContains(t, out, "command=/opt/llmswap/bin/llama-swap-supervisor.sh")
 	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/llama-swap.out.log")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
 	assertContains(t, out, "sh -c pgrep -x supervisord >/dev/null || supervisord -c /etc/supervisor/supervisord.conf")
@@ -151,7 +153,7 @@ func TestInstallWorkerOnlySupervisorSkipsRuntimeAndAgent(t *testing.T) {
 	out := runInstallWorker(t, "12.8", "--only", "supervisor")
 
 	assertContains(t, out, "INFO cuda_version=12.8 torch_backend=cu128 root=/opt/llmswap runtime=all only=supervisor")
-	assertContains(t, out, "RUN mkdir -p /opt/llmswap/logs")
+	assertContains(t, out, "RUN mkdir -p /opt/llmswap/bin /opt/llmswap/logs")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
 	assertContains(t, out, "supervisorctl reread")

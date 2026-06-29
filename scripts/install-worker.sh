@@ -310,7 +310,27 @@ ensure_agent_dirs() {
 }
 
 ensure_supervisor_dirs() {
-  run mkdir -p "$LLMSWAP_ROOT/logs"
+  run mkdir -p "$LLMSWAP_ROOT/bin" "$LLMSWAP_ROOT/logs"
+}
+
+write_llama_swap_supervisor_wrapper() {
+  local wrapper_path="$LLMSWAP_ROOT/bin/llama-swap-supervisor.sh"
+  local content
+  content="#!/usr/bin/env bash
+set -euo pipefail
+
+LLMSWAP_ROOT=\"\${LLMSWAP_ROOT:-$LLMSWAP_ROOT}\"
+LLMSWAP_LLAMA_SWAP_BIN=\"\${LLMSWAP_LLAMA_SWAP_BIN:-\$LLMSWAP_ROOT/bin/llama-swap}\"
+LLMSWAP_LLAMA_SWAP_CONFIG=\"\${LLMSWAP_LLAMA_SWAP_CONFIG:-\$LLMSWAP_ROOT/llama-swap.yaml}\"
+LLMSWAP_SWAP_PORT=\"\${LLMSWAP_SWAP_PORT:-$LLMSWAP_SWAP_PORT}\"
+
+while [[ ! -s \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do
+  sleep 1
+done
+
+exec \"\$LLMSWAP_LLAMA_SWAP_BIN\" -config \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" -listen \":\$LLMSWAP_SWAP_PORT\" -watch-config"
+  write_file "$wrapper_path" "$content"
+  run chmod 0755 "$wrapper_path"
 }
 
 install_base_packages() {
@@ -342,6 +362,9 @@ install_uv() {
     fi
   done
   run sh -c "timeout $LLMSWAP_UV_INSTALL_TIMEOUT sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv"
+  if [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
+    return 0
+  fi
   for candidate in "${HOME:-}/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
     if [[ -x "$candidate" ]]; then
       export PATH="$(dirname "$candidate"):$PATH"
@@ -705,8 +728,9 @@ configure_supervisor() {
     return 0
   fi
   local llama_conf agent_conf
+  write_llama_swap_supervisor_wrapper
   llama_conf="[program:llmswap-llama-swap]
-command=$LLMSWAP_ROOT/bin/llama-swap -config $LLMSWAP_ROOT/llama-swap.yaml -listen :$LLMSWAP_SWAP_PORT -watch-config
+command=$LLMSWAP_ROOT/bin/llama-swap-supervisor.sh
 directory=$LLMSWAP_ROOT
 autostart=true
 autorestart=true
