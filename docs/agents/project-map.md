@@ -224,7 +224,9 @@ disabled the gateway still runs with no external database.
   - Fetches tag-scoped config from gateway.
   - Installs allowed artifacts, one active install at a time.
   - Fetches local llama-swap running models.
-  - Renders llama-swap config only after all allowed artifacts are ready.
+  - Renders llama-swap config from the ready allowed-model subset so a worker
+    can start serving already-installed models while other artifacts continue
+    downloading in the background.
   - Marks pending restart only when a config change affects currently loaded
     models.
   - Heartbeats artifacts, running models, needs_restart, last_error, and events.
@@ -347,8 +349,8 @@ It can:
 - install base apt packages, uv, optional Tailscale, and supervisor config;
 - run a single stage with `--only base|runtime|agent|supervisor|tailscale`
   without replaying the full bootstrap;
-- when a Tailscale auth key is provided, write a supervisor-managed
-  `llmswap-tailscaled` program before running `tailscale up`;
+- when a Tailscale auth key or hostname is provided, write supervisor-managed
+  `llmswap-tailscaled` and one-shot `llmswap-tailscale-init` programs;
 - create uv-managed Python venvs for vLLM and SGLang using Python 3.12 by
   default;
 - install torch for vLLM with CUDA-aware PyTorch index selection;
@@ -472,17 +474,22 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`
 - `LLMSWAP_ENABLE_TAILSCALE=1` and `LLMSWAP_TAILSCALE_AUTHKEY` only when
   running Tailscale in the same container
-- `LLMSWAP_TAILSCALE_HOSTNAME` when `tailscale up` should register a specific
-  name
+- `LLMSWAP_TAILSCALE_HOSTNAME` when supervisor-managed tailscale init should
+  register a specific name
 - `LLMSWAP_TAILSCALE_SOCKET` and `LLMSWAP_TAILSCALE_PORT` when the container
   should use a non-default tailscaled socket or port
+- `LLMSWAP_TAILSCALE_TUN` to override the container TUN mode. The default
+  entrypoint behavior is `userspace-networking`.
 
 Default container startup path:
 
 - verifies `/opt/llmswap/bin/llm-swap-agent`;
 - verifies `/opt/llmswap/bin/llama-swap`;
 - optionally writes `/opt/llmswap/agent.yaml`;
-- optionally starts `tailscaled` and runs `tailscale up`;
+- optionally writes supervisor programs for
+  `llmswap-tailscaled --tun=userspace-networking` and one-shot
+  `llmswap-tailscale-init`, which performs `tailscale login` and optional
+  hostname setup after the socket is ready;
 - starts `supervisord` in the foreground, which manages `llama-swap` and
   `llm-swap-agent`.
 
@@ -631,6 +638,13 @@ docker compose -f deploy/production/compose.yaml up -d --build
 The gateway Dockerfile builds `ui/admin` with Node/Vite before compiling the Go
 binary, then copies the generated `internal/gateway/admin_dist` into the Go
 build context so the admin UI is embedded in the final binary.
+
+The gateway container now starts through
+`scripts/gateway-container-entrypoint.sh`. It writes a supervisor program for
+the gateway binary and can optionally start supervisor-managed `tailscaled`
+plus one-shot tailnet init when runtime Tailscale env vars are provided. The
+production compose file grants `NET_ADMIN` and mounts `/dev/net/tun` for this
+gateway-side tailnet path.
 
 ## Placement Rollout Notes
 

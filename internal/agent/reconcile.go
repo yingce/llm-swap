@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
 
@@ -133,8 +134,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 		r.observeRunningModelChanges(runningModels)
 	}
 
-	if allAllowedArtifactsReady(cfg, artifactStatus) {
-		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
+		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
@@ -388,8 +389,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		r.observeRunningModelChanges(runningModels)
 	}
 
-	if allAllowedArtifactsReady(cfg, artifactStatus) {
-		content, err := RenderLlamaSwapConfig(cfg, r.ModelRoot, r.LlamaSwapToken)
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
+		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
@@ -493,13 +494,23 @@ func (r *Reconciler) observeRunningModelChanges(models []protocol.RunningModel) 
 	}
 }
 
-func allAllowedArtifactsReady(cfg protocol.AgentConfigResponse, artifactStatus map[string]string) bool {
+func configWithReadyArtifacts(cfg protocol.AgentConfigResponse, artifactStatus map[string]string) (protocol.AgentConfigResponse, int) {
+	out := cfg
+	out.TagPolicy = cfg.TagPolicy
+	out.TagPolicy.AllowedModels = make([]string, 0, len(cfg.TagPolicy.AllowedModels))
+	out.Models = make(map[string]config.Model, len(cfg.TagPolicy.AllowedModels))
 	for _, modelName := range cfg.TagPolicy.AllowedModels {
 		if artifactStatus[modelName] != "ready" {
-			return false
+			continue
 		}
+		model, ok := cfg.Models[modelName]
+		if !ok {
+			continue
+		}
+		out.TagPolicy.AllowedModels = append(out.TagPolicy.AllowedModels, modelName)
+		out.Models[modelName] = model
 	}
-	return true
+	return out, len(out.TagPolicy.AllowedModels)
 }
 
 func (r *Reconciler) restart(ctx context.Context) error {

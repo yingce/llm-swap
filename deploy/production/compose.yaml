@@ -8,9 +8,19 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    environment:
+      LLMSWAP_ENABLE_TAILSCALE: ${LLMSWAP_GATEWAY_ENABLE_TAILSCALE:-0}
+      LLMSWAP_TAILSCALE_AUTHKEY: ${LLMSWAP_GATEWAY_TAILSCALE_AUTHKEY:-}
+      LLMSWAP_TAILSCALE_HOSTNAME: ${LLMSWAP_GATEWAY_TAILSCALE_HOSTNAME:-llmswap-gateway}
+      LLMSWAP_TAILSCALE_TUN: ${LLMSWAP_GATEWAY_TAILSCALE_TUN:-tun}
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
       - /opt/llmswap/gateway.yaml:/opt/llmswap/gateway.yaml
       - /opt/llmswap/logs:/opt/llmswap/logs
+      - /opt/llmswap/tailscale:/opt/llmswap/tailscale
     depends_on:
       - victoriametrics
     healthcheck:

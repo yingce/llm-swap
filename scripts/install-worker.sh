@@ -57,8 +57,8 @@ Options:
   --llamacpp-base-url URL   Base URL containing llamacpp-linux-<variant>.tar.gz.
   --llamacpp-cuda auto|cu124|cu128|cu130
                             llama.cpp CUDA package selector. Default: auto.
-  --tailscale-authkey KEY   Run tailscale up with this auth key after install.
-  --tailscale-hostname NAME Hostname passed to tailscale up when auth key is set.
+  --tailscale-authkey KEY   Configure supervisor-managed tailscale login with this auth key.
+  --tailscale-hostname NAME Hostname applied by supervisor-managed tailscale init.
   --skip-tailscale          Do not install or configure Tailscale.
   --skip-supervisor         Do not install or configure supervisor.
   --python PYTHON           Python version/executable used by uv venv. Default: 3.12.
@@ -333,6 +333,34 @@ exec \"\$LLMSWAP_LLAMA_SWAP_BIN\" -config \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" -liste
   run chmod 0755 "$wrapper_path"
 }
 
+write_tailscale_init_script() {
+  local script_path="$LLMSWAP_ROOT/bin/tailscale-init.sh"
+  local content
+  content="#!/usr/bin/env bash
+set -euo pipefail
+
+socket=\"/run/tailscale/tailscaled.sock\"
+tries=0
+until [[ -S \"\$socket\" ]]; do
+  tries=\$((tries + 1))
+  if [[ \"\$tries\" -ge 30 ]]; then
+    printf 'tailscaled did not create %s in time\n' \"\$socket\" >&2
+    exit 1
+  fi
+  sleep 1
+done"
+  if [[ -n "$LLMSWAP_TAILSCALE_AUTHKEY" ]]; then
+    content="${content}
+tailscale --socket=\"/run/tailscale/tailscaled.sock\" login --auth-key \"$LLMSWAP_TAILSCALE_AUTHKEY\""
+  fi
+  if [[ -n "$LLMSWAP_TAILSCALE_HOSTNAME" ]]; then
+    content="${content}
+tailscale --socket=\"/run/tailscale/tailscaled.sock\" set --hostname \"$LLMSWAP_TAILSCALE_HOSTNAME\""
+  fi
+  write_file "$script_path" "$content"
+  run chmod 0755 "$script_path"
+}
+
 install_base_packages() {
   print_uv_info
   ensure_runtime_dirs
@@ -385,22 +413,15 @@ install_tailscale() {
   else
     run sh -c "curl -fsSL https://tailscale.com/install.sh | sh"
   fi
-  if [[ -z "$LLMSWAP_TAILSCALE_AUTHKEY" ]]; then
-    printf 'INFO TAILSCALE_AUTHKEY not set; not running tailscale up.\n'
+  if [[ -z "$LLMSWAP_TAILSCALE_AUTHKEY" && -z "$LLMSWAP_TAILSCALE_HOSTNAME" ]]; then
+    printf 'INFO no tailscale auth key or hostname provided; not configuring supervisor-managed tailscale init.\n'
     return 0
   fi
 
   configure_tailscale_supervisor
   ensure_supervisord
   run supervisorctl reread
-  run supervisorctl update llmswap-tailscaled
-  run supervisorctl start llmswap-tailscaled
-
-  local args=(tailscale up --auth-key "$LLMSWAP_TAILSCALE_AUTHKEY")
-  if [[ -n "$LLMSWAP_TAILSCALE_HOSTNAME" ]]; then
-    args+=(--hostname "$LLMSWAP_TAILSCALE_HOSTNAME")
-  fi
-  run "${args[@]}"
+  run supervisorctl update
 }
 
 configure_tailscale_supervisor() {
@@ -409,8 +430,9 @@ configure_tailscale_supervisor() {
   if [[ -z "$tailscaled_bin" ]]; then
     tailscaled_bin="/usr/sbin/tailscaled"
   fi
-  run mkdir -p "$LLMSWAP_ROOT/tailscale" "$LLMSWAP_ROOT/logs" /run/tailscale
-  local conf
+  run mkdir -p "$LLMSWAP_ROOT/tailscale" "$LLMSWAP_ROOT/logs" /run/tailscale "$LLMSWAP_ROOT/bin"
+  write_tailscale_init_script
+  local conf init_conf
   conf="[program:llmswap-tailscaled]
 command=$tailscaled_bin --state=$LLMSWAP_ROOT/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641
 directory=$LLMSWAP_ROOT
@@ -421,7 +443,18 @@ stopasgroup=true
 killasgroup=true
 stdout_logfile=$LLMSWAP_ROOT/logs/tailscaled.out.log
 stderr_logfile=$LLMSWAP_ROOT/logs/tailscaled.err.log"
+  init_conf="[program:llmswap-tailscale-init]
+command=$LLMSWAP_ROOT/bin/tailscale-init.sh
+directory=$LLMSWAP_ROOT
+autostart=true
+autorestart=false
+startsecs=0
+startretries=0
+priority=20
+stdout_logfile=$LLMSWAP_ROOT/logs/tailscale-init.out.log
+stderr_logfile=$LLMSWAP_ROOT/logs/tailscale-init.err.log"
   write_file /etc/supervisor/conf.d/llmswap-tailscaled.conf "$conf"
+  write_file /etc/supervisor/conf.d/llmswap-tailscale-init.conf "$init_conf"
 }
 
 install_torch() {

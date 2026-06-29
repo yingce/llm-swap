@@ -10,10 +10,21 @@ RUN npm run build
 
 FROM golang:1.23-bookworm AS build
 
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG ALL_PROXY=
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+ARG all_proxy=
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ && go mod download
 
 COPY . .
 COPY --from=ui-build /src/internal/gateway/admin_dist ./internal/gateway/admin_dist
@@ -21,15 +32,42 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-gateway ./cm
 
 FROM debian:bookworm-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+SHELL ["/bin/bash", "-lc"]
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG ALL_PROXY=
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+ARG all_proxy=
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LLMSWAP_INSTALL_TAILSCALE=1
+
+ENV HOME=/root
+
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl supervisor \
     && rm -rf /var/lib/apt/lists/*
+
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ && if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]; then \
+      curl -fsSL https://tailscale.com/install.sh | sh; \
+    fi
 
 WORKDIR /opt/llmswap
 
 COPY --from=build /out/llm-swap-gateway /usr/local/bin/llm-swap-gateway
+COPY scripts/gateway-container-entrypoint.sh /usr/local/bin/gateway-container-entrypoint.sh
+
+RUN chmod 0755 /usr/local/bin/gateway-container-entrypoint.sh \
+ && mkdir -p /opt/llmswap/bin /opt/llmswap/logs /opt/llmswap/tailscale /etc/supervisor/conf.d
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/llm-swap-gateway"]
-CMD ["--config", "/opt/llmswap/gateway.yaml"]
+ENTRYPOINT ["/usr/local/bin/gateway-container-entrypoint.sh"]
+CMD []

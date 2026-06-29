@@ -203,6 +203,104 @@ func TestReconcileMarkerSkipStillReportsReady(t *testing.T) {
 	}
 }
 
+func TestReconcileRunOnceRendersReadySubsetWhileOtherArtifactInstalls(t *testing.T) {
+	payload := []byte("cold payload")
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: crc64String(payload)}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker(qwen) error = %v", err)
+	}
+
+	downloadStarted := make(chan struct{})
+	releaseDownload := make(chan struct{})
+	var closeStarted sync.Once
+	var closeRelease sync.Once
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models/model.gguf" {
+			t.Fatalf("unexpected OSS request path %s", r.URL.Path)
+		}
+		w.Header().Set("x-oss-hash-crc64ecma", artifact.CRC64ECMA)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			closeStarted.Do(func() { close(downloadStarted) })
+			select {
+			case <-releaseDownload:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	t.Cleanup(func() {
+		closeRelease.Do(func() { close(releaseDownload) })
+		oss.Close()
+	})
+
+	cfg := reconcileConfigWithTwoModels(oss.URL, artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, cfg, &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      oss.Client(),
+		Service:         &FakeService{},
+	}
+
+	installs := make(map[string]*artifactInstallState)
+	installDone := make(chan artifactInstallResult, 2)
+	if _, err := rec.reconcileRunOnce(context.Background(), installs, installDone); err != nil {
+		t.Fatalf("reconcileRunOnce() error = %v", err)
+	}
+
+	select {
+	case <-downloadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("cold artifact download did not start")
+	}
+
+	rendered, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read rendered llama-swap config: %v", err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "qwen") {
+		t.Fatalf("rendered config missing ready model qwen:\n%s", text)
+	}
+	if strings.Contains(text, "cold") {
+		t.Fatalf("rendered config unexpectedly included installing model cold:\n%s", text)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if got := heartbeats[0].Artifacts["qwen"]; got != "ready" {
+		t.Fatalf("qwen artifact status = %q, want ready", got)
+	}
+	if got := heartbeats[0].Artifacts["cold"]; got != "installing" {
+		t.Fatalf("cold artifact status = %q, want installing", got)
+	}
+
+	closeRelease.Do(func() { close(releaseDownload) })
+	select {
+	case <-installDone:
+	case <-time.After(time.Second):
+		t.Fatal("cold artifact install did not finish after release")
+	}
+}
+
 func TestReconcileConfigChangedRestartNotAllowedPersistsPendingRestart(t *testing.T) {
 	payload := []byte("model payload")
 	crc := crc64String(payload)

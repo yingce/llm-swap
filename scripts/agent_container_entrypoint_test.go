@@ -123,6 +123,8 @@ func TestAgentContainerEntrypointBootstrapsConfigFromRuntimeEnv(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
 	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
 	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+	writeExecutable(t, filepath.Join(binDir, "tailscaled"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "tailscale"), "#!/bin/sh\nexit 0\n")
 
 	out := runAgentEntrypointCommand(t, root, map[string]string{
 		"PATH":                     binDir + ":/usr/bin:/bin",
@@ -164,78 +166,76 @@ func TestAgentContainerEntrypointStartsTailscaleAtRuntimeWhenRequested(t *testin
 
 	root := t.TempDir()
 	binDir := filepath.Join(root, "bin")
-	runDir := filepath.Join(root, "run")
+	confDir := filepath.Join(root, "supervisor", "conf.d")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
 	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
 	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
-	writeExecutable(t, filepath.Join(binDir, "tailscaled"), `#!/bin/sh
-set -eu
-socket=""
-log_file="${FAKE_TAILSCALE_LOG:?}"
-for arg in "$@"; do
-  case "$arg" in
-    --socket=*)
-      socket="${arg#--socket=}"
-      ;;
-  esac
-done
-printf 'tailscaled %s\n' "$*" >> "$log_file"
-if [ -z "$socket" ]; then
-  exit 1
-fi
-SOCKET_PATH="$socket" python3 - <<'PY'
-import os
-import socket
-import time
-
-path = os.environ["SOCKET_PATH"]
-os.makedirs(os.path.dirname(path), exist_ok=True)
-try:
-    os.unlink(path)
-except FileNotFoundError:
-    pass
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.bind(path)
-time.sleep(2)
-PY
-`)
-	writeExecutable(t, filepath.Join(binDir, "tailscale"), `#!/bin/sh
-set -eu
-printf 'tailscale %s\n' "$*" >> "${FAKE_TAILSCALE_LOG:?}"
-`)
-
-	logPath := filepath.Join(root, "tailscale.log")
+	writeExecutable(t, filepath.Join(binDir, "tailscaled"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "tailscale"), "#!/bin/sh\nexit 0\n")
 	out := runAgentEntrypointCommand(t, root, map[string]string{
-		"PATH":                      binDir + ":/usr/bin:/bin",
-		"LLMSWAP_GATEWAY_URL":       "https://gateway.example.invalid",
-		"LLMSWAP_AGENT_TOKEN":       "agent-token",
-		"LLMSWAP_ENABLE_TAILSCALE":  "1",
-		"LLMSWAP_TAILSCALE_AUTHKEY": "tskey-test",
+		"PATH":                       binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":        "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN":        "agent-token",
+		"LLMSWAP_ENABLE_TAILSCALE":   "1",
+		"LLMSWAP_TAILSCALE_AUTHKEY":  "tskey-test",
 		"LLMSWAP_TAILSCALE_HOSTNAME": "worker-ts",
-		"FAKE_TAILSCALE_LOG":        logPath,
-		"LLMSWAP_TAILSCALE_SOCKET":  filepath.Join(runDir, "tailscaled.sock"),
+		"LLMSWAP_TAILSCALE_SOCKET":   filepath.Join(root, "run", "tailscaled.sock"),
+		"LLMSWAP_SUPERVISOR_CONF_DIR": confDir,
+		"LLMSWAP_SUPERVISORD_CONFIG":  filepath.Join(root, "supervisor", "supervisord.conf"),
 	})
 	if strings.TrimSpace(out) != "supervisord-started" {
 		t.Fatalf("entrypoint output = %q, want supervisord-started", out)
 	}
-	logData, err := os.ReadFile(logPath)
+
+	tailscaledConf, err := os.ReadFile(filepath.Join(confDir, "llmswap-tailscaled.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	logText := string(logData)
+	tailscaledText := string(tailscaledConf)
 	for _, want := range []string{
-		"tailscaled --state=",
-		"--socket=" + filepath.Join(runDir, "tailscaled.sock"),
-		"tailscale --socket=" + filepath.Join(runDir, "tailscaled.sock") + " up --auth-key tskey-test --hostname worker-ts",
+		"[program:llmswap-tailscaled]",
+		"command=" + filepath.Join(binDir, "tailscaled") + " --state=",
+		"--tun=userspace-networking",
+		"--socket=" + filepath.Join(root, "run", "tailscaled.sock"),
+		"autostart=true",
 	} {
-		if !strings.Contains(logText, want) {
-			t.Fatalf("tailscale log missing %q:\n%s", want, logText)
+		if !strings.Contains(tailscaledText, want) {
+			t.Fatalf("tailscaled conf missing %q:\n%s", want, tailscaledText)
+		}
+	}
+
+	initConf, err := os.ReadFile(filepath.Join(confDir, "llmswap-tailscale-init.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initConfText := string(initConf)
+	for _, want := range []string{
+		"[program:llmswap-tailscale-init]",
+		"autorestart=false",
+		"startretries=0",
+	} {
+		if !strings.Contains(initConfText, want) {
+			t.Fatalf("tailscale init conf missing %q:\n%s", want, initConfText)
+		}
+	}
+
+	initScript, err := os.ReadFile(filepath.Join(binDir, "tailscale-init.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initScriptText := string(initScript)
+	for _, want := range []string{
+		filepath.Join(binDir, "tailscale") + "\" --socket=\"" + filepath.Join(root, "run", "tailscaled.sock") + "\" login --auth-key \"tskey-test\"",
+		filepath.Join(binDir, "tailscale") + "\" --socket=\"" + filepath.Join(root, "run", "tailscaled.sock") + "\" set --hostname \"worker-ts\"",
+	} {
+		if !strings.Contains(initScriptText, want) {
+			t.Fatalf("tailscale init script missing %q:\n%s", want, initScriptText)
 		}
 	}
 }
@@ -253,13 +253,15 @@ func runAgentEntrypointCommand(t *testing.T, root string, extraEnv map[string]st
 	cmd.Dir = repo
 
 	envMap := map[string]string{
-		"HOME":                 t.TempDir(),
-		"PATH":                 "/usr/bin:/bin",
-		"LLMSWAP_ROOT":         root,
-		"LLMSWAP_BIN_DIR":      filepath.Join(root, "bin"),
-		"LLMSWAP_AGENT_CONFIG": filepath.Join(root, "agent.yaml"),
-		"LLMSWAP_LOG_DIR":      filepath.Join(root, "logs"),
-		"LLMSWAP_MODEL_ROOT":   filepath.Join(root, "models"),
+		"HOME":                       t.TempDir(),
+		"PATH":                       "/usr/bin:/bin",
+		"LLMSWAP_ROOT":               root,
+		"LLMSWAP_BIN_DIR":            filepath.Join(root, "bin"),
+		"LLMSWAP_AGENT_CONFIG":       filepath.Join(root, "agent.yaml"),
+		"LLMSWAP_LOG_DIR":            filepath.Join(root, "logs"),
+		"LLMSWAP_MODEL_ROOT":         filepath.Join(root, "models"),
+		"LLMSWAP_SUPERVISOR_CONF_DIR": filepath.Join(root, "supervisor", "conf.d"),
+		"LLMSWAP_SUPERVISORD_CONFIG":  filepath.Join(root, "supervisor", "supervisord.conf"),
 	}
 	for key, value := range extraEnv {
 		envMap[key] = value

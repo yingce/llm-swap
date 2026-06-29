@@ -175,19 +175,22 @@ func TestInstallWorkerDryRunStartsTailscaleWhenAuthKeyProvidedAndConfiguresSuper
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-tailscaled.conf")
 	assertContains(t, out, "command=/usr/sbin/tailscaled --state=/opt/llmswap/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641")
 	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/tailscaled.out.log")
-	assertContains(t, out, "supervisorctl update llmswap-tailscaled")
-	assertContains(t, out, "supervisorctl start llmswap-tailscaled")
-	assertContains(t, out, "tailscale up --auth-key tskey-auth-test --hostname worker-01")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/tailscale-init.sh")
+	assertContains(t, out, "tailscale --socket=\"/run/tailscale/tailscaled.sock\" login --auth-key \"tskey-auth-test\"")
+	assertContains(t, out, "tailscale --socket=\"/run/tailscale/tailscaled.sock\" set --hostname \"worker-01\"")
+	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-tailscale-init.conf")
+	assertContains(t, out, "autorestart=false")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
 	assertContains(t, out, "supervisorctl reread")
 	assertContains(t, out, "supervisorctl update")
+	assertNotContains(t, out, "tailscale up --auth-key")
 }
 
 func TestInstallWorkerDryRunDoesNotStartTailscaleWithoutAuthKey(t *testing.T) {
 	out := runInstallWorker(t, "12.8", "--runtime", "llamacpp")
 
-	assertContains(t, out, "INFO TAILSCALE_AUTHKEY not set; not running tailscale up.")
+	assertContains(t, out, "INFO no tailscale auth key or hostname provided; not configuring supervisor-managed tailscale init.")
 	assertNotContains(t, out, "tailscale up --auth-key")
 	assertNotContains(t, out, "llmswap-tailscaled.conf")
 }
