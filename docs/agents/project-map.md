@@ -397,14 +397,16 @@ Important properties:
 - The image removes the placeholder `agent.yaml` after build. At container
   start, `scripts/agent-container-entrypoint.sh` writes `/opt/llmswap/agent.yaml`
   from env only when the file is absent or `LLMSWAP_FORCE_CONFIG=1`.
-- `llama-swap` is not built from this repository.
-- If `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` is provided, the image stores a
-  bundled `/opt/llmswap/bin/llama-swap.bundled`.
-- If the base image already contains `/opt/llmswap/bin/llama-swap`,
-  `Dockerfile.agent` preserves it as the bundled binary.
-- If neither source exists, the image build still succeeds, but the container
-  must receive either a runtime override URL or a mounted llama-swap binary
-  before it can start successfully.
+- By default the image builds `llama-swap` from an upstream source archive
+  during Docker build. The default archive URL is
+  `https://codeload.github.com/mostlygeek/llama-swap/tar.gz/refs/tags/${LLAMA_SWAP_REF}`.
+- The built binary is stored as `/opt/llmswap/bin/llama-swap.bundled` and
+  copied to `/opt/llmswap/bin/llama-swap`.
+- If `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` is provided, the downloaded
+  binary replaces the built bundled binary.
+- `LLAMA_SWAP_REF` controls the upstream ref used for the default build.
+- `LLAMA_SWAP_SOURCE_ARCHIVE_URL` can override the archive URL completely when
+  a different mirror or pinned tarball is required.
 - On container start, `scripts/agent-container-entrypoint.sh` restores
   `/opt/llmswap/bin/llama-swap` from the bundled binary by default.
 - If runtime env `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` or `LLAMA_SWAP_DOWNLOAD_URL`
@@ -419,7 +421,7 @@ docker build \
   --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 \
   --build-arg LLMSWAP_CUDA_VERSION=12.8 \
   --build-arg LLMSWAP_RUNTIME=all \
-  --build-arg LLAMA_SWAP_DOWNLOAD_URL=https://example.invalid/llama-swap-linux-amd64 \
+  --build-arg LLAMA_SWAP_REF=v232 \
   --build-arg LLMSWAP_TORCH_INDEX_URL_BASE=https://mirror.example.invalid/pytorch \
   --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
   --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
@@ -462,7 +464,7 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_AGENT_TOKEN`
 - `LLMSWAP_LLAMA_SWAP_TOKEN` (optional; defaults to agent token)
 - `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` (optional runtime override for the active
-  llama-swap binary; when omitted, the bundled binary is used)
+  llama-swap binary; when omitted, the build-bundled binary is used)
 - `LLMSWAP_SWAP_PORT`
 - `LLMSWAP_SWAP_URL` or `SWAP_URL` (optional explicit public worker URL)
 - `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`

@@ -1,4 +1,5 @@
 ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+ARG NODE_BUILD_IMAGE=node:22-bookworm
 
 FROM golang:1.23-bookworm AS agent-build
 
@@ -20,6 +21,7 @@ ENV https_proxy=${https_proxy}
 ENV no_proxy=${no_proxy}
 ENV all_proxy=${all_proxy}
 ENV HOME=/root
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 
@@ -29,6 +31,81 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-agent ./cmd/agent
+
+FROM ${NODE_BUILD_IMAGE} AS llama-swap-ui-build
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG ALL_PROXY=
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+ARG all_proxy=
+ARG LLAMA_SWAP_REF=v232
+ARG LLAMA_SWAP_SOURCE_ARCHIVE_URL=
+
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+ENV ALL_PROXY=${ALL_PROXY}
+ENV http_proxy=${http_proxy}
+ENV https_proxy=${https_proxy}
+ENV no_proxy=${no_proxy}
+ENV all_proxy=${all_proxy}
+ENV HOME=/root
+
+WORKDIR /src
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+RUN archive_url="${LLAMA_SWAP_SOURCE_ARCHIVE_URL:-https://codeload.github.com/mostlygeek/llama-swap/tar.gz/refs/tags/${LLAMA_SWAP_REF}}" \
+ && curl -fL --retry 5 --retry-delay 5 "$archive_url" -o /tmp/llama-swap-src.tar.gz \
+ && mkdir -p /src/llama-swap \
+ && tar -C /src/llama-swap --strip-components=1 -xzf /tmp/llama-swap-src.tar.gz \
+ && rm -f /tmp/llama-swap-src.tar.gz
+WORKDIR /src/llama-swap/ui-svelte
+RUN npm ci && npm run build
+RUN mkdir -p /out && cp -R /src/llama-swap/internal/server/ui_dist /out/ui_dist
+
+FROM golang:1.23-bookworm AS llama-swap-build
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG ALL_PROXY=
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+ARG all_proxy=
+ARG LLAMA_SWAP_REF=v232
+ARG LLAMA_SWAP_SOURCE_ARCHIVE_URL=
+
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+ENV ALL_PROXY=${ALL_PROXY}
+ENV http_proxy=${http_proxy}
+ENV https_proxy=${https_proxy}
+ENV no_proxy=${no_proxy}
+ENV all_proxy=${all_proxy}
+ENV HOME=/root
+ENV GOTOOLCHAIN=auto
+
+WORKDIR /src
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+RUN archive_url="${LLAMA_SWAP_SOURCE_ARCHIVE_URL:-https://codeload.github.com/mostlygeek/llama-swap/tar.gz/refs/tags/${LLAMA_SWAP_REF}}" \
+ && curl -fL --retry 5 --retry-delay 5 "$archive_url" -o /tmp/llama-swap-src.tar.gz \
+ && mkdir -p /src/llama-swap \
+ && tar -C /src/llama-swap --strip-components=1 -xzf /tmp/llama-swap-src.tar.gz \
+ && rm -f /tmp/llama-swap-src.tar.gz
+WORKDIR /src/llama-swap
+COPY --from=llama-swap-ui-build /out/ui_dist /src/llama-swap/internal/server/ui_dist
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llama-swap .
 
 FROM ${BASE_IMAGE}
 
@@ -55,6 +132,8 @@ ARG LLMSWAP_VLLM_PACKAGE=vllm[audio]
 ARG LLMSWAP_SGLANG_PACKAGE=sglang
 ARG LLMSWAP_SWAP_PORT=6006
 ARG LLAMA_SWAP_DOWNLOAD_URL=
+ARG LLAMA_SWAP_REF=v232
+ARG LLAMA_SWAP_SOURCE_ARCHIVE_URL=
 ARG UV_INDEX_URL=
 ARG UV_EXTRA_INDEX_URL=
 ARG PIP_INDEX_URL=
@@ -79,6 +158,8 @@ ENV LLMSWAP_SGLANG_PACKAGE=${LLMSWAP_SGLANG_PACKAGE}
 ENV LLMSWAP_UV_PYTHON_INSTALL_MIRROR=${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}
 ENV LLMSWAP_TORCH_INDEX_URL=${LLMSWAP_TORCH_INDEX_URL}
 ENV LLMSWAP_TORCH_INDEX_URL_BASE=${LLMSWAP_TORCH_INDEX_URL_BASE}
+ENV LLAMA_SWAP_REF=${LLAMA_SWAP_REF}
+ENV LLAMA_SWAP_SOURCE_ARCHIVE_URL=${LLAMA_SWAP_SOURCE_ARCHIVE_URL}
 ENV LLMSWAP_UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
 ENV LLMSWAP_UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
 ENV UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
@@ -95,6 +176,7 @@ WORKDIR /src
 COPY scripts/install-worker.sh /usr/local/bin/install-worker.sh
 COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
 COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
+COPY --from=llama-swap-build /out/llama-swap /tmp/llama-swap.bundled
 
 RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-entrypoint.sh \
  && /usr/local/bin/install-worker.sh \
@@ -113,6 +195,8 @@ RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-e
       --swap-port "${LLMSWAP_SWAP_PORT}" \
       --skip-tailscale \
  && rm -f "${LLMSWAP_ROOT}/agent.yaml" \
+ && install -m 0755 /tmp/llama-swap.bundled "${LLMSWAP_ROOT}/bin/llama-swap.bundled" \
+ && install -m 0755 /tmp/llama-swap.bundled "${LLMSWAP_ROOT}/bin/llama-swap" \
  && if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]; then \
       /usr/local/bin/install-worker.sh \
         --root "${LLMSWAP_ROOT}" \
@@ -126,9 +210,9 @@ RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-e
     elif [[ -x "${LLMSWAP_ROOT}/bin/llama-swap" ]]; then \
       install -m 0755 "${LLMSWAP_ROOT}/bin/llama-swap" "${LLMSWAP_ROOT}/bin/llama-swap.bundled" ; \
     else \
-      printf 'WARN LLAMA_SWAP_DOWNLOAD_URL is empty and no preinstalled %s/bin/llama-swap was found; provide a runtime override URL or mount a binary before starting the container.\n' "${LLMSWAP_ROOT}" ; \
+      printf 'WARN no preinstalled %s/bin/llama-swap was found after building llama-swap ref %s; provide LLAMA_SWAP_DOWNLOAD_URL or inspect the llama-swap build stage.\n' "${LLMSWAP_ROOT}" "${LLAMA_SWAP_REF}" ; \
     fi \
- && rm -f /tmp/llm-swap-agent
+ && rm -f /tmp/llm-swap-agent /tmp/llama-swap.bundled
 
 WORKDIR ${LLMSWAP_ROOT}
 
