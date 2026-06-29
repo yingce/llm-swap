@@ -28,15 +28,25 @@ ARG LLMSWAP_VLLM_PACKAGE=vllm[audio]
 ARG LLMSWAP_SGLANG_PACKAGE=sglang
 ARG LLMSWAP_SWAP_PORT=6006
 ARG LLAMA_SWAP_DOWNLOAD_URL=
+ARG UV_INDEX_URL=
+ARG UV_EXTRA_INDEX_URL=
+ARG PIP_INDEX_URL=
+ARG PIP_EXTRA_INDEX_URL=
+ARG LLMSWAP_UV_PYTHON_INSTALL_MIRROR=
 
 ENV LLMSWAP_ROOT=${LLMSWAP_ROOT}
 ENV LLMSWAP_LLAMA_CPP_ARCH=${LLMSWAP_LLAMA_CPP_ARCH}
 ENV LLMSWAP_VLLM_PACKAGE=${LLMSWAP_VLLM_PACKAGE}
 ENV LLMSWAP_SGLANG_PACKAGE=${LLMSWAP_SGLANG_PACKAGE}
+ENV LLMSWAP_UV_PYTHON_INSTALL_MIRROR=${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}
 ENV LLMSWAP_UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
 ENV LLMSWAP_UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
 ENV UV_CACHE_DIR=${LLMSWAP_ROOT}/cache/uv
 ENV UV_PYTHON_INSTALL_DIR=${LLMSWAP_ROOT}/python
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+ENV UV_EXTRA_INDEX_URL=${UV_EXTRA_INDEX_URL}
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
 ENV UV_LINK_MODE=copy
 ENV PATH=${LLMSWAP_ROOT}/bin:/root/.local/bin:${PATH}
 
@@ -69,13 +79,15 @@ RUN chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-e
         --only tailscale \
         --cuda-version "${LLMSWAP_CUDA_VERSION}" ; \
     fi \
- && if [[ -z "${LLAMA_SWAP_DOWNLOAD_URL}" ]]; then \
-      printf 'ERROR LLAMA_SWAP_DOWNLOAD_URL is required when building Dockerfile.agent so the image always carries a bundled llama-swap binary.\n' >&2 ; \
-      exit 1 ; \
+ && if [[ -n "${LLAMA_SWAP_DOWNLOAD_URL}" ]]; then \
+      curl -fL --retry 5 --retry-delay 5 -o "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLAMA_SWAP_DOWNLOAD_URL}" \
+      && chmod 0755 "${LLMSWAP_ROOT}/bin/llama-swap.bundled" \
+      && install -m 0755 "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLMSWAP_ROOT}/bin/llama-swap" ; \
+    elif [[ -x "${LLMSWAP_ROOT}/bin/llama-swap" ]]; then \
+      install -m 0755 "${LLMSWAP_ROOT}/bin/llama-swap" "${LLMSWAP_ROOT}/bin/llama-swap.bundled" ; \
+    else \
+      printf 'WARN LLAMA_SWAP_DOWNLOAD_URL is empty and no preinstalled %s/bin/llama-swap was found; provide a runtime override URL or mount a binary before starting the container.\n' "${LLMSWAP_ROOT}" ; \
     fi \
- && curl -fL --retry 5 --retry-delay 5 -o "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLAMA_SWAP_DOWNLOAD_URL}" \
- && chmod 0755 "${LLMSWAP_ROOT}/bin/llama-swap.bundled" \
- && install -m 0755 "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLMSWAP_ROOT}/bin/llama-swap" \
  && rm -f /tmp/llm-swap-agent
 
 WORKDIR ${LLMSWAP_ROOT}

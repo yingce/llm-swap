@@ -395,9 +395,14 @@ Important properties:
 - The image removes the placeholder `agent.yaml` after build. At container
   start, `scripts/agent-container-entrypoint.sh` writes `/opt/llmswap/agent.yaml`
   from env only when the file is absent or `LLMSWAP_FORCE_CONFIG=1`.
-- `llama-swap` is not built from this repository, but `Dockerfile.agent`
-  requires a build-time `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` so the image
-  always carries a bundled `/opt/llmswap/bin/llama-swap.bundled`.
+- `llama-swap` is not built from this repository.
+- If `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` is provided, the image stores a
+  bundled `/opt/llmswap/bin/llama-swap.bundled`.
+- If the base image already contains `/opt/llmswap/bin/llama-swap`,
+  `Dockerfile.agent` preserves it as the bundled binary.
+- If neither source exists, the image build still succeeds, but the container
+  must receive either a runtime override URL or a mounted llama-swap binary
+  before it can start successfully.
 - On container start, `scripts/agent-container-entrypoint.sh` restores
   `/opt/llmswap/bin/llama-swap` from the bundled binary by default.
 - If runtime env `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` or `LLAMA_SWAP_DOWNLOAD_URL`
@@ -413,8 +418,19 @@ docker build \
   --build-arg LLMSWAP_CUDA_VERSION=12.8 \
   --build-arg LLMSWAP_RUNTIME=all \
   --build-arg LLAMA_SWAP_DOWNLOAD_URL=https://example.invalid/llama-swap-linux-amd64 \
+  --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
   -t llmswap-agent:cu128 .
 ```
+
+When the build machine cannot reliably access `pypi.org`, pass package index
+mirror args such as:
+
+- `UV_INDEX_URL`
+- `UV_EXTRA_INDEX_URL`
+- `PIP_INDEX_URL`
+- `PIP_EXTRA_INDEX_URL`
+- `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
 
 Typical runtime env when no config file is mounted:
 

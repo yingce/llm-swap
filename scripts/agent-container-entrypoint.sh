@@ -134,12 +134,6 @@ prepare_llama_swap_binary() {
   local runtime_download_url
   runtime_download_url="$(first_non_empty "${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}" "${LLAMA_SWAP_DOWNLOAD_URL:-}" || true)"
 
-  if [[ ! -x "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" ]]; then
-    printf 'missing bundled llama-swap binary: %s\n' "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" >&2
-    printf 'build the image with LLAMA_SWAP_DOWNLOAD_URL so it carries a default llama-swap binary\n' >&2
-    exit 1
-  fi
-
   if [[ -n "${runtime_download_url// }" ]]; then
     local tmp_bin
     tmp_bin="$(mktemp "$LLMSWAP_BIN_DIR/llama-swap.runtime.XXXXXX")"
@@ -150,7 +144,18 @@ prepare_llama_swap_binary() {
     return 0
   fi
 
-  install -m 0755 "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" "$LLMSWAP_LLAMA_SWAP_BIN"
+  if [[ -x "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" ]]; then
+    install -m 0755 "$LLMSWAP_BUNDLED_LLAMA_SWAP_BIN" "$LLMSWAP_LLAMA_SWAP_BIN"
+    return 0
+  fi
+
+  if [[ -x "$LLMSWAP_LLAMA_SWAP_BIN" ]]; then
+    return 0
+  fi
+
+  printf 'missing llama-swap binary: %s\n' "$LLMSWAP_LLAMA_SWAP_BIN" >&2
+  printf 'provide LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL, build with LLAMA_SWAP_DOWNLOAD_URL, or mount a llama-swap binary at runtime\n' >&2
+  exit 1
 }
 
 main() {

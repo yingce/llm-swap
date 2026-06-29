@@ -76,6 +76,28 @@ printf '%s\n' "$FAKE_CURL_CONTENT" > "$out"
 	}
 }
 
+func TestAgentContainerEntrypointKeepsMountedLlamaSwapWhenBundledMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap"), "#!/bin/sh\necho mounted\n")
+	if err := os.WriteFile(filepath.Join(root, "agent.yaml"), []byte("agent:\n  id: existing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runAgentEntrypoint(t, root, nil)
+	if strings.TrimSpace(out) != "#!/bin/sh\necho mounted" {
+		t.Fatalf("llama-swap content = %q, want mounted binary to remain active", out)
+	}
+}
+
 func runAgentEntrypoint(t *testing.T, root string, extraEnv map[string]string) string {
 	t.Helper()
 	repo := repoRoot(t)
