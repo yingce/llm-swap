@@ -26,6 +26,8 @@ LLMSWAP_UV_INSTALL_TIMEOUT="${LLMSWAP_UV_INSTALL_TIMEOUT:-120}"
 LLMSWAP_UV_CACHE_DIR="${LLMSWAP_UV_CACHE_DIR:-$LLMSWAP_ROOT/cache/uv}"
 LLMSWAP_UV_PYTHON_INSTALL_DIR="${LLMSWAP_UV_PYTHON_INSTALL_DIR:-$LLMSWAP_ROOT/python}"
 LLMSWAP_UV_PYTHON_INSTALL_MIRROR="${LLMSWAP_UV_PYTHON_INSTALL_MIRROR:-}"
+LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL:-}"
+LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE:-https://download.pytorch.org/whl}"
 LLMSWAP_LLAMA_CPP_BASE_URL="${LLMSWAP_LLAMA_CPP_BASE_URL:-http://llmfs-bj.oss-cn-beijing.aliyuncs.com/models}"
 LLMSWAP_LLAMA_CPP_CUDA="${LLMSWAP_LLAMA_CPP_CUDA:-auto}"
 LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH:-sm89}"
@@ -67,6 +69,8 @@ Options:
   --agent-token TOKEN       Gateway agent token written into agent config.
   --llama-swap-token TOKEN  llama-swap token written into agent config. Default: agent token.
   --swap-port PORT          llama-swap port used when swap_url is omitted.
+  --torch-index-url URL     Override the full torch wheel index URL.
+  --torch-index-base URL    Override the torch wheel index base URL.
   --force-config            Overwrite an existing agent config.
   -h, --help                Show this help.
 EOF
@@ -150,6 +154,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --swap-port)
       LLMSWAP_SWAP_PORT="$2"
+      shift 2
+      ;;
+    --torch-index-url)
+      LLMSWAP_TORCH_INDEX_URL="$2"
+      shift 2
+      ;;
+    --torch-index-base)
+      LLMSWAP_TORCH_INDEX_URL_BASE="$2"
       shift 2
       ;;
     --force-config)
@@ -383,7 +395,7 @@ stderr_logfile=$LLMSWAP_ROOT/logs/tailscaled.err.log"
 install_torch() {
   local python="$1"
   local backend="$2"
-  local index_url="https://download.pytorch.org/whl/$backend"
+  local index_url="${LLMSWAP_TORCH_INDEX_URL:-$LLMSWAP_TORCH_INDEX_URL_BASE/$backend}"
   run uv pip install --python "$python" torch torchvision torchaudio --index-url "$index_url"
 }
 

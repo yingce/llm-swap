@@ -97,6 +97,15 @@ func TestInstallWorkerDryRunAcceptsPythonInstallMirror(t *testing.T) {
 	assertContains(t, out, "INFO uv_python_install_mirror=https://python-standalone.org/mirror/astral-sh/python-build-standalone/")
 }
 
+func TestInstallWorkerDryRunAcceptsTorchIndexOverride(t *testing.T) {
+	t.Setenv("LLMSWAP_TORCH_INDEX_URL", "https://mirror.example.invalid/pytorch/cu128")
+
+	out := runInstallWorker(t, "12.8", "--runtime", "vllm")
+
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch torchvision torchaudio --index-url https://mirror.example.invalid/pytorch/cu128")
+	assertNotContains(t, out, "https://download.pytorch.org/whl/cu128")
+}
+
 func TestInstallWorkerCanSkipTailscaleAndSelectRuntime(t *testing.T) {
 	out := runInstallWorker(t, "12.8", "--runtime", "vllm", "--skip-tailscale")
 

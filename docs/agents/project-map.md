@@ -375,6 +375,8 @@ Important env vars:
 - `LLMSWAP_UV_CACHE_DIR`
 - `LLMSWAP_UV_PYTHON_INSTALL_DIR`
 - `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
+- `LLMSWAP_TORCH_INDEX_URL`
+- `LLMSWAP_TORCH_INDEX_URL_BASE`
 
 ## Agent Container Image
 
@@ -418,8 +420,21 @@ docker build \
   --build-arg LLMSWAP_CUDA_VERSION=12.8 \
   --build-arg LLMSWAP_RUNTIME=all \
   --build-arg LLAMA_SWAP_DOWNLOAD_URL=https://example.invalid/llama-swap-linux-amd64 \
+  --build-arg LLMSWAP_TORCH_INDEX_URL_BASE=https://mirror.example.invalid/pytorch \
   --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
   --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  -t llmswap-agent:cu128 .
+```
+
+If the build host must go through an HTTP(S) proxy, pass standard Docker build
+args so both stages inherit them:
+
+```bash
+docker build \
+  -f Dockerfile.agent \
+  --build-arg HTTP_PROXY=http://proxy.example.local:7890 \
+  --build-arg HTTPS_PROXY=http://proxy.example.local:7890 \
+  --build-arg NO_PROXY=localhost,127.0.0.1 \
   -t llmswap-agent:cu128 .
 ```
 
@@ -431,6 +446,13 @@ mirror args such as:
 - `PIP_INDEX_URL`
 - `PIP_EXTRA_INDEX_URL`
 - `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
+
+When the build machine cannot reliably access `download.pytorch.org`, pass
+either:
+
+- `LLMSWAP_TORCH_INDEX_URL_BASE` to map CUDA backends onto a mirror, for example
+  `https://mirror.example.invalid/pytorch` -> `.../cu128`
+- `LLMSWAP_TORCH_INDEX_URL` to force one exact torch wheel index URL
 
 Typical runtime env when no config file is mounted:
 
