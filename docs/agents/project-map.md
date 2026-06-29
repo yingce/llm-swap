@@ -397,16 +397,17 @@ Important properties:
 - The image removes the placeholder `agent.yaml` after build. At container
   start, `scripts/agent-container-entrypoint.sh` writes `/opt/llmswap/agent.yaml`
   from env only when the file is absent or `LLMSWAP_FORCE_CONFIG=1`.
-- By default the image builds `llama-swap` from an upstream source archive
-  during Docker build. The default archive URL is
-  `https://codeload.github.com/mostlygeek/llama-swap/tar.gz/refs/tags/${LLAMA_SWAP_REF}`.
-- The built binary is stored as `/opt/llmswap/bin/llama-swap.bundled` and
+- By default the image downloads the official `llama-swap` release artifact
+  during Docker build.
+- The default release URL is
+  `https://github.com/mostlygeek/llama-swap/releases/download/${LLAMA_SWAP_REF}/llama-swap_${LLAMA_SWAP_REF#v}_linux_amd64.tar.gz`.
+- The extracted binary is stored as `/opt/llmswap/bin/llama-swap.bundled` and
   copied to `/opt/llmswap/bin/llama-swap`.
 - If `--build-arg LLAMA_SWAP_DOWNLOAD_URL=...` is provided, the downloaded
   binary replaces the built bundled binary.
 - `LLAMA_SWAP_REF` controls the upstream ref used for the default build.
-- `LLAMA_SWAP_SOURCE_ARCHIVE_URL` can override the archive URL completely when
-  a different mirror or pinned tarball is required.
+- `LLAMA_SWAP_RELEASE_URL` can override the exact release artifact URL when a
+  different mirror or pinned tarball is required.
 - On container start, `scripts/agent-container-entrypoint.sh` restores
   `/opt/llmswap/bin/llama-swap` from the bundled binary by default.
 - If runtime env `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` or `LLAMA_SWAP_DOWNLOAD_URL`
@@ -422,6 +423,7 @@ docker build \
   --build-arg LLMSWAP_CUDA_VERSION=12.8 \
   --build-arg LLMSWAP_RUNTIME=all \
   --build-arg LLAMA_SWAP_REF=v232 \
+  --build-arg LLAMA_SWAP_RELEASE_URL=https://github.com/mostlygeek/llama-swap/releases/download/v232/llama-swap_232_linux_amd64.tar.gz \
   --build-arg LLMSWAP_TORCH_INDEX_URL_BASE=https://mirror.example.invalid/pytorch \
   --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
   --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
