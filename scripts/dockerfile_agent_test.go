@@ -86,3 +86,58 @@ func TestDockerfileAgentCopiesAgentBinaryAfterHeavyInstallLayers(t *testing.T) {
 		t.Fatalf("agent binary copy should happen before the supervisor stage")
 	}
 }
+
+func TestDockerfileAgentUsesStableRuntimeBaseBeforeAgentBuild(t *testing.T) {
+	repo := repoRoot(t)
+	path := filepath.Join(repo, "Dockerfile.agent")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+
+	runtimeBase := "FROM ${BASE_IMAGE} AS runtime-base"
+	finalStage := "FROM runtime-base AS final"
+	agentBuild := "FROM golang:1.23-bookworm AS agent-build"
+	agentSourceCopy := "COPY cmd ./cmd"
+	runtimeInstall := "--only runtime"
+	finalAgentInstall := "--only agent"
+
+	runtimeBaseIdx := strings.Index(text, runtimeBase)
+	if runtimeBaseIdx == -1 {
+		t.Fatalf("Dockerfile.agent should name the heavy dependency stage %q", runtimeBase)
+	}
+	finalStageIdx := strings.Index(text, finalStage)
+	if finalStageIdx == -1 {
+		t.Fatalf("Dockerfile.agent should derive the final image from %q", finalStage)
+	}
+	agentBuildIdx := strings.Index(text, agentBuild)
+	if agentBuildIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", agentBuild)
+	}
+	agentSourceIdx := strings.Index(text, agentSourceCopy)
+	if agentSourceIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", agentSourceCopy)
+	}
+	runtimeInstallIdx := strings.Index(text, runtimeInstall)
+	if runtimeInstallIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", runtimeInstall)
+	}
+	finalAgentInstallIdx := strings.LastIndex(text, finalAgentInstall)
+	if finalAgentInstallIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", finalAgentInstall)
+	}
+
+	if runtimeBaseIdx >= agentBuildIdx {
+		t.Fatalf("runtime-base should be declared before agent-build so heavy runtime layers do not depend on agent source")
+	}
+	if agentSourceIdx <= runtimeInstallIdx {
+		t.Fatalf("agent source copies should happen after runtime install layers")
+	}
+	if finalStageIdx <= runtimeInstallIdx {
+		t.Fatalf("final stage should start after heavy runtime install layers")
+	}
+	if finalAgentInstallIdx <= finalStageIdx {
+		t.Fatalf("agent install should happen in the final stage")
+	}
+}

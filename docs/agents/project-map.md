@@ -402,6 +402,11 @@ would normally install on a host.
 Important properties:
 
 - Default base image is `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`.
+- The Dockerfile intentionally builds a stable `runtime-base` stage before the
+  Go `agent-build` stage. Heavy base, Python, vLLM, SGLang, llama.cpp,
+  Tailscale, and llama-swap release layers must not copy `cmd/` or `internal/`;
+  normal agent code changes should only rebuild the Go binary and the final
+  lightweight agent/supervisor setup layer.
 - The build runs `install-worker.sh` inside the image, so runtime installation
   logic stays in one place.
 - The image preinstalls `vllm`, `sglang`, or `llamacpp` based on

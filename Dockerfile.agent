@@ -1,31 +1,6 @@
 ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
-FROM golang:1.23-bookworm AS agent-build
-
-ARG HTTP_PROXY=
-ARG HTTPS_PROXY=
-ARG NO_PROXY=
-ARG ALL_PROXY=
-ARG http_proxy=
-ARG https_proxy=
-ARG no_proxy=
-ARG all_proxy=
-
-ENV HOME=/root
-ENV GOTOOLCHAIN=auto
-
-WORKDIR /src
-
-COPY go.mod go.sum ./
-RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
-          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
- && go mod download
-
-COPY cmd ./cmd
-COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-agent ./cmd/agent
-
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS runtime-base
 
 SHELL ["/bin/bash", "-lc"]
 
@@ -48,7 +23,6 @@ ARG LLMSWAP_LLAMA_CPP_CUDA=auto
 ARG LLMSWAP_LLAMA_CPP_ARCH=sm89
 ARG LLMSWAP_VLLM_PACKAGE=vllm[audio]
 ARG LLMSWAP_SGLANG_PACKAGE=sglang
-ARG LLMSWAP_SWAP_PORT=6006
 ARG LLAMA_SWAP_DOWNLOAD_URL=
 ARG LLAMA_SWAP_REF=v232
 ARG LLAMA_SWAP_RELEASE_URL=
@@ -136,6 +110,38 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
       printf 'WARN no preinstalled %s/bin/llama-swap was found after downloading llama-swap ref %s; provide LLAMA_SWAP_DOWNLOAD_URL or inspect the release URL.\n' "${LLMSWAP_ROOT}" "${LLAMA_SWAP_REF}" ; \
     fi \
  && rm -rf /tmp/llama-swap-release /tmp/llama-swap-release.tar.gz
+
+FROM golang:1.23-bookworm AS agent-build
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG ALL_PROXY=
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+ARG all_proxy=
+
+ENV HOME=/root
+ENV GOTOOLCHAIN=auto
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ && go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-agent ./cmd/agent
+
+FROM runtime-base AS final
+
+SHELL ["/bin/bash", "-lc"]
+
+ARG LLMSWAP_CUDA_VERSION=12.8
+ARG LLMSWAP_SWAP_PORT=6006
 
 COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
 COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
