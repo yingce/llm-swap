@@ -361,8 +361,11 @@ It can:
 - create uv-managed Python venvs for vLLM and SGLang using Python 3.12 by
   default;
 - install torch for vLLM with CUDA-aware PyTorch index selection;
-- install vLLM with the `audio` extra by default (`vllm[audio]`) so PyAV and
-  other audio parser dependencies are available;
+- install vLLM from CUDA-specific release wheels for `cu128` and `cu130` by
+  default, because the plain PyPI vLLM package may resolve to a different CUDA
+  runtime than the selected PyTorch backend;
+- install audio parser dependencies separately for vLLM so OpenAI audio payloads
+  are supported;
 - install SGLang and patch MiniCPMV4.6 config compatibility;
 - install prebuilt llama.cpp CUDA runtime archives from OSS;
 - write wrappers into `/opt/llmswap/bin`;
@@ -386,6 +389,8 @@ Important env vars:
 - `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
 - `LLMSWAP_TORCH_INDEX_URL`
 - `LLMSWAP_TORCH_INDEX_URL_BASE`
+- `LLMSWAP_VLLM_VERSION`
+- `LLMSWAP_VLLM_WHEEL_URL`
 
 ## Agent Container Image
 
@@ -488,6 +493,19 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_TAILSCALE_TUN` to override the container TUN mode. The default
   entrypoint behavior is `userspace-networking`.
 
+The container entrypoint also supports true agent-native env-only startup with
+`LLM_SWAP_AGENT_*`. When any agent-native env is present and `agent.yaml` is not
+mounted, the entrypoint does not require `LLMSWAP_GATEWAY_URL` or generate
+`/opt/llmswap/agent.yaml`; it starts the agent with the missing config path and
+lets `LoadAgentRuntime` read viper env directly. The entrypoint still exports
+container defaults for `LLM_SWAP_AGENT_MODEL_ROOT`,
+`LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG`, `LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE`,
+`LLM_SWAP_AGENT_RESTART_COMMAND`, and `LLM_SWAP_AGENT_SWAP_PORT` so the runtime
+service wiring works without a yaml file. The required native envs are
+`LLM_SWAP_AGENT_GATEWAY_URL` and `LLM_SWAP_AGENT_TOKEN`; set
+`LLM_SWAP_AGENT_ID`, `LLM_SWAP_AGENT_TAGS`, and optionally
+`LLM_SWAP_AGENT_SWAP_URL` for identity and advertised worker URL.
+
 Default container startup path:
 
 - verifies `/opt/llmswap/bin/llm-swap-agent`;
@@ -504,6 +522,12 @@ Default container startup path:
   tailnet URL instead of falling back to the container or host local IP;
 - starts `supervisord` in the foreground, which manages `llama-swap` and
   `llm-swap-agent`.
+
+`llama-swap` must not wait for model downloads before starting. The supervisor
+wrapper writes a valid empty `/opt/llmswap/llama-swap.yaml` with `models: {}`
+when the file is absent, then starts llama-swap with `-watch-config`. The agent
+downloads artifacts asynchronously and later rewrites the config with only the
+models whose artifacts are ready.
 
 Build-time vs runtime split:
 

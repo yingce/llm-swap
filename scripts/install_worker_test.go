@@ -14,7 +14,7 @@ func TestInstallWorkerDryRunUsesCuda124TorchIndexAndSupervisor(t *testing.T) {
 
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm[audio] --torch-backend=auto")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm[audio] --torch-backend=cu124")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python librosa soundfile torchcodec av")
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
@@ -31,7 +31,8 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git")
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git ffmpeg libavdevice58")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llama-swap-supervisor.sh")
-	assertContains(t, out, "while [[ ! -s \"$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do")
+	assertNotContains(t, out, "while [[ ! -s \"$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do")
+	assertContains(t, out, "models: {}")
 	assertContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertContains(t, out, "command=/opt/llmswap/bin/llama-swap-supervisor.sh")
 	assertContains(t, out, "stdout_logfile=/opt/llmswap/logs/llama-swap.out.log")
@@ -45,12 +46,18 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 func TestInstallWorkerDryRunSelectsCuda128AndCuda130Indexes(t *testing.T) {
 	cuda128 := runInstallWorker(t, "12.8")
 	assertContains(t, cuda128, "https://download.pytorch.org/whl/cu128")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu128-cp38-abi3-manylinux_2_35_")
+	assertContains(t, cuda128, "--extra-index-url https://download.pytorch.org/whl/cu128")
+	assertNotContains(t, cuda128, "vllm[audio] --torch-backend=cu128")
 	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
 	assertNotContains(t, cuda128, "https://docs.sglang.ai/whl/cu128/")
 	assertNotContains(t, cuda128, "sglang-kernel")
 
 	cuda130 := runInstallWorker(t, "13.0")
 	assertContains(t, cuda130, "https://download.pytorch.org/whl/cu130")
+	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu130-cp38-abi3-manylinux_2_35_")
+	assertContains(t, cuda130, "--extra-index-url https://download.pytorch.org/whl/cu130")
+	assertNotContains(t, cuda130, "vllm[audio] --torch-backend=cu130")
 	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
 	assertNotContains(t, cuda130, "sglang[all]")
 }

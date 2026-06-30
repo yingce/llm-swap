@@ -249,7 +249,9 @@ func (p Placement) planWarmAction(now time.Time, workers []Worker, active map[st
 			continue
 		}
 
-		demandScore := DemandScore(p.Pressure.Model(modelName, now), DemandScoreInput{
+		pressureSnapshot := p.Pressure.Model(modelName, now)
+		coldStartDemand := pressureSnapshot.NoReadyRequests > 0 && readyCount == 0 && occupiedCount == 0
+		demandScore := DemandScore(pressureSnapshot, DemandScoreInput{
 			Priority:         model.Priority,
 			ReadyReplicas:    readyCount,
 			OccupiedReplicas: occupiedCount,
@@ -269,14 +271,14 @@ func (p Placement) planWarmAction(now time.Time, workers []Worker, active map[st
 			}, true
 		}
 
-		if action, ok := p.planWarmEviction(now, workers, active, loadedCounts, modelName, demandScore); ok {
+		if action, ok := p.planWarmEviction(now, workers, active, loadedCounts, modelName, demandScore, coldStartDemand); ok {
 			return action, true
 		}
 	}
 	return ControlAction{}, false
 }
 
-func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[string]int, loadedCounts map[string]int, targetModel string, demandScore int) (ControlAction, bool) {
+func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[string]int, loadedCounts map[string]int, targetModel string, demandScore int, coldStartDemand bool) (ControlAction, bool) {
 	var best ControlAction
 	found := false
 	for _, worker := range workers {
@@ -294,14 +296,19 @@ func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[
 				continue
 			}
 			keep := p.keepScore(now, worker.ID, running, active[worker.ID], loadedCounts)
-			if demandScore <= keep+defaultSwitchCost {
+			coldStartCanUseExcess := coldStartDemand && p.hasExcessReplica(running.Model, loadedCounts)
+			if demandScore <= keep+defaultSwitchCost && !coldStartCanUseExcess {
 				continue
+			}
+			reason := "evict_for_predictive_scaleout"
+			if coldStartCanUseExcess {
+				reason = "evict_for_cold_start_request"
 			}
 			action := ControlAction{
 				Type:        ControlActionWarm,
 				Worker:      worker,
 				Model:       targetModel,
-				Reason:      "evict_for_predictive_scaleout",
+				Reason:      reason,
 				VictimModel: running.Model,
 				DemandScore: demandScore,
 				KeepScore:   keep,
@@ -316,6 +323,17 @@ func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[
 	return best, found
 }
 
+func (p Placement) hasExcessReplica(modelName string, loadedCounts map[string]int) bool {
+	model, ok := p.Config.Models[modelName]
+	if !ok {
+		return loadedCounts[modelName] > 0
+	}
+	if model.MinLoaded <= 0 {
+		return loadedCounts[modelName] > 0
+	}
+	return loadedCounts[modelName] > model.MinLoaded
+}
+
 func (p Placement) warmEligibleWorker(worker Worker, now time.Time, active map[string]int, modelName string) bool {
 	if p.Workers != nil && !p.Workers.Healthy(worker.ID, now) {
 		return false
@@ -324,6 +342,9 @@ func (p Placement) warmEligibleWorker(worker Worker, now time.Time, active map[s
 		return false
 	}
 	if !workerAllowsModel(p.Config, worker, modelName) || !artifactReady(worker, modelName) {
+		return false
+	}
+	if p.Cooldowns.Active(worker.ID, modelName, now) {
 		return false
 	}
 	_, running := runningModelState(worker, modelName)

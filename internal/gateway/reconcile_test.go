@@ -514,6 +514,69 @@ func TestLoadedReconcilerExecutesOnlyOneWarmActionPerCycle(t *testing.T) {
 	}
 }
 
+func TestLoadedReconcilerMarksCooldownAfterWarmFailure(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var loadCalls atomic.Int32
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/upstream/qwen/v1/models" {
+			t.Fatalf("unexpected load request %s %s", r.Method, r.URL.Path)
+		}
+		loadCalls.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer failingServer.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 0},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: failingServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(time.Second),
+		Model:            "qwen",
+		Result:           QueueResultNoReady,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+	})
+	cooldowns := NewReplicaCooldowns(time.Minute)
+	reconciler := LoadedReconciler{
+		Config:           cfg,
+		Workers:          reg,
+		Client:           LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:           NewAccessTracker(),
+		Pressure:         pressure,
+		ReplicaCooldowns: cooldowns,
+		Cooldowns:        cooldowns.Snapshot(now),
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now.Add(2*time.Second)); err == nil {
+		t.Fatal("Reconcile error = nil, want warm failure")
+	}
+	if !cooldowns.Active("worker-a", "qwen", now.Add(3*time.Second)) {
+		t.Fatal("cooldown is not active after warm failure")
+	}
+
+	reconciler.Cooldowns = cooldowns.Snapshot(now.Add(3 * time.Second))
+	if err := reconciler.Reconcile(context.Background(), now.Add(3*time.Second)); err != nil {
+		t.Fatalf("second Reconcile returned error: %v", err)
+	}
+	if loadCalls.Load() != 1 {
+		t.Fatalf("load calls = %d, want no retry while cooldown is active", loadCalls.Load())
+	}
+}
+
 func unloadServer(t *testing.T, calls *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return unloadServerForModel(t, "qwen", calls)

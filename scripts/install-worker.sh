@@ -34,6 +34,8 @@ LLMSWAP_LLAMA_CPP_CUDA="${LLMSWAP_LLAMA_CPP_CUDA:-auto}"
 LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH:-sm89}"
 LLMSWAP_RUNTIME_CACHE_DIR="${LLMSWAP_RUNTIME_CACHE_DIR:-$LLMSWAP_ROOT/cache/runtimes}"
 LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-vllm[audio]}"
+LLMSWAP_VLLM_VERSION="${LLMSWAP_VLLM_VERSION:-0.24.0}"
+LLMSWAP_VLLM_WHEEL_URL="${LLMSWAP_VLLM_WHEEL_URL:-}"
 LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE:-sglang}"
 UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 export UV_CACHE_DIR="$LLMSWAP_UV_CACHE_DIR"
@@ -324,10 +326,24 @@ LLMSWAP_ROOT=\"\${LLMSWAP_ROOT:-$LLMSWAP_ROOT}\"
 LLMSWAP_LLAMA_SWAP_BIN=\"\${LLMSWAP_LLAMA_SWAP_BIN:-\$LLMSWAP_ROOT/bin/llama-swap}\"
 LLMSWAP_LLAMA_SWAP_CONFIG=\"\${LLMSWAP_LLAMA_SWAP_CONFIG:-\$LLMSWAP_ROOT/llama-swap.yaml}\"
 LLMSWAP_SWAP_PORT=\"\${LLMSWAP_SWAP_PORT:-$LLMSWAP_SWAP_PORT}\"
+LLMSWAP_LLAMA_SWAP_TOKEN=\"\${LLMSWAP_LLAMA_SWAP_TOKEN:-\${LLM_SWAP_AGENT_LLAMA_SWAP_TOKEN:-\${LLMSWAP_AGENT_TOKEN:-\${LLM_SWAP_AGENT_TOKEN:-}}}}\"
 
-while [[ ! -s \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do
-  sleep 1
-done
+if [[ ! -s \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; then
+  mkdir -p \"\$(dirname \"\$LLMSWAP_LLAMA_SWAP_CONFIG\")\"
+  {
+    printf 'healthCheckTimeout: 300\n'
+    printf 'startPort: 10001\n'
+    printf 'globalTTL: 0\n'
+    if [[ -n \"\${LLMSWAP_LLAMA_SWAP_TOKEN// }\" ]]; then
+      printf 'apiKeys:\n'
+      printf '    - %s\n' \"\$LLMSWAP_LLAMA_SWAP_TOKEN\"
+    fi
+    printf 'performance:\n'
+    printf '    enable: true\n'
+    printf '    every: 5s\n'
+    printf 'models: {}\n'
+  } > \"\$LLMSWAP_LLAMA_SWAP_CONFIG\"
+fi
 
 exec \"\$LLMSWAP_LLAMA_SWAP_BIN\" -config \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" -listen \":\$LLMSWAP_SWAP_PORT\" -watch-config"
   write_file "$wrapper_path" "$content"
@@ -512,8 +528,14 @@ stderr_logfile=$LLMSWAP_ROOT/logs/tailscale-init.err.log"
 install_torch() {
   local python="$1"
   local backend="$2"
-  local index_url="${LLMSWAP_TORCH_INDEX_URL:-$LLMSWAP_TORCH_INDEX_URL_BASE/$backend}"
+  local index_url
+  index_url="$(torch_index_url_for_backend "$backend")"
   run uv pip install --python "$python" torch torchvision torchaudio --index-url "$index_url"
+}
+
+torch_index_url_for_backend() {
+  local backend="$1"
+  printf '%s\n' "${LLMSWAP_TORCH_INDEX_URL:-$LLMSWAP_TORCH_INDEX_URL_BASE/$backend}"
 }
 
 install_multimodal_audio_deps() {
@@ -521,12 +543,33 @@ install_multimodal_audio_deps() {
   run uv pip install --python "$python" librosa soundfile torchcodec av
 }
 
+vllm_wheel_url() {
+  local backend="$1"
+  if [[ -n "$LLMSWAP_VLLM_WHEEL_URL" ]]; then
+    printf '%s\n' "$LLMSWAP_VLLM_WHEEL_URL"
+    return 0
+  fi
+  case "$backend" in
+    cu128|cu130) ;;
+    *) return 0 ;;
+  esac
+  local arch
+  arch="$(uname -m)"
+  printf 'https://github.com/vllm-project/vllm/releases/download/v%s/vllm-%s+%s-cp38-abi3-manylinux_2_35_%s.whl\n' "$LLMSWAP_VLLM_VERSION" "$LLMSWAP_VLLM_VERSION" "$backend" "$arch"
+}
+
 install_vllm() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/vllm"
   run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
   install_torch "$venv/bin/python" "$backend"
-  run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE" --torch-backend=auto
+  local wheel_url
+  wheel_url="$(vllm_wheel_url "$backend")"
+  if [[ -n "$wheel_url" ]]; then
+    run uv pip install --python "$venv/bin/python" "$wheel_url" --extra-index-url "$(torch_index_url_for_backend "$backend")"
+  else
+    run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE" --torch-backend="$backend"
+  fi
   install_multimodal_audio_deps "$venv/bin/python"
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/vllm.server" "$venv/bin/python" vllm
   write_python_wrapper "$LLMSWAP_ROOT/bin/vllm-python" "$venv/bin/python"

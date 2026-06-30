@@ -17,6 +17,8 @@ type LoadedReconciler struct {
 	Client             LlamaSwapClient
 	Access             *AccessTracker
 	Pressure           *PressureTracker
+	ReplicaCooldowns   *ReplicaCooldowns
+	Cooldowns          ReplicaCooldownSnapshot
 	Metrics            *Metrics
 	RecordEvent        func(workerID string, event protocol.AgentEvent)
 	RecordReachability func(workerID string, err error, now time.Time)
@@ -85,7 +87,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			excess--
 		}
 	}
-	placement := Placement{Config: r.Config, Workers: r.Workers, Access: r.Access, Pressure: r.Pressure}
+	placement := Placement{Config: r.Config, Workers: r.Workers, Access: r.Access, Pressure: r.Pressure, Cooldowns: r.Cooldowns}
 	for _, action := range placement.PlanControlActions(now) {
 		actionActive := r.Workers.ActiveSnapshot()
 		switch action.Type {
@@ -122,6 +124,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 				if r.RecordReachability != nil {
 					r.RecordReachability(action.Worker.ID, err, time.Now())
 				}
+				r.markWarmCooldown(action.Worker.ID, action.Model, "control_warm_failed")
 				r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_error", err)
 				r.logControlAction("control_action_error", action, err)
 				r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
@@ -139,6 +142,16 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 		}
 	}
 	return outErr
+}
+
+func (r LoadedReconciler) markWarmCooldown(workerID, modelName, reason string) {
+	if r.ReplicaCooldowns == nil {
+		return
+	}
+	entry, marked := r.ReplicaCooldowns.Mark(workerID, modelName, reason, time.Now())
+	if marked && r.Metrics != nil {
+		r.Metrics.ObserveReplicaCooldownMark(entry)
+	}
 }
 
 func (r LoadedReconciler) observeControlAction(action, model, workerID, reason, result string) {
@@ -317,6 +330,8 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 			Client:             LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
 			Access:             s.access,
 			Pressure:           s.pressure,
+			ReplicaCooldowns:   s.replicaCooldowns,
+			Cooldowns:          s.replicaCooldowns.Snapshot(time.Now()),
 			Metrics:            s.metrics,
 			RecordEvent:        s.recordGatewayWorkerEvent,
 			RecordReachability: s.recordReverseAccessResult,

@@ -159,6 +159,70 @@ func TestAgentContainerEntrypointBootstrapsConfigFromRuntimeEnv(t *testing.T) {
 	}
 }
 
+func TestAgentContainerEntrypointAllowsNativeAgentEnvWithoutConfigFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
+	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+
+	out := runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                       binDir + ":/usr/bin:/bin",
+		"LLM_SWAP_AGENT_ID":          "native-worker-01",
+		"LLM_SWAP_AGENT_TAGS":        "gpu-4090,prod",
+		"LLM_SWAP_AGENT_GATEWAY_URL": "https://gateway.example.invalid",
+		"LLM_SWAP_AGENT_TOKEN":       "agent-token",
+		"LLM_SWAP_AGENT_SWAP_URL":    "https://worker.example.invalid:8443",
+	})
+	if strings.TrimSpace(out) != "supervisord-started" {
+		t.Fatalf("entrypoint output = %q, want supervisord-started", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agent.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("agent.yaml exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestAgentContainerEntrypointExportsNativeAgentDefaults(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
+
+	out := runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                       binDir + ":/usr/bin:/bin",
+		"LLM_SWAP_AGENT_ID":          "native-worker-01",
+		"LLM_SWAP_AGENT_TAGS":        "gpu-4090,prod",
+		"LLM_SWAP_AGENT_GATEWAY_URL": "https://gateway.example.invalid",
+		"LLM_SWAP_AGENT_TOKEN":       "agent-token",
+	}, "env")
+	for _, want := range []string{
+		"LLM_SWAP_AGENT_MODEL_ROOT=" + filepath.Join(root, "models"),
+		"LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG=" + filepath.Join(root, "llama-swap.yaml"),
+		"LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE=supervisor",
+		"LLM_SWAP_AGENT_RESTART_COMMAND=supervisorctl restart llmswap-llama-swap",
+		"LLM_SWAP_AGENT_SWAP_PORT=6006",
+		"LLM_SWAP_AGENT_GATEWAY_URL=https://gateway.example.invalid",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("env output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestAgentContainerEntrypointStartsTailscaleAtRuntimeWhenRequested(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")

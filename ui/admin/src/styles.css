@@ -395,15 +395,15 @@ th {
 
 .event,
 .change {
-  align-items: center;
+  align-items: start;
   display: grid;
   gap: 10px;
   padding: 10px 12px;
 }
 
 .event {
-  grid-template-columns: 84px minmax(170px, 0.95fr) minmax(140px, 0.7fr) minmax(180px, 1fr) minmax(220px, 1.35fr);
-  min-width: 900px;
+  grid-template-columns: 84px minmax(180px, 0.9fr) minmax(190px, 0.9fr) minmax(180px, 0.9fr) minmax(260px, 1.4fr);
+  min-width: 1020px;
 }
 
 .request-row {
@@ -428,6 +428,15 @@ th {
 .event > *,
 .change > * {
   min-width: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.event-head > *,
+.request-head > * {
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .change {

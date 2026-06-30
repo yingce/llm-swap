@@ -580,6 +580,87 @@ func TestPlacementWarmDoesNotEvictWhenDemandDoesNotBeatSwitchCost(t *testing.T) 
 	}
 }
 
+func TestPlacementColdStartRequestCanEvictExcessReplicaAboveMinLoaded(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen2.5": {Priority: 10, MinLoaded: 0, MaxLoaded: 1, MaxLoadedSet: true},
+			"nsfw":   {Priority: 100, MinLoaded: 1, MaxLoaded: 2, MaxLoadedSet: true},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen2.5", "nsfw"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	for _, workerID := range []string{"worker-a", "worker-b"} {
+		reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+			AgentID:      workerID,
+			Tags:         []string{"gpu"},
+			LlamaSwapURL: "http://" + workerID,
+			Artifacts:    map[string]string{"qwen2.5": "ready", "nsfw": "ready"},
+			RunningModels: []protocol.RunningModel{
+				{Model: "nsfw", State: "ready"},
+			},
+		}, now)
+	}
+	pressure := NewPressureTracker(defaultPressureWindow)
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(time.Second),
+		Model:            "qwen2.5",
+		Result:           QueueResultNoReady,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(2 * time.Second))
+	if len(actions) != 1 {
+		t.Fatalf("actions = %#v, want one warm action for cold-start qwen2.5", actions)
+	}
+	action := actions[0]
+	if action.Type != ControlActionWarm || action.Model != "qwen2.5" || action.VictimModel != "nsfw" {
+		t.Fatalf("action = %#v, want warm qwen2.5 by evicting excess nsfw replica", action)
+	}
+	if action.Reason != "evict_for_cold_start_request" {
+		t.Fatalf("reason = %q, want evict_for_cold_start_request", action.Reason)
+	}
+}
+
+func TestPlacementColdStartRequestDoesNotEvictReplicaAtMinLoaded(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen2.5": {Priority: 10, MinLoaded: 0, MaxLoaded: 1, MaxLoadedSet: true},
+			"nsfw":   {Priority: 100, MinLoaded: 1, MaxLoaded: 2, MaxLoadedSet: true},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen2.5", "nsfw"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://worker-a",
+		Artifacts:    map[string]string{"qwen2.5": "ready", "nsfw": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "nsfw", State: "ready"},
+		},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(time.Second),
+		Model:            "qwen2.5",
+		Result:           QueueResultNoReady,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(2 * time.Second))
+	if len(actions) != 0 {
+		t.Fatalf("actions = %#v, want no eviction while nsfw is at min_loaded floor", actions)
+	}
+}
+
 func TestPlacementWarmDoesNotEvictProtectedReplica(t *testing.T) {
 	now := time.Unix(1000, 0)
 	cfg := config.GatewayConfig{
