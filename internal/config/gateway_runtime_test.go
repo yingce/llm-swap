@@ -66,6 +66,68 @@ gateway:
 	}
 }
 
+func TestLoadGatewayRuntimeAcceptsLLMSWAPEnvNames(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(configPath, []byte(strings.Replace(validGatewayYAML(""), "  llama_swap: worker-token\n", "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSWAP_GATEWAY_CONFIG", configPath)
+	t.Setenv("LLMSWAP_GATEWAY_ADDR", ":7070")
+	t.Setenv("LLMSWAP_GATEWAY_PROXY_ATTEMPTS", "5")
+	t.Setenv("LLMSWAP_CLIENT_TOKEN", "env-client-token")
+	t.Setenv("LLMSWAP_AGENT_TOKEN", "env-agent-token")
+	t.Setenv("LLMSWAP_LLAMA_SWAP_TOKEN", "env-llama-token")
+
+	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{})
+	if err != nil {
+		t.Fatalf("LoadGatewayRuntime returned error: %v", err)
+	}
+	if runtime.ListenAddr != ":7070" {
+		t.Fatalf("listen addr = %q, want LLMSWAP env addr", runtime.ListenAddr)
+	}
+	if runtime.Config.Gateway.ProxyAttempts != 5 {
+		t.Fatalf("proxy attempts = %d, want LLMSWAP env value", runtime.Config.Gateway.ProxyAttempts)
+	}
+	if runtime.Config.Tokens.Client != "env-client-token" {
+		t.Fatalf("client token = %q, want LLMSWAP env value", runtime.Config.Tokens.Client)
+	}
+	if runtime.Config.Tokens.Agent != "env-agent-token" {
+		t.Fatalf("agent token = %q, want LLMSWAP env value", runtime.Config.Tokens.Agent)
+	}
+	if runtime.Config.Tokens.LlamaSwap != "env-llama-token" {
+		t.Fatalf("llama_swap token = %q, want LLMSWAP env value", runtime.Config.Tokens.LlamaSwap)
+	}
+	if !runtime.Overrides.ListenAddr || !runtime.Overrides.ProxyAttempts || !runtime.Overrides.Tokens {
+		t.Fatalf("overrides = %+v, want LLMSWAP env overrides marked", runtime.Overrides)
+	}
+}
+
+func TestLoadGatewayRuntimePrefersLLMSWAPEnvOverLegacyLLMSwapGatewayEnv(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(configPath, []byte(strings.Replace(validGatewayYAML(""), "  llama_swap: worker-token\n", "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSWAP_GATEWAY_CONFIG", configPath)
+	t.Setenv("LLMSWAP_GATEWAY_ADDR", ":7070")
+	t.Setenv("LLM_SWAP_GATEWAY_ADDR", ":6060")
+	t.Setenv("LLMSWAP_AGENT_TOKEN", "public-agent-token")
+	t.Setenv("LLM_SWAP_GATEWAY_TOKENS_AGENT", "legacy-agent-token")
+
+	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{})
+	if err != nil {
+		t.Fatalf("LoadGatewayRuntime returned error: %v", err)
+	}
+	if runtime.ListenAddr != ":7070" {
+		t.Fatalf("listen addr = %q, want LLMSWAP env to win", runtime.ListenAddr)
+	}
+	if runtime.Config.Tokens.Agent != "public-agent-token" {
+		t.Fatalf("agent token = %q, want LLMSWAP env to win", runtime.Config.Tokens.Agent)
+	}
+	if runtime.Config.Tokens.LlamaSwap != "public-agent-token" {
+		t.Fatalf("llama_swap token = %q, want inherited LLMSWAP agent token", runtime.Config.Tokens.LlamaSwap)
+	}
+}
+
 func TestLoadGatewayRuntimeDefaultsLlamaSwapTokenToEnvAgentToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	if err := os.WriteFile(configPath, []byte(`

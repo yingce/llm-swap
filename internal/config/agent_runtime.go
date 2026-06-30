@@ -37,13 +37,10 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	}
 	v := viper.New()
 	v.SetConfigType("yaml")
-	v.SetEnvPrefix("LLM_SWAP_AGENT")
-	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
-	v.AutomaticEnv()
 
 	configDefault := opts.ConfigPath
 	if configDefault == "" {
-		configDefault = firstNonEmpty(os.Getenv("LLM_SWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
+		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_AGENT_CONFIG"), os.Getenv("LLM_SWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
 	}
 	flags := newAgentRuntimeFlagSet(configDefault, io.Discard)
 	if err := flags.Parse(opts.Args); err != nil {
@@ -73,8 +70,12 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 		if err := bindFlag(v, binding.key, flags, binding.flag); err != nil {
 			return AgentConfig{}, err
 		}
+		envAliases := append([]string{binding.key}, agentEnvAliases(binding.key)...)
+		if err := v.BindEnv(envAliases...); err != nil {
+			return AgentConfig{}, err
+		}
 	}
-	_ = v.BindEnv("swap_url", "SWAP_URL", "LLM_SWAP_AGENT_SWAP_URL")
+	_ = v.BindEnv("swap_url", "LLMSWAP_SWAP_URL", "SWAP_URL", "LLM_SWAP_AGENT_SWAP_URL")
 
 	configPath, _ := flags.GetString("config")
 	if configPath != "" {
@@ -127,7 +128,7 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 func AgentRuntimeUsage(opts AgentRuntimeOptions) string {
 	configDefault := opts.ConfigPath
 	if configDefault == "" {
-		configDefault = firstNonEmpty(os.Getenv("LLM_SWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
+		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_AGENT_CONFIG"), os.Getenv("LLM_SWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
 	}
 	var out bytes.Buffer
 	flags := newAgentRuntimeFlagSet(configDefault, &out)
@@ -242,6 +243,37 @@ func bindFlag(v *viper.Viper, key string, flags *pflag.FlagSet, flagName string)
 		return fmt.Errorf("unknown flag %q", flagName)
 	}
 	return v.BindPFlag(key, flag)
+}
+
+func agentEnvAliases(key string) []string {
+	switch key {
+	case "id":
+		return []string{"LLMSWAP_AGENT_ID", "LLM_SWAP_AGENT_ID"}
+	case "tags":
+		return []string{"LLMSWAP_AGENT_TAGS", "LLM_SWAP_AGENT_TAGS"}
+	case "model_root":
+		return []string{"LLMSWAP_MODEL_ROOT", "LLM_SWAP_AGENT_MODEL_ROOT"}
+	case "llama_swap_config":
+		return []string{"LLMSWAP_LLAMA_SWAP_CONFIG", "LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG"}
+	case "llama_swap_service":
+		return []string{"LLMSWAP_LLAMA_SWAP_SERVICE", "LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE"}
+	case "restart_command":
+		return []string{"LLMSWAP_AGENT_RESTART_COMMAND", "LLM_SWAP_AGENT_RESTART_COMMAND"}
+	case "swap_url":
+		return []string{"LLMSWAP_SWAP_URL", "SWAP_URL", "LLM_SWAP_AGENT_SWAP_URL"}
+	case "llama_swap_url":
+		return []string{"LLMSWAP_LLAMA_SWAP_URL", "LLM_SWAP_AGENT_LLAMA_SWAP_URL"}
+	case "swap_port":
+		return []string{"LLMSWAP_SWAP_PORT", "LLM_SWAP_AGENT_SWAP_PORT"}
+	case "gateway_url":
+		return []string{"LLMSWAP_GATEWAY_URL", "LLM_SWAP_AGENT_GATEWAY_URL"}
+	case "token":
+		return []string{"LLMSWAP_AGENT_TOKEN", "LLM_SWAP_AGENT_TOKEN"}
+	case "llama_swap_token":
+		return []string{"LLMSWAP_LLAMA_SWAP_TOKEN", "LLM_SWAP_AGENT_LLAMA_SWAP_TOKEN"}
+	default:
+		return nil
+	}
 }
 
 func configString(v *viper.Viper, key string, fallback string) string {

@@ -157,6 +157,79 @@ agent:
 	}
 }
 
+func TestLoadAgentRuntimeAcceptsLLMSWAPEnvNames(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "missing-agent.yaml")
+	t.Setenv("LLMSWAP_AGENT_CONFIG", configPath)
+	t.Setenv("LLMSWAP_AGENT_ID", "env-id")
+	t.Setenv("LLMSWAP_AGENT_TAGS", "gpu-4090,prod")
+	t.Setenv("LLMSWAP_MODEL_ROOT", "/data/models")
+	t.Setenv("LLMSWAP_LLAMA_SWAP_CONFIG", "/data/llama-swap.yaml")
+	t.Setenv("LLMSWAP_LLAMA_SWAP_SERVICE", "supervisor")
+	t.Setenv("LLMSWAP_AGENT_RESTART_COMMAND", "supervisorctl restart llmswap-llama-swap")
+	t.Setenv("LLMSWAP_SWAP_URL", "http://worker:6006")
+	t.Setenv("LLMSWAP_SWAP_PORT", "6007")
+	t.Setenv("LLMSWAP_GATEWAY_URL", "http://gateway")
+	t.Setenv("LLMSWAP_AGENT_TOKEN", "agent-token")
+	t.Setenv("LLMSWAP_LLAMA_SWAP_TOKEN", "llama-token")
+
+	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{})
+	if err != nil {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	if cfg.Agent.ID != "env-id" {
+		t.Fatalf("id = %q, want LLMSWAP env value", cfg.Agent.ID)
+	}
+	if !reflect.DeepEqual(cfg.Agent.Tags, []string{"gpu-4090", "prod"}) {
+		t.Fatalf("tags = %v, want LLMSWAP env tags", cfg.Agent.Tags)
+	}
+	if cfg.Agent.ModelRoot != "/data/models" {
+		t.Fatalf("model_root = %q, want LLMSWAP env value", cfg.Agent.ModelRoot)
+	}
+	if cfg.Agent.LlamaSwapConfig != "/data/llama-swap.yaml" {
+		t.Fatalf("llama_swap_config = %q, want LLMSWAP env value", cfg.Agent.LlamaSwapConfig)
+	}
+	if cfg.Agent.LlamaSwapService != "supervisor" {
+		t.Fatalf("llama_swap_service = %q, want LLMSWAP env value", cfg.Agent.LlamaSwapService)
+	}
+	if cfg.Agent.RestartCommand != "supervisorctl restart llmswap-llama-swap" {
+		t.Fatalf("restart_command = %q, want LLMSWAP env value", cfg.Agent.RestartCommand)
+	}
+	if cfg.Agent.SwapPort != 6007 {
+		t.Fatalf("swap_port = %d, want LLMSWAP env value", cfg.Agent.SwapPort)
+	}
+	if cfg.Agent.LlamaSwapURL != "http://worker:6006" {
+		t.Fatalf("llama_swap_url = %q, want LLMSWAP env value", cfg.Agent.LlamaSwapURL)
+	}
+	if cfg.Agent.GatewayURL != "http://gateway" {
+		t.Fatalf("gateway_url = %q, want LLMSWAP env value", cfg.Agent.GatewayURL)
+	}
+	if cfg.Agent.Token != "agent-token" || cfg.Agent.LlamaSwapToken != "llama-token" {
+		t.Fatalf("tokens = %q/%q, want LLMSWAP env tokens", cfg.Agent.Token, cfg.Agent.LlamaSwapToken)
+	}
+}
+
+func TestLoadAgentRuntimePrefersLLMSWAPEnvOverLegacyLLMSwapAgentEnv(t *testing.T) {
+	t.Setenv("LLMSWAP_AGENT_CONFIG", filepath.Join(t.TempDir(), "missing-agent.yaml"))
+	t.Setenv("LLMSWAP_AGENT_ID", "public-id")
+	t.Setenv("LLM_SWAP_AGENT_ID", "legacy-id")
+	t.Setenv("LLMSWAP_AGENT_TAGS", "gpu")
+	t.Setenv("LLMSWAP_GATEWAY_URL", "http://gateway")
+	t.Setenv("LLMSWAP_AGENT_TOKEN", "public-token")
+	t.Setenv("LLM_SWAP_AGENT_TOKEN", "legacy-token")
+	t.Setenv("LLMSWAP_SWAP_URL", "http://worker:6006")
+
+	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{})
+	if err != nil {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	if cfg.Agent.ID != "public-id" {
+		t.Fatalf("id = %q, want LLMSWAP env to win", cfg.Agent.ID)
+	}
+	if cfg.Agent.Token != "public-token" {
+		t.Fatalf("token = %q, want LLMSWAP env to win", cfg.Agent.Token)
+	}
+}
+
 func TestLoadAgentRuntimeUsesConfigPathFromEnv(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent.yaml")
 	if err := os.WriteFile(configPath, []byte(`

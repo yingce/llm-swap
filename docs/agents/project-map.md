@@ -497,18 +497,25 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_TAILSCALE_TUN` to override the container TUN mode. The default
   entrypoint behavior is `userspace-networking`.
 
-The container entrypoint also supports true agent-native env-only startup with
-`LLM_SWAP_AGENT_*`. When any agent-native env is present and `agent.yaml` is not
-mounted, the entrypoint does not require `LLMSWAP_GATEWAY_URL` or generate
-`/opt/llmswap/agent.yaml`; it starts the agent with the missing config path and
-lets `LoadAgentRuntime` read viper env directly. The entrypoint still exports
-container defaults for `LLM_SWAP_AGENT_MODEL_ROOT`,
-`LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG`, `LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE`,
-`LLM_SWAP_AGENT_RESTART_COMMAND`, and `LLM_SWAP_AGENT_SWAP_PORT` so the runtime
-service wiring works without a yaml file. The required native envs are
-`LLM_SWAP_AGENT_GATEWAY_URL` and `LLM_SWAP_AGENT_TOKEN`; set
-`LLM_SWAP_AGENT_ID`, `LLM_SWAP_AGENT_TAGS`, and optionally
-`LLM_SWAP_AGENT_SWAP_URL` for identity and advertised worker URL.
+User-facing runtime envs should use `LLMSWAP_*`. The agent binary now accepts
+the same public names directly, so `LLMSWAP_AGENT_ID`,
+`LLMSWAP_AGENT_TAGS`, `LLMSWAP_GATEWAY_URL`, `LLMSWAP_AGENT_TOKEN`,
+`LLMSWAP_LLAMA_SWAP_TOKEN`, `LLMSWAP_SWAP_URL`, `LLMSWAP_SWAP_PORT`,
+`LLMSWAP_MODEL_ROOT`, and `LLMSWAP_LLAMA_SWAP_CONFIG` work even without
+generating `agent.yaml`. Legacy `LLM_SWAP_AGENT_*` names are still accepted as
+fallback aliases, but should not be used in new docs or deployment examples.
+
+Gateway runtime envs should also use `LLMSWAP_*`:
+
+- `LLMSWAP_GATEWAY_CONFIG`
+- `LLMSWAP_GATEWAY_ADDR`
+- `LLMSWAP_GATEWAY_PROXY_ATTEMPTS`
+- `LLMSWAP_CLIENT_TOKEN`
+- `LLMSWAP_AGENT_TOKEN`
+- `LLMSWAP_LLAMA_SWAP_TOKEN`
+
+Legacy gateway aliases such as `LLM_SWAP_GATEWAY_TOKENS_AGENT` remain accepted
+for compatibility only.
 
 Default container startup path:
 
