@@ -46,6 +46,7 @@ type PressureSnapshot struct {
 	RecentTokens     int
 	WaitedRequests   int
 	QueueErrors      int
+	NoReadyRequests  int
 	P95WaitMS        int64
 	P95DurationMS    int64
 	ReadyReplicas    int
@@ -131,6 +132,9 @@ func (p *PressureTracker) Model(model string, now time.Time) PressureSnapshot {
 			snapshot.WaitedRequests++
 		case QueueResultFull, QueueResultTimeout:
 			snapshot.QueueErrors++
+		case QueueResultNoReady:
+			snapshot.QueueErrors++
+			snapshot.NoReadyRequests++
 		}
 		if obs.WaitMS > 0 {
 			waits = append(waits, obs.WaitMS)
@@ -155,6 +159,9 @@ func (p *PressureTracker) Model(model string, now time.Time) PressureSnapshot {
 
 func DemandScore(snapshot PressureSnapshot, input DemandScoreInput) int {
 	demandEvents := snapshot.RecentRequests + snapshot.WaitedRequests + snapshot.QueueErrors
+	if input.ReadyReplicas == 0 && input.OccupiedReplicas == 0 && snapshot.NoReadyRequests > 0 && demandEvents > 0 {
+		return minScaleOutScore
+	}
 	if demandEvents < minScaleOutRequests {
 		return 0
 	}

@@ -67,8 +67,6 @@ ENV PATH=${LLMSWAP_ROOT}/bin:/root/.local/bin:${PATH}
 WORKDIR /src
 
 COPY scripts/install-worker.sh /usr/local/bin/install-worker.sh
-COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
-COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
 
 RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
           http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
@@ -85,23 +83,36 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
           UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" \
           UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" \
           UV_LINK_MODE=copy \
- && chmod 0755 /usr/local/bin/install-worker.sh /usr/local/bin/agent-container-entrypoint.sh \
+ && chmod 0755 /usr/local/bin/install-worker.sh \
  && /usr/local/bin/install-worker.sh \
       --root "${LLMSWAP_ROOT}" \
+      --only base \
+      --cuda-version "${LLMSWAP_CUDA_VERSION}" \
+      --python "${LLMSWAP_PYTHON}"
+
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+          LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH}" \
+          LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE}" \
+          LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE}" \
+          LLMSWAP_UV_PYTHON_INSTALL_MIRROR="${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}" \
+          LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL}" \
+          LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE}" \
+          UV_INDEX_URL="${UV_INDEX_URL}" \
+          UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}" \
+          PIP_INDEX_URL="${PIP_INDEX_URL}" \
+          PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
+          UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" \
+          UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" \
+          UV_LINK_MODE=copy \
+ && /usr/local/bin/install-worker.sh \
+      --root "${LLMSWAP_ROOT}" \
+      --only runtime \
       --cuda-version "${LLMSWAP_CUDA_VERSION}" \
       --runtime "${LLMSWAP_RUNTIME}" \
       --python "${LLMSWAP_PYTHON}" \
       --llamacpp-base-url "${LLMSWAP_LLAMA_CPP_BASE_URL}" \
       --llamacpp-cuda "${LLMSWAP_LLAMA_CPP_CUDA}" \
-      --agent-binary /tmp/llm-swap-agent \
-      --agent-id "container-worker" \
-      --tags "gpu" \
-      --gateway-url "http://gateway.example.local:8080" \
-      --agent-token "agent-token" \
-      --llama-swap-token "agent-token" \
-      --swap-port "${LLMSWAP_SWAP_PORT}" \
-      --skip-tailscale \
- && rm -f "${LLMSWAP_ROOT}/agent.yaml" \
  && release_url="${LLAMA_SWAP_RELEASE_URL:-https://github.com/mostlygeek/llama-swap/releases/download/${LLAMA_SWAP_REF}/llama-swap_${LLAMA_SWAP_REF#v}_linux_amd64.tar.gz}" \
  && curl -fL --retry 5 --retry-delay 5 -o /tmp/llama-swap-release.tar.gz "$release_url" \
  && mkdir -p /tmp/llama-swap-release \
@@ -123,7 +134,30 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
     else \
       printf 'WARN no preinstalled %s/bin/llama-swap was found after downloading llama-swap ref %s; provide LLAMA_SWAP_DOWNLOAD_URL or inspect the release URL.\n' "${LLMSWAP_ROOT}" "${LLAMA_SWAP_REF}" ; \
     fi \
- && rm -rf /tmp/llm-swap-agent /tmp/llama-swap-release /tmp/llama-swap-release.tar.gz
+ && rm -rf /tmp/llama-swap-release /tmp/llama-swap-release.tar.gz
+
+COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
+COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
+
+RUN chmod 0755 /usr/local/bin/agent-container-entrypoint.sh \
+ && /usr/local/bin/install-worker.sh \
+      --root "${LLMSWAP_ROOT}" \
+      --only agent \
+      --cuda-version "${LLMSWAP_CUDA_VERSION}" \
+      --agent-binary /tmp/llm-swap-agent \
+      --agent-id "container-worker" \
+      --tags "gpu" \
+      --gateway-url "http://gateway.example.local:8080" \
+      --agent-token "agent-token" \
+      --llama-swap-token "agent-token" \
+      --swap-port "${LLMSWAP_SWAP_PORT}" \
+ && /usr/local/bin/install-worker.sh \
+      --root "${LLMSWAP_ROOT}" \
+      --only supervisor \
+      --cuda-version "${LLMSWAP_CUDA_VERSION}" \
+      --swap-port "${LLMSWAP_SWAP_PORT}" \
+ && rm -f "${LLMSWAP_ROOT}/agent.yaml" \
+ && rm -f /tmp/llm-swap-agent
 
 WORKDIR ${LLMSWAP_ROOT}
 

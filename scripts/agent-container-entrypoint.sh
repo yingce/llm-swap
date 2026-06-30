@@ -23,6 +23,7 @@ LLMSWAP_TAILSCALE_HOSTNAME="${LLMSWAP_TAILSCALE_HOSTNAME:-}"
 LLMSWAP_TAILSCALE_SOCKET="${LLMSWAP_TAILSCALE_SOCKET:-/run/tailscale/tailscaled.sock}"
 LLMSWAP_TAILSCALE_PORT="${LLMSWAP_TAILSCALE_PORT:-41641}"
 LLMSWAP_TAILSCALE_TUN="${LLMSWAP_TAILSCALE_TUN:-userspace-networking}"
+LLMSWAP_TAILSCALE_WAIT_SECONDS="${LLMSWAP_TAILSCALE_WAIT_SECONDS:-60}"
 LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL="${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}"
 LLMSWAP_SUPERVISOR_CONF_DIR="${LLMSWAP_SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"
 LLMSWAP_SUPERVISORD_CONFIG="${LLMSWAP_SUPERVISORD_CONFIG:-/etc/supervisor/supervisord.conf}"
@@ -95,6 +96,65 @@ write_agent_config() {
     printf '  token: %s\n' "$LLMSWAP_AGENT_TOKEN"
     printf '  llama_swap_token: %s\n' "$LLMSWAP_LLAMA_SWAP_TOKEN"
   } > "$LLMSWAP_AGENT_CONFIG"
+}
+
+write_agent_supervisor_wrapper() {
+  local explicit_swap_url wait_for_tailscale tailscale_bin wrapper
+  explicit_swap_url="$(first_non_empty "${LLMSWAP_SWAP_URL:-}" "${LLM_SWAP_AGENT_SWAP_URL:-}" "${SWAP_URL:-}" || true)"
+  wait_for_tailscale=0
+  if [[ -z "${explicit_swap_url// }" && ( "$LLMSWAP_ENABLE_TAILSCALE" == "1" || -n "$LLMSWAP_TAILSCALE_AUTHKEY" || -n "$LLMSWAP_TAILSCALE_HOSTNAME" ) ]]; then
+    wait_for_tailscale=1
+  fi
+  tailscale_bin="$(command -v tailscale 2>/dev/null || printf 'tailscale')"
+  wrapper="$LLMSWAP_BIN_DIR/agent-supervisor.sh"
+
+  install -d "$LLMSWAP_BIN_DIR" "$LLMSWAP_LOG_DIR" "$LLMSWAP_SUPERVISOR_CONF_DIR"
+  cat > "$wrapper" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+agent_bin="$LLMSWAP_AGENT_BIN"
+agent_config="$LLMSWAP_AGENT_CONFIG"
+tailscale_bin="$tailscale_bin"
+tailscale_socket="$LLMSWAP_TAILSCALE_SOCKET"
+wait_for_tailscale="$wait_for_tailscale"
+wait_seconds="$LLMSWAP_TAILSCALE_WAIT_SECONDS"
+
+config_has_explicit_swap_url() {
+  [[ -f "\$agent_config" ]] && grep -Eq '^[[:space:]]*(swap_url|llama_swap_url):[[:space:]]*[^[:space:]#]' "\$agent_config"
+}
+
+if [[ "\$wait_for_tailscale" == "1" ]] && ! config_has_explicit_swap_url; then
+  deadline=\$((SECONDS + wait_seconds))
+  while true; do
+    if ip="\$("\$tailscale_bin" --socket="\$tailscale_socket" ip -4 2>/dev/null | head -n1)" && [[ -n "\${ip// }" ]]; then
+      printf 'tailscale IPv4 ready for agent: %s\n' "\$ip"
+      break
+    fi
+    if (( SECONDS >= deadline )); then
+      printf 'timed out waiting for tailscale IPv4 before starting agent\n' >&2
+      exit 1
+    fi
+    sleep 1
+  done
+fi
+
+exec "\$agent_bin" --config "\$agent_config"
+EOF
+  chmod 0755 "$wrapper"
+
+  cat > "$LLMSWAP_SUPERVISOR_CONF_DIR/llmswap-agent.conf" <<EOF
+[program:llmswap-agent]
+command=$wrapper
+directory=$LLMSWAP_ROOT
+autostart=true
+autorestart=true
+startsecs=5
+priority=50
+stdout_logfile=$LLMSWAP_LOG_DIR/agent.out.log
+stderr_logfile=$LLMSWAP_LOG_DIR/agent.err.log
+environment=LLM_SWAP_AGENT_CONFIG="$LLMSWAP_AGENT_CONFIG"
+EOF
 }
 
 start_tailscale_if_requested() {
@@ -231,6 +291,7 @@ main() {
     write_agent_config
   fi
 
+  write_agent_supervisor_wrapper
   start_tailscale_if_requested
 
   if [[ $# -gt 0 ]]; then

@@ -363,6 +363,32 @@ func TestProxyRecordsQueueAndRequestPressure(t *testing.T) {
 	}
 }
 
+func TestProxyRecordsNoReadyPressureForColdStartRequest(t *testing.T) {
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.MinLoaded = 0
+	model.MaxLoaded = 0
+	model.MaxLoadedSet = false
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "empty", "http://empty-worker", false)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
+	snapshot := srv.pressure.Model("qwen", time.Now())
+	if snapshot.QueueErrors != 1 {
+		t.Fatalf("QueueErrors = %d, want 1 no-ready pressure event", snapshot.QueueErrors)
+	}
+	if snapshot.ReadyReplicas != 0 || snapshot.OccupiedReplicas != 0 {
+		t.Fatalf("pressure replicas = ready:%d occupied:%d, want 0/0", snapshot.ReadyReplicas, snapshot.OccupiedReplicas)
+	}
+}
+
 func TestProxyWritesStreamingRequestLogUsage(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -78,6 +78,10 @@ disabled the gateway still runs with no external database.
   - Extracts the requested model, normalizes some SGLang request fields, applies
     queue/concurrency gates, schedules a worker, proxies to llama-swap, records
     request stats, records pressure observations, and emits metrics/logs.
+  - When no ready worker exists but the scheduler reports eligible capacity,
+    records a `no_ready` pressure observation so the async reconciler can warm
+    an empty worker for the requested model. The current request still fails
+    fast; requests only route to ready replicas.
   - Retryable proxy failures mark only the failing replica as cooled down for
     30 seconds, then retry another ready replica when available.
   - `top_k: 0` is normalized to `-1` for SGLang-backed models.
@@ -103,6 +107,9 @@ disabled the gateway still runs with no external database.
 - `internal/gateway/pressure.go`
   - Tracks rolling in-memory model pressure from request and queue observations.
   - Computes conservative demand scores used by Placement warm scale-out.
+  - Repeated `queue_full`/timeout observations and single `no_ready`
+    cold-start observations can trigger predictive warm on eligible empty
+    workers.
   - Rolling queue pressure is not persisted and starts empty after gateway
     restart.
 
@@ -490,6 +497,11 @@ Default container startup path:
   `llmswap-tailscaled --tun=userspace-networking` and one-shot
   `llmswap-tailscale-init`, which performs `tailscale login` and optional
   hostname setup after the socket is ready;
+- rewrites the `llmswap-agent` supervisor program to start through
+  `agent-supervisor.sh`. When Tailscale is requested and no explicit
+  `LLMSWAP_SWAP_URL` / `SWAP_URL` is configured, this wrapper waits for
+  `tailscale ip -4` before starting the agent so the agent advertises the
+  tailnet URL instead of falling back to the container or host local IP;
 - starts `supervisord` in the foreground, which manages `llama-swap` and
   `llm-swap-agent`.
 

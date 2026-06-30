@@ -238,6 +238,67 @@ func TestAgentContainerEntrypointStartsTailscaleAtRuntimeWhenRequested(t *testin
 			t.Fatalf("tailscale init script missing %q:\n%s", want, initScriptText)
 		}
 	}
+
+	agentConf, err := os.ReadFile(filepath.Join(confDir, "llmswap-agent.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentConfText := string(agentConf)
+	assertContains(t, agentConfText, "command="+filepath.Join(binDir, "agent-supervisor.sh"))
+
+	agentWrapper, err := os.ReadFile(filepath.Join(binDir, "agent-supervisor.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentWrapperText := string(agentWrapper)
+	for _, want := range []string{
+		"wait_for_tailscale=\"1\"",
+		"tailscale_bin=\"" + filepath.Join(binDir, "tailscale") + "\"",
+		"tailscale_socket=\"" + filepath.Join(root, "run", "tailscaled.sock") + "\"",
+		"\"$tailscale_bin\" --socket=\"$tailscale_socket\" ip -4",
+		"agent_bin=\"" + filepath.Join(binDir, "llm-swap-agent") + "\"",
+		"agent_config=\"" + filepath.Join(root, "agent.yaml") + "\"",
+		"exec \"$agent_bin\" --config \"$agent_config\"",
+	} {
+		if !strings.Contains(agentWrapperText, want) {
+			t.Fatalf("agent supervisor wrapper missing %q:\n%s", want, agentWrapperText)
+		}
+	}
+}
+
+func TestAgentContainerEntrypointDoesNotWaitForTailscaleWhenSwapURLExplicit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	confDir := filepath.Join(root, "supervisor", "conf.d")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
+	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+	writeExecutable(t, filepath.Join(binDir, "tailscaled"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "tailscale"), "#!/bin/sh\nexit 0\n")
+
+	runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                        binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":         "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN":         "agent-token",
+		"LLMSWAP_SWAP_URL":            "https://worker.example.invalid:8443",
+		"LLMSWAP_ENABLE_TAILSCALE":    "1",
+		"LLMSWAP_TAILSCALE_AUTHKEY":   "tskey-test",
+		"LLMSWAP_SUPERVISOR_CONF_DIR": confDir,
+	})
+
+	agentWrapper, err := os.ReadFile(filepath.Join(binDir, "agent-supervisor.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentWrapperText := string(agentWrapper)
+	assertContains(t, agentWrapperText, "wait_for_tailscale=\"0\"")
 }
 
 func runAgentEntrypoint(t *testing.T, root string, extraEnv map[string]string) string {

@@ -163,3 +163,42 @@ func TestPressureDemandScoreCountsQueuePressureTowardSustainedDemand(t *testing.
 		t.Fatalf("DemandScore = 0, want positive score from sustained queue pressure")
 	}
 }
+
+func TestPressureDemandScoreQueueFullTriggersLowPriorityScaleOut(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tracker := NewPressureTracker(5 * time.Minute)
+	for i := 0; i < minScaleOutRequests; i++ {
+		tracker.RecordQueue(PressureQueueObservation{
+			Time:             now.Add(time.Duration(i) * time.Second),
+			Model:            "qwen",
+			Result:           QueueResultFull,
+			ReadyReplicas:    1,
+			OccupiedReplicas: 1,
+			ActiveBefore:     1,
+		})
+	}
+
+	snapshot := tracker.Model("qwen", now.Add(time.Minute))
+	score := DemandScore(snapshot, DemandScoreInput{Priority: 10, ReadyReplicas: 1, OccupiedReplicas: 1, Active: 1})
+	if score < minScaleOutScore {
+		t.Fatalf("DemandScore = %d, want at least %d from repeated queue_full even for low priority model", score, minScaleOutScore)
+	}
+}
+
+func TestPressureDemandScoreNoReadyTriggersColdStartWarm(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tracker := NewPressureTracker(5 * time.Minute)
+	tracker.RecordQueue(PressureQueueObservation{
+		Time:             now,
+		Model:            "cold",
+		Result:           QueueResultNoReady,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+	})
+
+	snapshot := tracker.Model("cold", now.Add(time.Second))
+	score := DemandScore(snapshot, DemandScoreInput{Priority: 10, ReadyReplicas: 0, OccupiedReplicas: 0})
+	if score < minScaleOutScore {
+		t.Fatalf("DemandScore = %d, want at least %d from no-ready cold start request", score, minScaleOutScore)
+	}
+}

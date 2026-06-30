@@ -57,6 +57,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	exclude := make(map[string]bool)
 	var lastDispatchFailure *proxyDispatchFailure
 	var lastQueueErr error
+	var lastScheduleDecision ScheduleDecision
+	var lastScheduleErr error
 	for dispatchAttempts := 0; dispatchAttempts < s.proxyAttempts; {
 		if err := r.Context().Err(); err != nil {
 			return
@@ -70,6 +72,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			Cooldowns: s.replicaCooldowns.Snapshot(now),
 		}).PickDecision(model, now, exclude)
 		if err != nil {
+			lastScheduleDecision = decision
+			lastScheduleErr = err
 			break
 		}
 		worker := decision.Worker
@@ -188,6 +192,9 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		s.observeQueueError(model, lastQueueErr)
 		writeQueueError(w, lastQueueErr)
 		return
+	}
+	if lastScheduleErr != nil {
+		s.observeNoReady(model, requestID, lastScheduleDecision)
 	}
 	protocol.WriteOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_worker", "no healthy worker is available for the requested model")
 }
@@ -484,6 +491,19 @@ func (s *Server) observeQueueError(model string, err error) {
 		return
 	}
 	s.metrics.ObserveQueueEvent(model, "queue_full")
+}
+
+func (s *Server) observeNoReady(model string, requestID string, decision ScheduleDecision) {
+	if decision.MaxLoaded <= 0 || decision.ReadyReplicas > 0 {
+		return
+	}
+	stats := QueueAcquireStats{Result: QueueResultNoReady}
+	replicas := queueReplicaStats{
+		readyReplicas:    decision.ReadyReplicas,
+		occupiedReplicas: decision.OccupiedReplicas,
+		maxLoaded:        decision.MaxLoaded,
+	}
+	s.observeQueue(model, requestID, "model", "model:"+model, stats, replicas)
 }
 
 func (s *Server) observeQueue(model, requestID, keyType, key string, stats QueueAcquireStats, replicas queueReplicaStats) {

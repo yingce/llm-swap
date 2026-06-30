@@ -36,3 +36,53 @@ func TestDockerfileAgentDoesNotPersistBuildOnlyEnvIntoRuntimeImage(t *testing.T)
 		}
 	}
 }
+
+func TestDockerfileAgentCopiesAgentBinaryAfterHeavyInstallLayers(t *testing.T) {
+	repo := repoRoot(t)
+	path := filepath.Join(repo, "Dockerfile.agent")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+
+	copyBinary := "COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent"
+	runtimeStage := "--only runtime"
+	tailscaleStage := "--only tailscale"
+	agentStage := "--only agent"
+	supervisorStage := "--only supervisor"
+
+	copyIdx := strings.Index(text, copyBinary)
+	if copyIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", copyBinary)
+	}
+	runtimeIdx := strings.Index(text, runtimeStage)
+	if runtimeIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", runtimeStage)
+	}
+	tailscaleIdx := strings.Index(text, tailscaleStage)
+	if tailscaleIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", tailscaleStage)
+	}
+	agentIdx := strings.Index(text, agentStage)
+	if agentIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", agentStage)
+	}
+	supervisorIdx := strings.Index(text, supervisorStage)
+	if supervisorIdx == -1 {
+		t.Fatalf("Dockerfile.agent missing %q", supervisorStage)
+	}
+
+	if copyIdx <= runtimeIdx {
+		t.Fatalf("agent binary copy should happen after runtime install layers to preserve cache")
+	}
+	if copyIdx <= tailscaleIdx {
+		t.Fatalf("agent binary copy should happen after tailscale install layer to preserve cache")
+	}
+	if copyIdx >= agentIdx {
+		t.Fatalf("agent binary copy should happen before the agent install stage")
+	}
+	if copyIdx >= supervisorIdx {
+		t.Fatalf("agent binary copy should happen before the supervisor stage")
+	}
+}

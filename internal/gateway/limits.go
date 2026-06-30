@@ -15,6 +15,7 @@ const (
 	QueueResultAdmittedAfterWait = "admitted_after_wait"
 	QueueResultFull              = "queue_full"
 	QueueResultTimeout           = "queue_timeout"
+	QueueResultNoReady           = "no_ready"
 )
 
 type QueueLimiter struct {
