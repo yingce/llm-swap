@@ -34,8 +34,6 @@ LLMSWAP_LLAMA_CPP_CUDA="${LLMSWAP_LLAMA_CPP_CUDA:-auto}"
 LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH:-sm89}"
 LLMSWAP_RUNTIME_CACHE_DIR="${LLMSWAP_RUNTIME_CACHE_DIR:-$LLMSWAP_ROOT/cache/runtimes}"
 LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-vllm[audio]}"
-LLMSWAP_VLLM_VERSION="${LLMSWAP_VLLM_VERSION:-0.24.0}"
-LLMSWAP_VLLM_WHEEL_URL="${LLMSWAP_VLLM_WHEEL_URL:-}"
 LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE:-sglang}"
 UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 export UV_CACHE_DIR="$LLMSWAP_UV_CACHE_DIR"
@@ -543,33 +541,12 @@ install_multimodal_audio_deps() {
   run uv pip install --python "$python" librosa soundfile torchcodec av
 }
 
-vllm_wheel_url() {
-  local backend="$1"
-  if [[ -n "$LLMSWAP_VLLM_WHEEL_URL" ]]; then
-    printf '%s\n' "$LLMSWAP_VLLM_WHEEL_URL"
-    return 0
-  fi
-  case "$backend" in
-    cu128|cu130) ;;
-    *) return 0 ;;
-  esac
-  local arch
-  arch="$(uname -m)"
-  printf 'https://github.com/vllm-project/vllm/releases/download/v%s/vllm-%s+%s-cp38-abi3-manylinux_2_35_%s.whl\n' "$LLMSWAP_VLLM_VERSION" "$LLMSWAP_VLLM_VERSION" "$backend" "$arch"
-}
-
 install_vllm() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/vllm"
   run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
   install_torch "$venv/bin/python" "$backend"
-  local wheel_url
-  wheel_url="$(vllm_wheel_url "$backend")"
-  if [[ -n "$wheel_url" ]]; then
-    run uv pip install --python "$venv/bin/python" "$wheel_url" --extra-index-url "$(torch_index_url_for_backend "$backend")"
-  else
-    run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE" --torch-backend="$backend"
-  fi
+  run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE"
   install_multimodal_audio_deps "$venv/bin/python"
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/vllm.server" "$venv/bin/python" vllm
   write_python_wrapper "$LLMSWAP_ROOT/bin/vllm-python" "$venv/bin/python"

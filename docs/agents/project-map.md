@@ -361,9 +361,9 @@ It can:
 - create uv-managed Python venvs for vLLM and SGLang using Python 3.12 by
   default;
 - install torch for vLLM with CUDA-aware PyTorch index selection;
-- install vLLM from CUDA-specific release wheels for `cu128` and `cu130` by
-  default, because the plain PyPI vLLM package may resolve to a different CUDA
-  runtime than the selected PyTorch backend;
+- install vLLM from `LLMSWAP_VLLM_PACKAGE` without passing a vLLM CUDA backend
+  or CUDA-specific wheel URL; CUDA selection is limited to the torch install
+  step;
 - install audio parser dependencies separately for vLLM so OpenAI audio payloads
   are supported;
 - install SGLang and patch MiniCPMV4.6 config compatibility;
@@ -389,8 +389,7 @@ Important env vars:
 - `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
 - `LLMSWAP_TORCH_INDEX_URL`
 - `LLMSWAP_TORCH_INDEX_URL_BASE`
-- `LLMSWAP_VLLM_VERSION`
-- `LLMSWAP_VLLM_WHEEL_URL`
+- `LLMSWAP_VLLM_PACKAGE`
 
 ## Agent Container Image
 
