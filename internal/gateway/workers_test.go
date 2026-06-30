@@ -339,6 +339,39 @@ func TestWorkerRegistryMarksStaleWorkerUnavailable(t *testing.T) {
 	}
 }
 
+func TestWorkerRegistryPrunesOfflineWorkerAfterRetention(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+		Capacity:     config.WorkerDefaults{MaxConcurrency: 2, MaxQueue: 4},
+		NeedsRestart: true,
+	}, now)
+	reg.manualDrains["gpu-01"] = true
+	reg.active["gpu-01"] = 1
+
+	before := reg.Snapshot(now.Add(10*time.Minute - time.Second))
+	if len(before) != 1 || before[0].ID != "gpu-01" {
+		t.Fatalf("snapshot before retention = %+v, want gpu-01 retained", before)
+	}
+
+	after := reg.Snapshot(now.Add(10*time.Minute + time.Second))
+	if len(after) != 0 {
+		t.Fatalf("snapshot after retention = %+v, want offline worker pruned", after)
+	}
+	if _, ok := reg.workers["gpu-01"]; ok {
+		t.Fatal("offline worker should be removed from registry")
+	}
+	if _, ok := reg.manualDrains["gpu-01"]; ok {
+		t.Fatal("offline worker manual drain should be removed")
+	}
+	if _, ok := reg.active["gpu-01"]; ok {
+		t.Fatal("offline worker active count should be removed")
+	}
+}
+
 func TestHeartbeatDrainResponseAllowsRestartWhenIdle(t *testing.T) {
 	reg := NewWorkerRegistry(6 * time.Second)
 	resp := reg.UpsertHeartbeat(protocol.HeartbeatRequest{

@@ -134,6 +134,10 @@ disabled the gateway still runs with no external database.
   - In-memory worker registry.
   - Tracks heartbeat state, active gateway-owned requests, drain state,
     scrape backoff, artifacts, and running models.
+  - Workers become stale and unavailable for routing after 6 seconds without a
+    heartbeat. If they still have not reported after 10 minutes, registry
+    snapshots prune them from gateway/UI state and clear associated active/drain
+    bookkeeping.
 
 - `internal/gateway/reconcile.go`
   - Loaded-replica reconciler.

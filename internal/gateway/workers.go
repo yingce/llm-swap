@@ -17,6 +17,7 @@ const (
 
 const workerScrapeFailureBackoffThreshold = 3
 const workerScrapeFailureBackoff = 30 * time.Second
+const workerOfflineRetention = 10 * time.Minute
 
 type Worker struct {
 	ID                 string
@@ -126,15 +127,26 @@ func (r *WorkerRegistry) Healthy(id string, now time.Time) bool {
 }
 
 func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
+	r.pruneOfflineLocked(now)
 	out := make([]Worker, 0, len(r.workers))
 	for _, w := range r.workers {
 		out = append(out, cloneWorker(*w))
-		_ = now
 	}
 	return out
+}
+
+func (r *WorkerRegistry) pruneOfflineLocked(now time.Time) {
+	for workerID, worker := range r.workers {
+		if now.Sub(worker.LastHeartbeat) <= workerOfflineRetention {
+			continue
+		}
+		delete(r.workers, workerID)
+		delete(r.active, workerID)
+		delete(r.manualDrains, workerID)
+	}
 }
 
 func (r *WorkerRegistry) ActiveSnapshot() map[string]int {
