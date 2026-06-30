@@ -400,7 +400,9 @@ would normally install on a host.
 
 Important properties:
 
-- Default base image is `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`.
+- Default base image is `nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04`.
+  vLLM's flashinfer path can JIT-compile CUDA ops at model startup, so the
+  default image must include CUDA development headers and `nvcc`.
 - The Dockerfile intentionally builds a stable `runtime-base` stage before the
   Go `agent-build` stage. Heavy base, Python, vLLM, SGLang, llama.cpp,
   Tailscale, and llama-swap release layers must not copy `cmd/` or `internal/`;
@@ -437,7 +439,7 @@ Typical build:
 ```bash
 docker build \
   -f Dockerfile.agent \
-  --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 \
   --build-arg LLMSWAP_CUDA_VERSION=12.8 \
   --build-arg LLMSWAP_RUNTIME=all \
   --build-arg LLAMA_SWAP_REF=v232 \

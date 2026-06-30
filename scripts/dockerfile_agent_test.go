@@ -37,6 +37,24 @@ func TestDockerfileAgentDoesNotPersistBuildOnlyEnvIntoRuntimeImage(t *testing.T)
 	}
 }
 
+func TestDockerfileAgentDefaultsToCudaDevelImage(t *testing.T) {
+	repo := repoRoot(t)
+	path := filepath.Join(repo, "Dockerfile.agent")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+
+	expected := "ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04"
+	if !strings.Contains(text, expected) {
+		t.Fatalf("Dockerfile.agent default base image should include CUDA devel headers and nvcc; missing %q", expected)
+	}
+	if strings.Contains(text, "ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04") {
+		t.Fatalf("Dockerfile.agent should not default to the CUDA runtime image because vLLM flashinfer JIT needs CUDA development headers")
+	}
+}
+
 func TestDockerfileAgentCopiesAgentBinaryAfterHeavyInstallLayers(t *testing.T) {
 	repo := repoRoot(t)
 	path := filepath.Join(repo, "Dockerfile.agent")
