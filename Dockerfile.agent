@@ -83,6 +83,7 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
           UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" \
           UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" \
           UV_LINK_MODE=copy \
+ && sed -i 's/\r$//' /usr/local/bin/install-worker.sh \
  && chmod 0755 /usr/local/bin/install-worker.sh \
  && /usr/local/bin/install-worker.sh \
       --root "${LLMSWAP_ROOT}" \
@@ -139,7 +140,8 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
 COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
 COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
 
-RUN chmod 0755 /usr/local/bin/agent-container-entrypoint.sh \
+RUN sed -i 's/\r$//' /usr/local/bin/agent-container-entrypoint.sh \
+ && chmod 0755 /usr/local/bin/agent-container-entrypoint.sh \
  && /usr/local/bin/install-worker.sh \
       --root "${LLMSWAP_ROOT}" \
       --only agent \
