@@ -434,8 +434,8 @@ Important properties:
   different mirror or pinned tarball is required.
 - On container start, `scripts/agent-container-entrypoint.sh` restores
   `/opt/llmswap/bin/llama-swap` from the bundled binary by default.
-- If runtime env `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` or `LLAMA_SWAP_DOWNLOAD_URL`
-  is set, entrypoint downloads that binary and replaces the active
+- If runtime env `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` is set, entrypoint downloads
+  that binary and replaces the active
   `/opt/llmswap/bin/llama-swap` before starting supervisor.
 
 Typical build:
@@ -492,7 +492,7 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` (optional runtime override for the active
   llama-swap binary; when omitted, the build-bundled binary is used)
 - `LLMSWAP_SWAP_PORT`
-- `LLMSWAP_SWAP_URL` or `SWAP_URL` (optional explicit public worker URL)
+- `LLMSWAP_SWAP_URL` (optional explicit public worker URL)
 - `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`
 - `LLMSWAP_ENABLE_TAILSCALE=1` and `LLMSWAP_TAILSCALE_AUTHKEY` only when
   running Tailscale in the same container
@@ -508,8 +508,8 @@ the same public names directly, so `LLMSWAP_AGENT_ID`,
 `LLMSWAP_AGENT_TAGS`, `LLMSWAP_GATEWAY_URL`, `LLMSWAP_AGENT_TOKEN`,
 `LLMSWAP_LLAMA_SWAP_TOKEN`, `LLMSWAP_SWAP_URL`, `LLMSWAP_SWAP_PORT`,
 `LLMSWAP_MODEL_ROOT`, and `LLMSWAP_LLAMA_SWAP_CONFIG` work even without
-generating `agent.yaml`. Legacy `LLM_SWAP_AGENT_*` names are still accepted as
-fallback aliases, but should not be used in new docs or deployment examples.
+generating `agent.yaml`. Legacy `LLM_SWAP_AGENT_*`, bare `SWAP_URL`, and bare
+`TAILSCALE_AUTHKEY` aliases are not accepted.
 
 Gateway runtime envs should also use `LLMSWAP_*`:
 
@@ -520,8 +520,8 @@ Gateway runtime envs should also use `LLMSWAP_*`:
 - `LLMSWAP_AGENT_TOKEN`
 - `LLMSWAP_LLAMA_SWAP_TOKEN`
 
-Legacy gateway aliases such as `LLM_SWAP_GATEWAY_TOKENS_AGENT` remain accepted
-for compatibility only.
+Legacy gateway aliases such as `LLM_SWAP_GATEWAY_TOKENS_AGENT` are not
+accepted. Keep gateway runtime envs on the `LLMSWAP_*` names above.
 
 Default container startup path:
 
@@ -534,7 +534,7 @@ Default container startup path:
   hostname setup after the socket is ready;
 - rewrites the `llmswap-agent` supervisor program to start through
   `agent-supervisor.sh`. When Tailscale is requested and no explicit
-  `LLMSWAP_SWAP_URL` / `SWAP_URL` is configured, this wrapper waits for
+  `LLMSWAP_SWAP_URL` is configured, this wrapper waits for
   `tailscale ip -4` before starting the agent so the agent advertises the
   tailnet URL instead of falling back to the container or host local IP;
 - starts `supervisord` in the foreground, which manages `llama-swap` and

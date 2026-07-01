@@ -53,7 +53,7 @@ func TestResolveSwapURLFallsBackToLocalIP(t *testing.T) {
 }
 
 func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
-	unsetEnv(t, "SWAP_URL", "LLM_SWAP_AGENT_SWAP_URL", "LLM_SWAP_AGENT_LLAMA_SWAP_URL")
+	unsetEnv(t, "LLMSWAP_SWAP_URL")
 
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
 		ConfigPath: filepath.Join(t.TempDir(), "missing-agent.yaml"),
@@ -123,9 +123,9 @@ agent:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LLM_SWAP_AGENT_ID", "env-id")
-	t.Setenv("LLM_SWAP_AGENT_GATEWAY_URL", "http://env-gateway")
-	t.Setenv("SWAP_URL", "http://env-worker:8081")
+	t.Setenv("LLMSWAP_AGENT_ID", "env-id")
+	t.Setenv("LLMSWAP_GATEWAY_URL", "http://env-gateway")
+	t.Setenv("LLMSWAP_SWAP_URL", "http://env-worker:8081")
 
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
 		ConfigPath: configPath,
@@ -150,7 +150,7 @@ agent:
 		t.Fatalf("gateway_url = %q, want CLI value", cfg.Agent.GatewayURL)
 	}
 	if cfg.Agent.LlamaSwapURL != "http://env-worker:8081" {
-		t.Fatalf("llama_swap_url = %q, want SWAP_URL env override", cfg.Agent.LlamaSwapURL)
+		t.Fatalf("llama_swap_url = %q, want LLMSWAP_SWAP_URL env override", cfg.Agent.LlamaSwapURL)
 	}
 	if cfg.Agent.Token != "config-token" || cfg.Agent.LlamaSwapToken != "config-worker-token" {
 		t.Fatalf("tokens = %q/%q, want config tokens", cfg.Agent.Token, cfg.Agent.LlamaSwapToken)
@@ -208,7 +208,7 @@ func TestLoadAgentRuntimeAcceptsLLMSWAPEnvNames(t *testing.T) {
 	}
 }
 
-func TestLoadAgentRuntimePrefersLLMSWAPEnvOverLegacyLLMSwapAgentEnv(t *testing.T) {
+func TestLoadAgentRuntimeIgnoresLegacyWhenLLMSWAPEnvIsPresent(t *testing.T) {
 	t.Setenv("LLMSWAP_AGENT_CONFIG", filepath.Join(t.TempDir(), "missing-agent.yaml"))
 	t.Setenv("LLMSWAP_AGENT_ID", "public-id")
 	t.Setenv("LLM_SWAP_AGENT_ID", "legacy-id")
@@ -223,18 +223,18 @@ func TestLoadAgentRuntimePrefersLLMSWAPEnvOverLegacyLLMSwapAgentEnv(t *testing.T
 		t.Fatalf("LoadAgentRuntime returned error: %v", err)
 	}
 	if cfg.Agent.ID != "public-id" {
-		t.Fatalf("id = %q, want LLMSWAP env to win", cfg.Agent.ID)
+		t.Fatalf("id = %q, want legacy env ignored", cfg.Agent.ID)
 	}
 	if cfg.Agent.Token != "public-token" {
-		t.Fatalf("token = %q, want LLMSWAP env to win", cfg.Agent.Token)
+		t.Fatalf("token = %q, want legacy env ignored", cfg.Agent.Token)
 	}
 }
 
-func TestLoadAgentRuntimeUsesConfigPathFromEnv(t *testing.T) {
+func TestLoadAgentRuntimeIgnoresLegacyAgentEnvAliases(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent.yaml")
 	if err := os.WriteFile(configPath, []byte(`
 agent:
-  id: env-config-id
+  id: config-id
   tags: [gpu-4090]
   gateway_url: http://gateway
   token: agent-token
@@ -243,14 +243,25 @@ agent:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LLM_SWAP_AGENT_CONFIG", configPath)
+	t.Setenv("LLMSWAP_AGENT_CONFIG", configPath)
+	t.Setenv("LLM_SWAP_AGENT_CONFIG", filepath.Join(t.TempDir(), "legacy-agent.yaml"))
+	t.Setenv("LLM_SWAP_AGENT_ID", "legacy-id")
+	t.Setenv("LLM_SWAP_AGENT_TOKEN", "legacy-token")
+	t.Setenv("LLM_SWAP_AGENT_SWAP_URL", "http://legacy-worker:6006")
+	t.Setenv("SWAP_URL", "http://legacy-short-worker:6006")
 
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{})
 	if err != nil {
 		t.Fatalf("LoadAgentRuntime returned error: %v", err)
 	}
-	if cfg.Agent.ID != "env-config-id" {
-		t.Fatalf("id = %q, want env config file value", cfg.Agent.ID)
+	if cfg.Agent.ID != "config-id" {
+		t.Fatalf("id = %q, want legacy env aliases ignored", cfg.Agent.ID)
+	}
+	if cfg.Agent.Token != "agent-token" {
+		t.Fatalf("token = %q, want legacy env aliases ignored", cfg.Agent.Token)
+	}
+	if cfg.Agent.LlamaSwapURL != "http://worker:8081" {
+		t.Fatalf("llama_swap_url = %q, want legacy env aliases ignored", cfg.Agent.LlamaSwapURL)
 	}
 }
 

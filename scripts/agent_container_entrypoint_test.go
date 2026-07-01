@@ -159,7 +159,7 @@ func TestAgentContainerEntrypointBootstrapsConfigFromRuntimeEnv(t *testing.T) {
 	}
 }
 
-func TestAgentContainerEntrypointAllowsNativeAgentEnvWithoutConfigFile(t *testing.T) {
+func TestAgentContainerEntrypointRejectsLegacyAgentEnvWithoutConfigFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
 	}
@@ -171,9 +171,8 @@ func TestAgentContainerEntrypointAllowsNativeAgentEnvWithoutConfigFile(t *testin
 	}
 	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
 	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
-	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
 
-	out := runAgentEntrypointCommand(t, root, map[string]string{
+	out, err := runAgentEntrypointCommandResult(t, root, map[string]string{
 		"PATH":                       binDir + ":/usr/bin:/bin",
 		"LLM_SWAP_AGENT_ID":          "native-worker-01",
 		"LLM_SWAP_AGENT_TAGS":        "gpu-4090,prod",
@@ -181,15 +180,15 @@ func TestAgentContainerEntrypointAllowsNativeAgentEnvWithoutConfigFile(t *testin
 		"LLM_SWAP_AGENT_TOKEN":       "agent-token",
 		"LLM_SWAP_AGENT_SWAP_URL":    "https://worker.example.invalid:8443",
 	})
-	if strings.TrimSpace(out) != "supervisord-started" {
-		t.Fatalf("entrypoint output = %q, want supervisord-started", out)
+	if err == nil {
+		t.Fatalf("entrypoint succeeded with legacy env aliases, output:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(root, "agent.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("agent.yaml exists or stat failed unexpectedly: %v", err)
+	if !strings.Contains(out, "missing required env LLMSWAP_GATEWAY_URL") {
+		t.Fatalf("entrypoint output = %q, want missing LLMSWAP_GATEWAY_URL", out)
 	}
 }
 
-func TestAgentContainerEntrypointExportsNativeAgentDefaults(t *testing.T) {
+func TestAgentContainerEntrypointDoesNotExportLegacyAgentDefaults(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
 	}
@@ -203,23 +202,19 @@ func TestAgentContainerEntrypointExportsNativeAgentDefaults(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
 
 	out := runAgentEntrypointCommand(t, root, map[string]string{
-		"PATH":                       binDir + ":/usr/bin:/bin",
-		"LLM_SWAP_AGENT_ID":          "native-worker-01",
-		"LLM_SWAP_AGENT_TAGS":        "gpu-4090,prod",
-		"LLM_SWAP_AGENT_GATEWAY_URL": "https://gateway.example.invalid",
-		"LLM_SWAP_AGENT_TOKEN":       "agent-token",
+		"PATH":                 binDir + ":/usr/bin:/bin",
+		"LLMSWAP_AGENT_ID":     "worker-01",
+		"LLMSWAP_AGENT_TAGS":   "gpu-4090,prod",
+		"LLMSWAP_GATEWAY_URL":  "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN":  "agent-token",
+		"LLMSWAP_FORCE_CONFIG": "1",
+		"LLMSWAP_SWAP_PORT":    "6006",
 	}, "env")
-	for _, want := range []string{
-		"LLM_SWAP_AGENT_MODEL_ROOT=" + filepath.Join(root, "models"),
-		"LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG=" + filepath.Join(root, "llama-swap.yaml"),
-		"LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE=supervisor",
-		"LLM_SWAP_AGENT_RESTART_COMMAND=supervisorctl restart llmswap-llama-swap",
-		"LLM_SWAP_AGENT_SWAP_PORT=6006",
-		"LLM_SWAP_AGENT_GATEWAY_URL=https://gateway.example.invalid",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("env output missing %q:\n%s", want, out)
-		}
+	if strings.Contains(out, "LLM_SWAP_AGENT_") {
+		t.Fatalf("env output contains legacy agent env:\n%s", out)
+	}
+	if !strings.Contains(out, "LLMSWAP_GATEWAY_URL=https://gateway.example.invalid") {
+		t.Fatalf("env output missing standard gateway env:\n%s", out)
 	}
 }
 
@@ -243,13 +238,13 @@ func TestAgentContainerEntrypointStartsTailscaleAtRuntimeWhenRequested(t *testin
 	writeExecutable(t, filepath.Join(binDir, "tailscaled"), "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, filepath.Join(binDir, "tailscale"), "#!/bin/sh\nexit 0\n")
 	out := runAgentEntrypointCommand(t, root, map[string]string{
-		"PATH":                       binDir + ":/usr/bin:/bin",
-		"LLMSWAP_GATEWAY_URL":        "https://gateway.example.invalid",
-		"LLMSWAP_AGENT_TOKEN":        "agent-token",
-		"LLMSWAP_ENABLE_TAILSCALE":   "1",
-		"LLMSWAP_TAILSCALE_AUTHKEY":  "tskey-test",
-		"LLMSWAP_TAILSCALE_HOSTNAME": "worker-ts",
-		"LLMSWAP_TAILSCALE_SOCKET":   filepath.Join(root, "run", "tailscaled.sock"),
+		"PATH":                        binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":         "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN":         "agent-token",
+		"LLMSWAP_ENABLE_TAILSCALE":    "1",
+		"LLMSWAP_TAILSCALE_AUTHKEY":   "tskey-test",
+		"LLMSWAP_TAILSCALE_HOSTNAME":  "worker-ts",
+		"LLMSWAP_TAILSCALE_SOCKET":    filepath.Join(root, "run", "tailscaled.sock"),
 		"LLMSWAP_SUPERVISOR_CONF_DIR": confDir,
 		"LLMSWAP_SUPERVISORD_CONFIG":  filepath.Join(root, "supervisor", "supervisord.conf"),
 	})
@@ -372,19 +367,28 @@ func runAgentEntrypoint(t *testing.T, root string, extraEnv map[string]string) s
 
 func runAgentEntrypointCommand(t *testing.T, root string, extraEnv map[string]string, args ...string) string {
 	t.Helper()
+	out, err := runAgentEntrypointCommandResult(t, root, extraEnv, args...)
+	if err != nil {
+		t.Fatalf("agent-container-entrypoint.sh failed: %v\n%s", err, out)
+	}
+	return out
+}
+
+func runAgentEntrypointCommandResult(t *testing.T, root string, extraEnv map[string]string, args ...string) (string, error) {
+	t.Helper()
 	repo := repoRoot(t)
 	script := filepath.Join(repo, "scripts", "agent-container-entrypoint.sh")
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
 	cmd.Dir = repo
 
 	envMap := map[string]string{
-		"HOME":                       t.TempDir(),
-		"PATH":                       "/usr/bin:/bin",
-		"LLMSWAP_ROOT":               root,
-		"LLMSWAP_BIN_DIR":            filepath.Join(root, "bin"),
-		"LLMSWAP_AGENT_CONFIG":       filepath.Join(root, "agent.yaml"),
-		"LLMSWAP_LOG_DIR":            filepath.Join(root, "logs"),
-		"LLMSWAP_MODEL_ROOT":         filepath.Join(root, "models"),
+		"HOME":                        t.TempDir(),
+		"PATH":                        "/usr/bin:/bin",
+		"LLMSWAP_ROOT":                root,
+		"LLMSWAP_BIN_DIR":             filepath.Join(root, "bin"),
+		"LLMSWAP_AGENT_CONFIG":        filepath.Join(root, "agent.yaml"),
+		"LLMSWAP_LOG_DIR":             filepath.Join(root, "logs"),
+		"LLMSWAP_MODEL_ROOT":          filepath.Join(root, "models"),
 		"LLMSWAP_SUPERVISOR_CONF_DIR": filepath.Join(root, "supervisor", "conf.d"),
 		"LLMSWAP_SUPERVISORD_CONFIG":  filepath.Join(root, "supervisor", "supervisord.conf"),
 	}
@@ -394,10 +398,7 @@ func runAgentEntrypointCommand(t *testing.T, root string, extraEnv map[string]st
 
 	cmd.Env = append(os.Environ(), flattenEnv(envMap)...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("agent-container-entrypoint.sh failed: %v\n%s", err, string(out))
-	}
-	return string(out)
+	return string(out), err
 }
 
 func writeExecutable(t *testing.T, path string, content string) {

@@ -30,7 +30,7 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
 	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git")
-	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git ffmpeg libavdevice58")
+	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git build-essential ninja-build ffmpeg libavdevice58")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llama-swap-supervisor.sh")
 	assertNotContains(t, out, "while [[ ! -s \"$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do")
 	assertContains(t, out, "models: {}")

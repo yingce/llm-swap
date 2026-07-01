@@ -37,7 +37,7 @@ func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (Gatewa
 	flags := pflag.NewFlagSet("gateway", pflag.ContinueOnError)
 	configDefault := opts.ConfigPath
 	if configDefault == "" {
-		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_GATEWAY_CONFIG"), os.Getenv("LLM_SWAP_GATEWAY_CONFIG"), DefaultGatewayConfigPath)
+		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_GATEWAY_CONFIG"), DefaultGatewayConfigPath)
 	}
 	flags.String("config", configDefault, "gateway config path")
 	flags.String("addr", "", "listen address")
@@ -59,13 +59,13 @@ func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (Gatewa
 	}
 
 	v := viper.New()
-	_ = v.BindEnv("addr", "LLMSWAP_GATEWAY_ADDR", "LLM_SWAP_GATEWAY_ADDR")
-	_ = v.BindEnv("proxy_attempts", "LLMSWAP_GATEWAY_PROXY_ATTEMPTS", "LLM_SWAP_GATEWAY_PROXY_ATTEMPTS")
-	_ = v.BindEnv("gateway.listen_addr", "LLMSWAP_GATEWAY_LISTEN_ADDR", "LLM_SWAP_GATEWAY_GATEWAY_LISTEN_ADDR")
-	_ = v.BindEnv("gateway.proxy_attempts", "LLMSWAP_GATEWAY_PROXY_ATTEMPTS", "LLM_SWAP_GATEWAY_GATEWAY_PROXY_ATTEMPTS")
-	_ = v.BindEnv("tokens.client", "LLMSWAP_CLIENT_TOKEN", "LLMSWAP_GATEWAY_TOKENS_CLIENT", "LLM_SWAP_GATEWAY_TOKENS_CLIENT")
-	_ = v.BindEnv("tokens.agent", "LLMSWAP_AGENT_TOKEN", "LLMSWAP_GATEWAY_TOKENS_AGENT", "LLM_SWAP_GATEWAY_TOKENS_AGENT")
-	_ = v.BindEnv("tokens.llama_swap", "LLMSWAP_LLAMA_SWAP_TOKEN", "LLMSWAP_GATEWAY_TOKENS_LLAMA_SWAP", "LLM_SWAP_GATEWAY_TOKENS_LLAMA_SWAP")
+	_ = v.BindEnv("addr", "LLMSWAP_GATEWAY_ADDR")
+	_ = v.BindEnv("proxy_attempts", "LLMSWAP_GATEWAY_PROXY_ATTEMPTS")
+	_ = v.BindEnv("gateway.listen_addr", "LLMSWAP_GATEWAY_LISTEN_ADDR")
+	_ = v.BindEnv("gateway.proxy_attempts", "LLMSWAP_GATEWAY_PROXY_ATTEMPTS")
+	_ = v.BindEnv("tokens.client", "LLMSWAP_CLIENT_TOKEN")
+	_ = v.BindEnv("tokens.agent", "LLMSWAP_AGENT_TOKEN")
+	_ = v.BindEnv("tokens.llama_swap", "LLMSWAP_LLAMA_SWAP_TOKEN")
 
 	overrides := GatewayRuntimeOverrides{
 		ListenAddr:    v.IsSet("addr") || v.IsSet("gateway.listen_addr"),

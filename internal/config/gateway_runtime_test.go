@@ -40,7 +40,7 @@ gateway:
 `)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LLM_SWAP_GATEWAY_TOKENS_CLIENT", "env-client-token")
+	t.Setenv("LLMSWAP_CLIENT_TOKEN", "env-client-token")
 
 	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{
 		ConfigPath: configPath,
@@ -102,7 +102,7 @@ func TestLoadGatewayRuntimeAcceptsLLMSWAPEnvNames(t *testing.T) {
 	}
 }
 
-func TestLoadGatewayRuntimePrefersLLMSWAPEnvOverLegacyLLMSwapGatewayEnv(t *testing.T) {
+func TestLoadGatewayRuntimeIgnoresLegacyLLMSwapGatewayEnv(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	if err := os.WriteFile(configPath, []byte(strings.Replace(validGatewayYAML(""), "  llama_swap: worker-token\n", "", 1)), 0o644); err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ tag_policies:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LLM_SWAP_GATEWAY_TOKENS_AGENT", "env-agent-token")
+	t.Setenv("LLMSWAP_AGENT_TOKEN", "env-agent-token")
 
 	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{ConfigPath: configPath})
 	if err != nil {
@@ -160,7 +160,7 @@ tag_policies:
 	}
 }
 
-func TestLoadGatewayRuntimeAcceptsShortGatewayEnvNames(t *testing.T) {
+func TestLoadGatewayRuntimeIgnoresLegacyShortGatewayEnvNames(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	if err := os.WriteFile(configPath, []byte(validGatewayYAML("")), 0o644); err != nil {
 		t.Fatal(err)
@@ -172,18 +172,18 @@ func TestLoadGatewayRuntimeAcceptsShortGatewayEnvNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadGatewayRuntime returned error: %v", err)
 	}
-	if runtime.ListenAddr != ":7070" {
-		t.Fatalf("listen addr = %q, want short env addr", runtime.ListenAddr)
+	if runtime.ListenAddr != ":8080" {
+		t.Fatalf("listen addr = %q, want legacy env ignored", runtime.ListenAddr)
 	}
-	if runtime.Config.Gateway.ProxyAttempts != 5 {
-		t.Fatalf("proxy attempts = %d, want short env value", runtime.Config.Gateway.ProxyAttempts)
+	if runtime.Config.Gateway.ProxyAttempts != 3 {
+		t.Fatalf("proxy attempts = %d, want legacy env ignored", runtime.Config.Gateway.ProxyAttempts)
 	}
-	if !runtime.Overrides.ListenAddr || !runtime.Overrides.ProxyAttempts {
-		t.Fatalf("overrides = %+v, want short env overrides marked", runtime.Overrides)
+	if runtime.Overrides.ListenAddr || runtime.Overrides.ProxyAttempts {
+		t.Fatalf("overrides = %+v, want legacy env ignored", runtime.Overrides)
 	}
 }
 
-func TestLoadGatewayRuntimeUsesConfigPathFromEnv(t *testing.T) {
+func TestLoadGatewayRuntimeIgnoresLegacyConfigPathEnv(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	if err := os.WriteFile(configPath, []byte(validGatewayYAML(`
 gateway:
@@ -193,12 +193,12 @@ gateway:
 	}
 	t.Setenv("LLM_SWAP_GATEWAY_CONFIG", configPath)
 
-	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{})
-	if err != nil {
-		t.Fatalf("LoadGatewayRuntime returned error: %v", err)
+	_, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{})
+	if err == nil {
+		t.Fatal("LoadGatewayRuntime succeeded with legacy config path env, want error")
 	}
-	if runtime.ListenAddr != ":9090" {
-		t.Fatalf("listen addr = %q, want env config file value", runtime.ListenAddr)
+	if !os.IsNotExist(err) {
+		t.Fatalf("LoadGatewayRuntime error = %v, want default config not found", err)
 	}
 }
 

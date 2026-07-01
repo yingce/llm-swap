@@ -18,7 +18,7 @@ LLMSWAP_AGENT_TOKEN="${LLMSWAP_AGENT_TOKEN:-}"
 LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-$LLMSWAP_AGENT_TOKEN}"
 LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_ENABLE_TAILSCALE="${LLMSWAP_ENABLE_TAILSCALE:-0}"
-LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
+LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-}"
 LLMSWAP_TAILSCALE_HOSTNAME="${LLMSWAP_TAILSCALE_HOSTNAME:-}"
 LLMSWAP_TAILSCALE_SOCKET="${LLMSWAP_TAILSCALE_SOCKET:-/run/tailscale/tailscaled.sock}"
 LLMSWAP_TAILSCALE_PORT="${LLMSWAP_TAILSCALE_PORT:-41641}"
@@ -73,50 +73,9 @@ render_tags_yaml() {
   printf '%s' "$rendered"
 }
 
-has_native_agent_env() {
-  [[ -n "${LLM_SWAP_AGENT_ID:-}" ||
-    -n "${LLM_SWAP_AGENT_TAGS:-}" ||
-    -n "${LLM_SWAP_AGENT_MODEL_ROOT:-}" ||
-    -n "${LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG:-}" ||
-    -n "${LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE:-}" ||
-    -n "${LLM_SWAP_AGENT_RESTART_COMMAND:-}" ||
-    -n "${LLM_SWAP_AGENT_SWAP_URL:-}" ||
-    -n "${LLM_SWAP_AGENT_LLAMA_SWAP_URL:-}" ||
-    -n "${LLM_SWAP_AGENT_SWAP_PORT:-}" ||
-    -n "${LLM_SWAP_AGENT_GATEWAY_URL:-}" ||
-    -n "${LLM_SWAP_AGENT_TOKEN:-}" ||
-    -n "${LLM_SWAP_AGENT_LLAMA_SWAP_TOKEN:-}" ]]
-}
-
-has_native_agent_bootstrap_env() {
-  has_native_agent_env &&
-    [[ -n "${LLM_SWAP_AGENT_GATEWAY_URL:-}" ]] &&
-    [[ -n "${LLM_SWAP_AGENT_TOKEN:-}" ]]
-}
-
-export_agent_env_defaults() {
-  export LLM_SWAP_AGENT_ID="${LLM_SWAP_AGENT_ID:-$LLMSWAP_AGENT_ID}"
-  export LLM_SWAP_AGENT_TAGS="${LLM_SWAP_AGENT_TAGS:-$LLMSWAP_AGENT_TAGS}"
-  export LLM_SWAP_AGENT_MODEL_ROOT="${LLM_SWAP_AGENT_MODEL_ROOT:-$LLMSWAP_MODEL_ROOT}"
-  export LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG="${LLM_SWAP_AGENT_LLAMA_SWAP_CONFIG:-$LLMSWAP_LLAMA_SWAP_CONFIG}"
-  export LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE="${LLM_SWAP_AGENT_LLAMA_SWAP_SERVICE:-supervisor}"
-  export LLM_SWAP_AGENT_RESTART_COMMAND="${LLM_SWAP_AGENT_RESTART_COMMAND:-supervisorctl restart llmswap-llama-swap}"
-  export LLM_SWAP_AGENT_SWAP_PORT="${LLM_SWAP_AGENT_SWAP_PORT:-$LLMSWAP_SWAP_PORT}"
-  export LLM_SWAP_AGENT_GATEWAY_URL="${LLM_SWAP_AGENT_GATEWAY_URL:-$LLMSWAP_GATEWAY_URL}"
-  export LLM_SWAP_AGENT_TOKEN="${LLM_SWAP_AGENT_TOKEN:-$LLMSWAP_AGENT_TOKEN}"
-  export LLM_SWAP_AGENT_LLAMA_SWAP_TOKEN="${LLM_SWAP_AGENT_LLAMA_SWAP_TOKEN:-$LLMSWAP_LLAMA_SWAP_TOKEN}"
-  if [[ -z "${LLM_SWAP_AGENT_SWAP_URL:-}" ]]; then
-    if [[ -n "${LLMSWAP_SWAP_URL:-}" ]]; then
-      export LLM_SWAP_AGENT_SWAP_URL="$LLMSWAP_SWAP_URL"
-    elif [[ -n "${LLM_SWAP_AGENT_LLAMA_SWAP_URL:-}" ]]; then
-      export LLM_SWAP_AGENT_SWAP_URL="$LLM_SWAP_AGENT_LLAMA_SWAP_URL"
-    fi
-  fi
-}
-
 write_agent_config() {
   local swap_url
-  swap_url="$(first_non_empty "${LLMSWAP_SWAP_URL:-}" "${LLM_SWAP_AGENT_SWAP_URL:-}" "${SWAP_URL:-}" || true)"
+  swap_url="$(first_non_empty "${LLMSWAP_SWAP_URL:-}" || true)"
   local tags_yaml
   tags_yaml="$(render_tags_yaml "$LLMSWAP_AGENT_TAGS")"
 
@@ -141,7 +100,7 @@ write_agent_config() {
 
 write_agent_supervisor_wrapper() {
   local explicit_swap_url wait_for_tailscale tailscale_bin wrapper
-  explicit_swap_url="$(first_non_empty "${LLMSWAP_SWAP_URL:-}" "${LLM_SWAP_AGENT_SWAP_URL:-}" "${SWAP_URL:-}" || true)"
+  explicit_swap_url="$(first_non_empty "${LLMSWAP_SWAP_URL:-}" || true)"
   wait_for_tailscale=0
   if [[ -z "${explicit_swap_url// }" && ( "$LLMSWAP_ENABLE_TAILSCALE" == "1" || -n "$LLMSWAP_TAILSCALE_AUTHKEY" || -n "$LLMSWAP_TAILSCALE_HOSTNAME" ) ]]; then
     wait_for_tailscale=1
@@ -194,7 +153,7 @@ startsecs=5
 priority=50
 stdout_logfile=$LLMSWAP_LOG_DIR/agent.out.log
 stderr_logfile=$LLMSWAP_LOG_DIR/agent.err.log
-environment=LLM_SWAP_AGENT_CONFIG="$LLMSWAP_AGENT_CONFIG"
+environment=LLMSWAP_AGENT_CONFIG="$LLMSWAP_AGENT_CONFIG"
 EOF
 }
 
@@ -271,7 +230,7 @@ EOF
 
 prepare_llama_swap_binary() {
   local runtime_download_url
-  runtime_download_url="$(first_non_empty "${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}" "${LLAMA_SWAP_DOWNLOAD_URL:-}" || true)"
+  runtime_download_url="$(first_non_empty "${LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL:-}" || true)"
 
   if [[ -n "${runtime_download_url// }" ]]; then
     local tmp_bin
@@ -326,14 +285,7 @@ main() {
     exit 1
   fi
 
-  local native_agent_env
-  native_agent_env=0
-  if has_native_agent_bootstrap_env; then
-    native_agent_env=1
-  fi
-  export_agent_env_defaults
-
-  if [[ "$LLMSWAP_FORCE_CONFIG" == "1" || ( ! -f "$LLMSWAP_AGENT_CONFIG" && "$native_agent_env" != "1" ) ]]; then
+  if [[ "$LLMSWAP_FORCE_CONFIG" == "1" || ! -f "$LLMSWAP_AGENT_CONFIG" ]]; then
     require_env_when_bootstrapping LLMSWAP_GATEWAY_URL "$LLMSWAP_GATEWAY_URL"
     require_env_when_bootstrapping LLMSWAP_AGENT_TOKEN "$LLMSWAP_AGENT_TOKEN"
     write_agent_config

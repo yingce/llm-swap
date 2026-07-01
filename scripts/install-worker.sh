@@ -20,7 +20,7 @@ LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-$LLMSWAP_AGENT_TOKEN}"
 LLMSWAP_SWAP_PORT="${LLMSWAP_SWAP_PORT:-6006}"
 LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG="${LLMSWAP_SIMULATE_EXISTING_AGENT_CONFIG:-0}"
-LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
+LLMSWAP_TAILSCALE_AUTHKEY="${LLMSWAP_TAILSCALE_AUTHKEY:-}"
 LLMSWAP_TAILSCALE_HOSTNAME="${LLMSWAP_TAILSCALE_HOSTNAME:-}"
 LLMSWAP_TAILSCALE_WAIT_SECONDS="${LLMSWAP_TAILSCALE_WAIT_SECONDS:-60}"
 LLMSWAP_UV_INSTALL_TIMEOUT="${LLMSWAP_UV_INSTALL_TIMEOUT:-120}"
@@ -324,7 +324,7 @@ LLMSWAP_ROOT=\"\${LLMSWAP_ROOT:-$LLMSWAP_ROOT}\"
 LLMSWAP_LLAMA_SWAP_BIN=\"\${LLMSWAP_LLAMA_SWAP_BIN:-\$LLMSWAP_ROOT/bin/llama-swap}\"
 LLMSWAP_LLAMA_SWAP_CONFIG=\"\${LLMSWAP_LLAMA_SWAP_CONFIG:-\$LLMSWAP_ROOT/llama-swap.yaml}\"
 LLMSWAP_SWAP_PORT=\"\${LLMSWAP_SWAP_PORT:-$LLMSWAP_SWAP_PORT}\"
-LLMSWAP_LLAMA_SWAP_TOKEN=\"\${LLMSWAP_LLAMA_SWAP_TOKEN:-\${LLM_SWAP_AGENT_LLAMA_SWAP_TOKEN:-\${LLMSWAP_AGENT_TOKEN:-\${LLM_SWAP_AGENT_TOKEN:-}}}}\"
+LLMSWAP_LLAMA_SWAP_TOKEN=\"\${LLMSWAP_LLAMA_SWAP_TOKEN:-\${LLMSWAP_AGENT_TOKEN:-}}\"
 
 if [[ ! -s \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; then
   mkdir -p \"\$(dirname \"\$LLMSWAP_LLAMA_SWAP_CONFIG\")\"
@@ -431,7 +431,7 @@ install_base_packages() {
   print_uv_info
   ensure_runtime_dirs
   if command -v apt-get >/dev/null 2>&1 || [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
-    local packages=(ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git ffmpeg)
+    local packages=(ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git build-essential ninja-build ffmpeg)
     if [[ "$LLMSWAP_DRY_RUN" == "1" ]] || apt-cache show libavdevice58 >/dev/null 2>&1; then
       packages+=(libavdevice58)
     fi
@@ -854,7 +854,7 @@ startsecs=5
 priority=50
 stdout_logfile=$LLMSWAP_ROOT/logs/agent.out.log
 stderr_logfile=$LLMSWAP_ROOT/logs/agent.err.log
-environment=LLM_SWAP_AGENT_CONFIG=\"$LLMSWAP_AGENT_CONFIG\""
+environment=LLMSWAP_AGENT_CONFIG=\"$LLMSWAP_AGENT_CONFIG\""
   write_file /etc/supervisor/conf.d/llmswap-llama-swap.conf "$llama_conf"
   write_file /etc/supervisor/conf.d/llmswap-agent.conf "$agent_conf"
   ensure_supervisord
