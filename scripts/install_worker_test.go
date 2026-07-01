@@ -36,6 +36,30 @@ func TestDockerfileAgentInstallsJITBuildTools(t *testing.T) {
 	assertContains(t, text, "ninja-build")
 }
 
+func TestDockerfileAgentConfiguresUvNetworkRetries(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join(repoRoot(t), "Dockerfile.agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(dockerfile)
+	for _, want := range []string{
+		"ARG UV_HTTP_RETRIES=10",
+		"ARG UV_HTTP_TIMEOUT=120",
+		"ARG UV_HTTP_CONNECT_TIMEOUT=30",
+		"UV_HTTP_RETRIES=\"${UV_HTTP_RETRIES}\"",
+		"UV_HTTP_TIMEOUT=\"${UV_HTTP_TIMEOUT}\"",
+		"UV_HTTP_CONNECT_TIMEOUT=\"${UV_HTTP_CONNECT_TIMEOUT}\"",
+	} {
+		assertContains(t, text, want)
+	}
+}
+
+func TestInstallWorkerExportsUvNetworkRetryDefaults(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--only", "base")
+
+	assertContains(t, out, "INFO uv_http_retries=10 uv_http_timeout=120 uv_http_connect_timeout=30")
+}
+
 func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
