@@ -360,6 +360,38 @@ func TestAgentContainerEntrypointDoesNotWaitForTailscaleWhenSwapURLExplicit(t *t
 	assertContains(t, agentWrapperText, "wait_for_tailscale=\"0\"")
 }
 
+func TestAgentContainerEntrypointWritesAgentPrestartHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	confDir := filepath.Join(root, "supervisor", "conf.d")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
+	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+
+	runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                        binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":         "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN":         "agent-token",
+		"LLMSWAP_SUPERVISOR_CONF_DIR": confDir,
+	})
+
+	agentWrapper, err := os.ReadFile(filepath.Join(binDir, "agent-supervisor.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentWrapperText := string(agentWrapper)
+	assertContains(t, agentWrapperText, `prestart_script="${LLMSWAP_AGENT_PRESTART_SCRIPT:-`+filepath.Join(root, "agent-prestart.sh")+`}"`)
+	assertContains(t, agentWrapperText, `source "$prestart_script"`)
+	assertContains(t, agentWrapperText, `exec "$agent_bin" --config "$agent_config"`)
+}
+
 func runAgentEntrypoint(t *testing.T, root string, extraEnv map[string]string) string {
 	t.Helper()
 	return runAgentEntrypointCommand(t, root, extraEnv, "cat", filepath.Join(root, "bin", "llama-swap"))

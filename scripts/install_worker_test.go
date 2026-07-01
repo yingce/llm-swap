@@ -207,6 +207,14 @@ func TestInstallWorkerOnlySupervisorSkipsRuntimeAndAgent(t *testing.T) {
 	assertNotContains(t, out, "tailscale")
 }
 
+func TestInstallWorkerDryRunWritesAgentPrestartHook(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--only", "supervisor")
+
+	assertContains(t, out, `prestart_script="${LLMSWAP_AGENT_PRESTART_SCRIPT:-/opt/llmswap/agent-prestart.sh}"`)
+	assertContains(t, out, `source "$prestart_script"`)
+	assertContains(t, out, `exec "$agent_bin" --config "$agent_config"`)
+}
+
 func TestInstallWorkerDryRunStartsTailscaleWhenAuthKeyProvidedAndConfiguresSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8",
 		"--runtime", "llamacpp",

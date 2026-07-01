@@ -323,6 +323,7 @@ Default root is `/opt/llmswap`.
 ```text
 /opt/llmswap/
   agent.yaml
+  agent-prestart.sh
   gateway.yaml
   llama-swap.yaml
   bin/
@@ -387,6 +388,7 @@ Important env vars:
 - `LLMSWAP_GATEWAY_URL`
 - `LLMSWAP_AGENT_TOKEN`
 - `LLMSWAP_LLAMA_SWAP_TOKEN`
+- `LLMSWAP_AGENT_PRESTART_SCRIPT`
 - `LLMSWAP_SWAP_PORT`
 - `LLMSWAP_UV_CACHE_DIR`
 - `LLMSWAP_UV_PYTHON_INSTALL_DIR`
@@ -491,6 +493,9 @@ Typical runtime env when no config file is mounted:
 - `LLMSWAP_LLAMA_SWAP_TOKEN` (optional; defaults to agent token)
 - `LLMSWAP_LLAMA_SWAP_DOWNLOAD_URL` (optional runtime override for the active
   llama-swap binary; when omitted, the build-bundled binary is used)
+- `LLMSWAP_AGENT_PRESTART_SCRIPT` (optional path to a shell script sourced by
+  `agent-supervisor.sh` before the agent starts; defaults to
+  `/opt/llmswap/agent-prestart.sh`)
 - `LLMSWAP_SWAP_PORT`
 - `LLMSWAP_SWAP_URL` (optional explicit public worker URL)
 - `LLMSWAP_FORCE_CONFIG=1` when the container should rewrite `agent.yaml`
@@ -533,10 +538,12 @@ Default container startup path:
   `llmswap-tailscale-init`, which performs `tailscale login` and optional
   hostname setup after the socket is ready;
 - rewrites the `llmswap-agent` supervisor program to start through
-  `agent-supervisor.sh`. When Tailscale is requested and no explicit
-  `LLMSWAP_SWAP_URL` is configured, this wrapper waits for
-  `tailscale ip -4` before starting the agent so the agent advertises the
-  tailnet URL instead of falling back to the container or host local IP;
+  `agent-supervisor.sh`. This wrapper sources
+  `LLMSWAP_AGENT_PRESTART_SCRIPT`, defaulting to
+  `/opt/llmswap/agent-prestart.sh`, when the script exists. When Tailscale is
+  requested and no explicit `LLMSWAP_SWAP_URL` is configured, this wrapper
+  waits for `tailscale ip -4` before starting the agent so the agent advertises
+  the tailnet URL instead of falling back to the container or host local IP;
 - starts `supervisord` in the foreground, which manages `llama-swap` and
   `llm-swap-agent`.
 

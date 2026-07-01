@@ -11,6 +11,7 @@ LLMSWAP_DRY_RUN="${LLMSWAP_DRY_RUN:-0}"
 LLMSWAP_CUDA_VERSION="${LLMSWAP_CUDA_VERSION:-auto}"
 LLMSWAP_AGENT_BIN="${LLMSWAP_AGENT_BIN:-$LLMSWAP_ROOT/bin/llm-swap-agent}"
 LLMSWAP_AGENT_CONFIG="${LLMSWAP_AGENT_CONFIG:-$LLMSWAP_ROOT/agent.yaml}"
+LLMSWAP_AGENT_PRESTART_SCRIPT="${LLMSWAP_AGENT_PRESTART_SCRIPT:-$LLMSWAP_ROOT/agent-prestart.sh}"
 LLMSWAP_AGENT_BINARY_SOURCE="${LLMSWAP_AGENT_BINARY_SOURCE:-}"
 LLMSWAP_AGENT_ID="${LLMSWAP_AGENT_ID:-$(hostname 2>/dev/null || printf worker-01)}"
 LLMSWAP_AGENT_TAGS="${LLMSWAP_AGENT_TAGS:-gpu}"
@@ -366,7 +367,16 @@ write_agent_supervisor_wrapper() {
     content="#!/usr/bin/env bash
 set -euo pipefail
 
-exec \"$LLMSWAP_AGENT_BIN\" --config \"$LLMSWAP_AGENT_CONFIG\""
+agent_bin=\"$LLMSWAP_AGENT_BIN\"
+agent_config=\"$LLMSWAP_AGENT_CONFIG\"
+prestart_script=\"\${LLMSWAP_AGENT_PRESTART_SCRIPT:-$LLMSWAP_AGENT_PRESTART_SCRIPT}\"
+
+if [[ -f \"\$prestart_script\" ]]; then
+  # shellcheck source=/dev/null
+  source \"\$prestart_script\"
+fi
+
+exec \"\$agent_bin\" --config \"\$agent_config\""
     write_file "$wrapper_path" "$content"
     run chmod 0755 "$wrapper_path"
     return 0
@@ -377,10 +387,16 @@ set -euo pipefail
 
 agent_bin=\"$LLMSWAP_AGENT_BIN\"
 agent_config=\"$LLMSWAP_AGENT_CONFIG\"
+prestart_script=\"\${LLMSWAP_AGENT_PRESTART_SCRIPT:-$LLMSWAP_AGENT_PRESTART_SCRIPT}\"
 tailscale_bin=\"\${LLMSWAP_TAILSCALE_BIN:-tailscale}\"
 tailscale_socket=\"/run/tailscale/tailscaled.sock\"
-wait_for_tailscale=\"1\"
+wait_for_tailscale=\"$wait_for_tailscale\"
 wait_seconds=\"\${LLMSWAP_TAILSCALE_WAIT_SECONDS:-$LLMSWAP_TAILSCALE_WAIT_SECONDS}\"
+
+if [[ -f \"\$prestart_script\" ]]; then
+  # shellcheck source=/dev/null
+  source \"\$prestart_script\"
+fi
 
 config_has_explicit_swap_url() {
   [[ -f \"\$agent_config\" ]] && grep -Eq '^[[:space:]]*(swap_url|llama_swap_url):[[:space:]]*[^[:space:]#]' \"\$agent_config\"

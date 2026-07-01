@@ -10,6 +10,7 @@ LLMSWAP_AGENT_CONFIG="${LLMSWAP_AGENT_CONFIG:-$LLMSWAP_ROOT/agent.yaml}"
 LLMSWAP_MODEL_ROOT="${LLMSWAP_MODEL_ROOT:-$LLMSWAP_ROOT/models}"
 LLMSWAP_LLAMA_SWAP_CONFIG="${LLMSWAP_LLAMA_SWAP_CONFIG:-$LLMSWAP_ROOT/llama-swap.yaml}"
 LLMSWAP_LOG_DIR="${LLMSWAP_LOG_DIR:-$LLMSWAP_ROOT/logs}"
+LLMSWAP_AGENT_PRESTART_SCRIPT="${LLMSWAP_AGENT_PRESTART_SCRIPT:-$LLMSWAP_ROOT/agent-prestart.sh}"
 LLMSWAP_AGENT_ID="${LLMSWAP_AGENT_ID:-$(hostname 2>/dev/null || printf worker-01)}"
 LLMSWAP_AGENT_TAGS="${LLMSWAP_AGENT_TAGS:-gpu}"
 LLMSWAP_SWAP_PORT="${LLMSWAP_SWAP_PORT:-6006}"
@@ -115,10 +116,16 @@ set -euo pipefail
 
 agent_bin="$LLMSWAP_AGENT_BIN"
 agent_config="$LLMSWAP_AGENT_CONFIG"
+prestart_script="\${LLMSWAP_AGENT_PRESTART_SCRIPT:-$LLMSWAP_AGENT_PRESTART_SCRIPT}"
 tailscale_bin="$tailscale_bin"
 tailscale_socket="$LLMSWAP_TAILSCALE_SOCKET"
 wait_for_tailscale="$wait_for_tailscale"
 wait_seconds="$LLMSWAP_TAILSCALE_WAIT_SECONDS"
+
+if [[ -f "\$prestart_script" ]]; then
+  # shellcheck source=/dev/null
+  source "\$prestart_script"
+fi
 
 config_has_explicit_swap_url() {
   [[ -f "\$agent_config" ]] && grep -Eq '^[[:space:]]*(swap_url|llama_swap_url):[[:space:]]*[^[:space:]#]' "\$agent_config"
