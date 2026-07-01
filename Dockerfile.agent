@@ -40,6 +40,12 @@ ENV PATH=${LLMSWAP_ROOT}/bin:/root/.local/bin:${PATH}
 
 WORKDIR /src
 
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends build-essential ninja-build \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY scripts/install-worker.sh /usr/local/bin/install-worker.sh
 
 RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \

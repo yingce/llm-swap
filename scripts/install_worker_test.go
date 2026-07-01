@@ -26,6 +26,16 @@ func TestInstallWorkerDryRunUsesCuda124TorchIndexAndSupervisor(t *testing.T) {
 	assertNotContains(t, out, "systemctl")
 }
 
+func TestDockerfileAgentInstallsJITBuildTools(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join(repoRoot(t), "Dockerfile.agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(dockerfile)
+	assertContains(t, text, "build-essential")
+	assertContains(t, text, "ninja-build")
+}
+
 func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
