@@ -144,7 +144,7 @@ func (s *Server) configImpacts(changes []uiConfigChange, now time.Time) []uiConf
 	out := []uiConfigImpact{}
 	for _, worker := range workers {
 		for _, running := range worker.RunningModels {
-			if !runtimeChanged[running.Model] || running.State == "" {
+			if !runtimeChanged[running.Model] || !runningModelStateRequiresConfigRestart(running.State) {
 				continue
 			}
 			out = append(out, uiConfigImpact{
@@ -158,6 +158,15 @@ func (s *Server) configImpacts(changes []uiConfigChange, now time.Time) []uiConf
 		}
 	}
 	return out
+}
+
+func runningModelStateRequiresConfigRestart(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "", "active", "loaded", "loading", "ready", "running", "starting":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) applyRuntimeConfig(cfg config.GatewayConfig) {

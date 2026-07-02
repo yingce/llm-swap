@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -717,6 +718,9 @@ func loadedModelConfigChanged(oldContent []byte, newContent []byte, runningModel
 		if running.Model == "" {
 			continue
 		}
+		if !runningModelStateRequiresConfigRestart(running.State) {
+			continue
+		}
 		oldModel, oldOK := oldConfig.Models[running.Model]
 		newModel, newOK := newConfig.Models[running.Model]
 		if oldOK != newOK || oldModel != newModel {
@@ -724,6 +728,15 @@ func loadedModelConfigChanged(oldContent []byte, newContent []byte, runningModel
 		}
 	}
 	return false
+}
+
+func runningModelStateRequiresConfigRestart(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "", "active", "loaded", "loading", "ready", "running", "starting":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeConfigIfChangedWithoutMarkingPending(path string, content []byte) (bool, error) {

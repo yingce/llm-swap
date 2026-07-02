@@ -362,6 +362,39 @@ func TestUIConfigDryRunRuntimeChangeWithoutLoadedModelDoesNotRequireWorkerRestar
 	}
 }
 
+func TestUIConfigDryRunRuntimeChangeForStoppedModelDoesNotRequireWorkerRestart(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "stopped"},
+		},
+	})
+	nextRaw := strings.Replace(testGatewayYAMLWithModels("qwen"), "run: llama-swap run qwen", "run: llama-swap run qwen --new-arg", 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(nextRaw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var resp uiConfigDryRunResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Impacts) != 0 {
+		t.Fatalf("impacts = %+v, want none for stopped model", resp.Impacts)
+	}
+	if change, ok := findConfigChange(resp.Changes, "models.qwen", "changed"); !ok || change.RequiresWorkerRestart {
+		t.Fatalf("changes = %+v, want stopped model change without worker restart", resp.Changes)
+	}
+}
+
 func TestUIConfigDryRunGatewayRestartChangeReportsSaveOnlyMode(t *testing.T) {
 	raw := testGatewayYAMLWithModels("qwen")
 	cfg, err := config.LoadGateway(strings.NewReader(raw))

@@ -167,6 +167,8 @@ disabled the gateway still runs with no external database.
   - Prometheus metrics for gateway, worker, model, queue, request, activity, and
     llama-swap performance data.
   - Scrapes worker llama-swap with the llama-swap token.
+  - Exposes worker heartbeat GPU memory, utilization, and temperature gauges for
+    Grafana and VictoriaMetrics.
   - Low-cardinality counters include gateway model tokens, model active
     requests, queue observations, proxy retries, replica cooldowns, and control
     actions.

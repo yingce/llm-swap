@@ -504,6 +504,18 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tokens_per_second"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "tps"
+              }
+            ]
           }
         ]
       },
@@ -534,7 +546,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_model_loaded_replicas{model=~\"$model\"}",
+          "expr": "max by (model) (llm_swap_gateway_model_loaded_replicas{model=~\"$model\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -546,7 +558,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_model_active_requests{model=~\"$model\"}",
+          "expr": "max by (model) (llm_swap_gateway_model_active_requests{model=~\"$model\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -558,7 +570,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_model_queue_depth{model=~\"$model\"}",
+          "expr": "max by (model) (llm_swap_gateway_model_queue_depth{model=~\"$model\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -570,7 +582,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_model_underprovisioned{model=~\"$model\"}",
+          "expr": "max by (model) (llm_swap_gateway_model_underprovisioned{model=~\"$model\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -582,7 +594,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(llm_swap_gateway_requests_total{model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum by (model) (increase(llm_swap_gateway_requests_total{model=~\"$model\"}[$__range]))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -594,7 +606,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(llm_swap_gateway_requests_total{model=~\"$model\",status_code=~\"5..\"}[$__rate_interval]))",
+          "expr": "sum by (model) (increase(llm_swap_gateway_requests_total{model=~\"$model\",status_code=~\"5..\"}[$__range]))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -606,7 +618,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(llm_swap_gateway_request_duration_seconds_sum{model=~\"$model\"}[$__rate_interval])) / clamp_min(sum by (model) (rate(llm_swap_gateway_request_duration_seconds_count{model=~\"$model\"}[$__rate_interval])), 0.001)",
+          "expr": "sum by (model) (rate(llm_swap_gateway_requests_total{model=~\"$model\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -618,7 +630,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (model, le) (rate(llm_swap_gateway_request_duration_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
+          "expr": "sum by (model) (rate(llm_swap_gateway_request_duration_seconds_sum{model=~\"$model\"}[$__rate_interval])) / clamp_min(sum by (model) (rate(llm_swap_gateway_request_duration_seconds_count{model=~\"$model\"}[$__rate_interval])), 0.001)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -630,7 +642,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(llm_swap_gateway_model_tokens_total{model=~\"$model\"}[$__rate_interval]))",
+          "expr": "histogram_quantile(0.95, sum by (model, le) (rate(llm_swap_gateway_request_duration_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -642,11 +654,35 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (increase(llm_swap_gateway_requests_total{model=~\"$model\"}[$__range]))",
+          "expr": "sum by (model) (rate(llm_swap_gateway_model_tokens_total{model=~\"$model\",type=\"total\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
           "range": false,
           "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model) (increase(llm_swap_gateway_queue_events_total{model=~\"$model\",result=~\"queue_full|queue_timeout\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model) (increase(llm_swap_gateway_dispatch_failures_total{model=~\"$model\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "L"
         }
       ],
       "title": "Model overview",
@@ -670,12 +706,14 @@
               "Value #B": "active_requests",
               "Value #C": "queue_depth",
               "Value #D": "underprovisioned",
-              "Value #E": "rps",
-              "Value #F": "5xx_rps",
-              "Value #G": "avg_latency",
-              "Value #H": "p95_latency",
-              "Value #I": "tokens_per_second",
-              "Value #J": "requests_in_range"
+              "Value #E": "requests",
+              "Value #F": "5xx_requests",
+              "Value #G": "rps",
+              "Value #H": "avg_latency",
+              "Value #I": "p95_latency",
+              "Value #J": "tokens_per_second",
+              "Value #K": "queue_rejects",
+              "Value #L": "dispatch_failures"
             }
           }
         }
@@ -719,6 +757,30 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gpu_utilization"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gpu_memory_used"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
           }
         ]
       },
@@ -749,7 +811,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_up{worker_id=~\"$worker\"}",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_up{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -761,7 +823,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_active_requests{worker_id=~\"$worker\"}",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_active_requests{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -773,7 +835,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_running_models{worker_id=~\"$worker\"}",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_running_models{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -785,7 +847,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "time() - llm_swap_gateway_worker_last_heartbeat_seconds{worker_id=~\"$worker\"}",
+          "expr": "sum by (worker_id) (llm_swap_gateway_worker_model_ready{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -797,7 +859,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_needs_restart{worker_id=~\"$worker\"}",
+          "expr": "sum by (worker_id) (llm_swap_gateway_worker_model_running{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -809,7 +871,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_last_error_present{worker_id=~\"$worker\"}",
+          "expr": "time() - llm_swap_gateway_worker_last_heartbeat_seconds{worker_id=~\"$worker\"}",
           "format": "table",
           "instant": true,
           "range": false,
@@ -821,7 +883,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_capacity_max_concurrency{worker_id=~\"$worker\"}",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_needs_restart{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -833,7 +895,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "llm_swap_gateway_worker_capacity_max_queue{worker_id=~\"$worker\"}",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_last_error_present{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -845,7 +907,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (worker_id) (rate(llm_swap_gateway_worker_requests_total{worker_id=~\"$worker\"}[$__rate_interval]))",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_capacity_max_concurrency{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -857,11 +919,83 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (worker_id) (rate(llm_swap_gateway_worker_metrics_scrape_errors_total{worker_id=~\"$worker\"}[$__rate_interval]))",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_capacity_max_queue{worker_id=~\"$worker\"})",
           "format": "table",
           "instant": true,
           "range": false,
           "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (worker_id) (increase(llm_swap_gateway_requests_total{worker_id=~\"$worker\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (worker_id) (increase(llm_swap_gateway_requests_total{worker_id=~\"$worker\",status_code=~\"5..\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (worker_id) (rate(llm_swap_gateway_requests_total{worker_id=~\"$worker\"}[$__rate_interval]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (worker_id) (increase(llm_swap_gateway_worker_metrics_scrape_errors_total{worker_id=~\"$worker\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_gpu_utilization_percent{worker_id=~\"$worker\"})",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "O"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (worker_id) (100 * llm_swap_gateway_worker_gpu_memory_used_mib{worker_id=~\"$worker\"} / clamp_min(llm_swap_gateway_worker_gpu_memory_total_mib{worker_id=~\"$worker\"}, 1))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "P"
         }
       ],
       "title": "Worker overview",
@@ -883,14 +1017,20 @@
             "renameByName": {
               "Value #A": "up",
               "Value #B": "active_requests",
-              "Value #C": "running_models",
-              "Value #D": "heartbeat_age",
-              "Value #E": "needs_restart",
-              "Value #F": "last_error",
-              "Value #G": "max_concurrency",
-              "Value #H": "max_queue",
-              "Value #I": "worker_rps",
-              "Value #J": "scrape_error_rps"
+              "Value #C": "running_models_total",
+              "Value #D": "ready_artifacts",
+              "Value #E": "ready_running_models",
+              "Value #F": "heartbeat_age",
+              "Value #G": "needs_restart",
+              "Value #H": "last_error",
+              "Value #I": "max_concurrency",
+              "Value #J": "max_queue",
+              "Value #K": "gateway_requests",
+              "Value #L": "gateway_5xx_requests",
+              "Value #M": "gateway_rps",
+              "Value #N": "scrape_errors",
+              "Value #O": "gpu_utilization",
+              "Value #P": "gpu_memory_used"
             }
           }
         }
@@ -1604,6 +1744,192 @@
       ],
       "title": "Token rate",
       "type": "timeseries"
+    },
+    {
+      "id": 40,
+      "title": "Worker GPU utilization",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "percent",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (worker_id) (llm_swap_gateway_worker_gpu_utilization_percent{worker_id=~\"$worker\"})",
+          "legendFormat": "{{worker_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "Worker GPU memory used",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "percent",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (worker_id) (100 * llm_swap_gateway_worker_gpu_memory_used_mib{worker_id=~\"$worker\"} / clamp_min(llm_swap_gateway_worker_gpu_memory_total_mib{worker_id=~\"$worker\"}, 1))",
+          "legendFormat": "{{worker_id}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "10s",

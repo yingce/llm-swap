@@ -25,6 +25,11 @@ type Metrics struct {
 	workerCapacityMaxConcurrency *prometheus.GaugeVec
 	workerCapacityMaxQueue       *prometheus.GaugeVec
 	workerRunningModels          *prometheus.GaugeVec
+	workerGPUMemoryTotalMiB      *prometheus.GaugeVec
+	workerGPUMemoryUsedMiB       *prometheus.GaugeVec
+	workerGPUMemoryFreeMiB       *prometheus.GaugeVec
+	workerGPUUtilizationPercent  *prometheus.GaugeVec
+	workerGPUTemperatureCelsius  *prometheus.GaugeVec
 	workerModelReady             *prometheus.GaugeVec
 	workerModelRunning           *prometheus.GaugeVec
 	workerModelState             *prometheus.GaugeVec
@@ -96,6 +101,27 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_worker_running_models",
 		Help: "Number of running model entries reported by a worker.",
 	}, []string{"worker_id"})
+	workerGPULabels := []string{"worker_id", "gpu_index", "gpu_name"}
+	workerGPUMemoryTotalMiB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_gpu_memory_total_mib",
+		Help: "Worker GPU total memory in MiB reported by the latest heartbeat.",
+	}, workerGPULabels)
+	workerGPUMemoryUsedMiB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_gpu_memory_used_mib",
+		Help: "Worker GPU used memory in MiB reported by the latest heartbeat.",
+	}, workerGPULabels)
+	workerGPUMemoryFreeMiB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_gpu_memory_free_mib",
+		Help: "Worker GPU free memory in MiB reported by the latest heartbeat.",
+	}, workerGPULabels)
+	workerGPUUtilizationPercent := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_gpu_utilization_percent",
+		Help: "Worker GPU utilization percentage reported by the latest heartbeat.",
+	}, workerGPULabels)
+	workerGPUTemperatureCelsius := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_worker_gpu_temperature_celsius",
+		Help: "Worker GPU temperature in Celsius reported by the latest heartbeat.",
+	}, workerGPULabels)
 	workerModelReady := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_swap_gateway_worker_model_ready",
 		Help: "Whether a worker reports a model artifact as ready.",
@@ -197,7 +223,7 @@ func NewMetrics() *Metrics {
 	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth)
 
 	return &Metrics{
 		registry:                     registry,
@@ -212,6 +238,11 @@ func NewMetrics() *Metrics {
 		workerCapacityMaxConcurrency: workerCapacityMaxConcurrency,
 		workerCapacityMaxQueue:       workerCapacityMaxQueue,
 		workerRunningModels:          workerRunningModels,
+		workerGPUMemoryTotalMiB:      workerGPUMemoryTotalMiB,
+		workerGPUMemoryUsedMiB:       workerGPUMemoryUsedMiB,
+		workerGPUMemoryFreeMiB:       workerGPUMemoryFreeMiB,
+		workerGPUUtilizationPercent:  workerGPUUtilizationPercent,
+		workerGPUTemperatureCelsius:  workerGPUTemperatureCelsius,
 		workerModelReady:             workerModelReady,
 		workerModelRunning:           workerModelRunning,
 		workerModelState:             workerModelState,
@@ -373,6 +404,7 @@ func (m *Metrics) ObserveWorkers(workers []Worker, active map[string]int, now ti
 		m.workerActive.WithLabelValues(worker.ID).Set(float64(active[worker.ID]))
 		m.workerLastHeartbeat.WithLabelValues(worker.ID).Set(float64(worker.LastHeartbeat.Unix()))
 		m.observeWorkerState(worker)
+		m.observeWorkerGPUDevices(worker)
 
 		for model, status := range worker.Artifacts {
 			ready := 0.0
@@ -412,6 +444,22 @@ func (m *Metrics) ObserveWorkers(workers []Worker, active map[string]int, now ti
 				m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(0)
 			}
 		}
+	}
+}
+
+func (m *Metrics) observeWorkerGPUDevices(worker Worker) {
+	for _, device := range worker.GPUDevices {
+		index := strconv.Itoa(device.Index)
+		name := strings.TrimSpace(device.Name)
+		if name == "" {
+			name = "unknown"
+		}
+		labels := []string{worker.ID, index, name}
+		m.workerGPUMemoryTotalMiB.WithLabelValues(labels...).Set(float64(device.MemoryTotalMiB))
+		m.workerGPUMemoryUsedMiB.WithLabelValues(labels...).Set(float64(device.MemoryUsedMiB))
+		m.workerGPUMemoryFreeMiB.WithLabelValues(labels...).Set(float64(device.MemoryFreeMiB))
+		m.workerGPUUtilizationPercent.WithLabelValues(labels...).Set(device.UtilizationPercent)
+		m.workerGPUTemperatureCelsius.WithLabelValues(labels...).Set(device.TemperatureCelsius)
 	}
 }
 

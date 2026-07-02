@@ -429,6 +429,33 @@ func TestMetricsRouteReportsWorkerRestartAndErrorState(t *testing.T) {
 	assertMetricLine(t, body, `llm_swap_gateway_worker_model_state{model="qwen",state="starting",worker_id="worker-a"} 1`)
 }
 
+func TestMetricsRouteReportsWorkerGPUDevices(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer worker.Close()
+
+	srv := NewServer(testProxyConfig())
+	hb := protocolHeartbeat("worker-a", worker.URL)
+	hb.GPUDevices = []protocol.GPUDevice{{
+		Index:              0,
+		Name:               "NVIDIA GeForce RTX 4090",
+		MemoryTotalMiB:     24564,
+		MemoryUsedMiB:      8192,
+		MemoryFreeMiB:      16372,
+		UtilizationPercent: 42,
+		TemperatureCelsius: 63,
+	}}
+	srv.workers.UpsertHeartbeat(hb, time.Now())
+
+	body := scrapeMetrics(t, srv)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_gpu_memory_total_mib{gpu_index="0",gpu_name="NVIDIA GeForce RTX 4090",worker_id="worker-a"} 24564`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_gpu_memory_used_mib{gpu_index="0",gpu_name="NVIDIA GeForce RTX 4090",worker_id="worker-a"} 8192`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_gpu_memory_free_mib{gpu_index="0",gpu_name="NVIDIA GeForce RTX 4090",worker_id="worker-a"} 16372`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_gpu_utilization_percent{gpu_index="0",gpu_name="NVIDIA GeForce RTX 4090",worker_id="worker-a"} 42`)
+	assertMetricLine(t, body, `llm_swap_gateway_worker_gpu_temperature_celsius{gpu_index="0",gpu_name="NVIDIA GeForce RTX 4090",worker_id="worker-a"} 63`)
+}
+
 func TestMetricsRouteEmitsZeroCacheTokenSeries(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
