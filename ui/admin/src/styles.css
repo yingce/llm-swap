@@ -281,6 +281,60 @@ th {
   text-transform: uppercase;
 }
 
+.gpu-list {
+  display: grid;
+  gap: 8px;
+}
+
+.gpu-card {
+  background: #f8fafc;
+  border: 1px solid #dfe7ee;
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  min-width: 0;
+}
+
+.gpu-card-head,
+.gpu-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.gpu-card-head strong {
+  color: #1f2937;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.gpu-card-head span,
+.gpu-meta {
+  color: #66768a;
+  font-size: 12px;
+}
+
+.gpu-bar {
+  background: #e5ebf0;
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.gpu-bar span {
+  background: #167c9a;
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 2px;
+}
+
 .model-pill {
   background: #eef3f7;
   border: 1px solid #d9e1e8;

@@ -111,6 +111,54 @@ func TestReconcileHeartbeatIncludesRunningModels(t *testing.T) {
 	}
 }
 
+func TestReconcileHeartbeatIncludesGPUDevices(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected OSS request %s %s", r.Method, r.URL.Path)
+	}))
+	defer oss.Close()
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, reconcileConfigWithArtifact(oss.URL, artifact), &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"),
+		LlamaSwapURL:    "http://worker",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         &FakeService{},
+		GPUDevices: &fakeGPUDevicesClient{devices: []protocol.GPUDevice{{
+			Index:              0,
+			Name:               "NVIDIA GeForce RTX 4090",
+			UUID:               "GPU-test",
+			MemoryTotalMiB:     24564,
+			MemoryUsedMiB:      4096,
+			MemoryFreeMiB:      20468,
+			UtilizationPercent: 25,
+			TemperatureCelsius: 58,
+		}}},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if got := heartbeats[0].GPUDevices; len(got) != 1 || got[0].Name != "NVIDIA GeForce RTX 4090" || got[0].MemoryUsedMiB != 4096 {
+		t.Fatalf("gpu devices = %+v, want one RTX 4090", got)
+	}
+}
+
 func TestReconcileReportsRunningModelLoadStateChangeAndUnloadEvents(t *testing.T) {
 	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
 	modelRoot := t.TempDir()
@@ -1646,6 +1694,15 @@ func (f *sequenceRunningModelsClient) RunningModelsContext(context.Context) ([]p
 	models := append([]protocol.RunningModel(nil), f.sequences[f.calls]...)
 	f.calls++
 	return models, nil
+}
+
+type fakeGPUDevicesClient struct {
+	devices []protocol.GPUDevice
+	err     error
+}
+
+func (f *fakeGPUDevicesClient) GPUDevicesContext(context.Context) ([]protocol.GPUDevice, error) {
+	return f.devices, f.err
 }
 
 func assertHeartbeatEvent(t *testing.T, hb protocol.HeartbeatRequest, eventName string, model string) {

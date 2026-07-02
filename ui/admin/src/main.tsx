@@ -439,6 +439,7 @@ function Workers({
       {workers.map((worker) => {
         const runningModels = worker.running_models ?? [];
         const tags = worker.tags ?? [];
+        const gpuDevices = worker.gpu_devices ?? [];
         return (
           <article className="worker" key={worker.id}>
             <div className="worker-head">
@@ -462,6 +463,16 @@ function Workers({
                 )}
               </div>
             </div>
+            <div className="worker-models">
+              <strong>GPU</strong>
+              {gpuDevices.length > 0 ? (
+                <div className="gpu-list">
+                  {gpuDevices.map((gpu) => <GPUDeviceView key={`${worker.id}-${gpu.index}-${gpu.uuid || gpu.name}`} gpu={gpu} />)}
+                </div>
+              ) : (
+                <span className="muted">no GPU metrics reported</span>
+              )}
+            </div>
             <div className="actions">
               {worker.state === "draining" ? (
                 <button onClick={() => void onAction(() => undrainWorker(worker.id))}>Undrain</button>
@@ -476,6 +487,25 @@ function Workers({
           </article>
         );
       })}
+    </div>
+  );
+}
+
+function GPUDeviceView({ gpu }: { gpu: WorkerStatus["gpu_devices"][number] }) {
+  const usedPercent = gpu.memory_total_mib > 0 ? Math.min(100, Math.max(0, (gpu.memory_used_mib / gpu.memory_total_mib) * 100)) : 0;
+  return (
+    <div className="gpu-card">
+      <div className="gpu-card-head">
+        <strong>{gpu.index}: {gpu.name}</strong>
+        <span>{Math.round(gpu.utilization_percent)}%</span>
+      </div>
+      <div className="gpu-bar" aria-label={`GPU ${gpu.index} memory ${Math.round(usedPercent)} percent used`}>
+        <span style={{ width: `${usedPercent}%` }} />
+      </div>
+      <div className="gpu-meta">
+        <span>{formatMiB(gpu.memory_used_mib)} / {formatMiB(gpu.memory_total_mib)}</span>
+        <span>{Math.round(gpu.temperature_celsius)}C</span>
+      </div>
     </div>
   );
 }
@@ -1211,6 +1241,17 @@ function formatBytes(value?: number) {
     unit++;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)}${units[unit]}`;
+}
+
+function formatMiB(value?: number) {
+  const mib = Number(value ?? 0);
+  if (!Number.isFinite(mib) || mib <= 0) {
+    return "0MiB";
+  }
+  if (mib >= 1024) {
+    return `${(mib / 1024).toFixed(1).replace(/\.0$/, "")}GiB`;
+  }
+  return `${Math.round(mib)}MiB`;
 }
 
 function sortedKeys(record?: Record<string, unknown>) {

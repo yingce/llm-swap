@@ -52,11 +52,30 @@ export type WorkerStatus = {
   health: string;
   state: string;
   llama_swap_url: string;
+  last_heartbeat?: string;
+  last_heartbeat_age_ms?: number;
   active_requests: number;
   running_models: { model: string; state: string }[];
+  gpu_devices: GPUDevice[];
   allowed_models: string[];
+  artifacts?: Record<string, string>;
+  capacity: WorkerDefaultsConfig;
+  needs_restart?: boolean;
   last_error?: string;
   scrape_failures: number;
+  scrape_backoff_seconds?: number;
+  health_problem?: string;
+};
+
+export type GPUDevice = {
+  index: number;
+  name: string;
+  uuid?: string;
+  memory_total_mib: number;
+  memory_used_mib: number;
+  memory_free_mib: number;
+  utilization_percent: number;
+  temperature_celsius: number;
 };
 
 export type WorkerEvent = {
@@ -234,6 +253,8 @@ function normalizeWorker(worker: WorkerStatus): WorkerStatus {
     ...worker,
     tags: worker.tags ?? [],
     running_models: worker.running_models ?? [],
+    gpu_devices: worker.gpu_devices ?? [],
+    capacity: worker.capacity ?? { max_concurrency: 0, max_queue: 0 },
     allowed_models: worker.allowed_models ?? []
   };
 }

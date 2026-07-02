@@ -48,6 +48,7 @@ func main() {
 		Service:       service,
 		Health:        llamaSwapState,
 		RunningModels: llamaSwapState,
+		GPUDevices:    agent.NvidiaSMIGPUDevicesClient{},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

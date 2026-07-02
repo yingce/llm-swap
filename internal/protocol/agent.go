@@ -25,6 +25,17 @@ type RunningModel struct {
 	ProtectedUntil time.Time `json:"protected_until,omitempty"`
 }
 
+type GPUDevice struct {
+	Index              int     `json:"index"`
+	Name               string  `json:"name"`
+	UUID               string  `json:"uuid,omitempty"`
+	MemoryTotalMiB     int64   `json:"memory_total_mib"`
+	MemoryUsedMiB      int64   `json:"memory_used_mib"`
+	MemoryFreeMiB      int64   `json:"memory_free_mib"`
+	UtilizationPercent float64 `json:"utilization_percent"`
+	TemperatureCelsius float64 `json:"temperature_celsius"`
+}
+
 type AgentEvent struct {
 	Time            time.Time `json:"time"`
 	Event           string    `json:"event"`
@@ -46,6 +57,7 @@ type HeartbeatRequest struct {
 	Tags          []string              `json:"tags"`
 	LlamaSwapURL  string                `json:"llama_swap_url"`
 	RunningModels []RunningModel        `json:"running_models"`
+	GPUDevices    []GPUDevice           `json:"gpu_devices,omitempty"`
 	Artifacts     map[string]string     `json:"artifacts"`
 	Capacity      config.WorkerDefaults `json:"capacity"`
 	NeedsRestart  bool                  `json:"needs_restart"`

@@ -40,6 +40,7 @@ type Reconciler struct {
 	Service         Service
 	Health          HealthClient
 	RunningModels   RunningModelsClient
+	GPUDevices      GPUDevicesClient
 	RunInterval     time.Duration
 
 	needsRestart bool
@@ -133,6 +134,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	if err == nil {
 		r.observeRunningModelChanges(runningModels)
 	}
+	gpuDevices, err := r.fetchGPUDevices(ctx)
+	reconcileErr = errors.Join(reconcileErr, err)
 
 	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
@@ -154,6 +157,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
 	hb.RunningModels = runningModels
+	hb.GPUDevices = gpuDevices
 	hb.Events = r.snapshotEventsForHeartbeat(agentEventHeartbeatLimit)
 	if reconcileErr != nil {
 		hb.LastError = reconcileErr.Error()
@@ -388,6 +392,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	if err == nil {
 		r.observeRunningModelChanges(runningModels)
 	}
+	gpuDevices, err := r.fetchGPUDevices(ctx)
+	reconcileErr = errors.Join(reconcileErr, err)
 
 	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
@@ -406,6 +412,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
 	hb.RunningModels = runningModels
+	hb.GPUDevices = gpuDevices
 	hb.Events = r.snapshotEventsForHeartbeat(agentEventHeartbeatLimit)
 	if reconcileErr != nil {
 		hb.LastError = reconcileErr.Error()
@@ -462,6 +469,17 @@ func (r *Reconciler) fetchRunningModels(ctx context.Context) ([]protocol.Running
 		return nil, fmt.Errorf("fetch llama-swap running models: %w", err)
 	}
 	return models, nil
+}
+
+func (r *Reconciler) fetchGPUDevices(ctx context.Context) ([]protocol.GPUDevice, error) {
+	if r.GPUDevices == nil {
+		return nil, nil
+	}
+	devices, err := r.GPUDevices.GPUDevicesContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fetch gpu devices: %w", err)
+	}
+	return devices, nil
 }
 
 func (r *Reconciler) observeRunningModelChanges(models []protocol.RunningModel) {

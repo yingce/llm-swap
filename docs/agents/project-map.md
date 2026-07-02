@@ -25,7 +25,8 @@ worker agent
   -> downloads model artifacts
   -> renders llama-swap config
   -> reads local llama-swap /running from 127.0.0.1:swap_port
-  -> heartbeats worker state, artifacts, running models, and events to gateway
+  -> heartbeats worker state, GPU device stats, artifacts, running models, and
+     events to gateway
 ```
 
 Gateway state is in-process, with append-only JSONL files for request
@@ -182,8 +183,8 @@ disabled the gateway still runs with no external database.
     When only the placeholder asset is present, the gateway falls back to the
     older inline dashboard so Go tests and development builds still work before
     running the frontend build.
-  - Shows model availability, traffic, workers, health, running models,
-    artifacts, and recent worker events.
+  - Shows model availability, traffic, workers, health, GPU memory/utilization,
+    running models, artifacts, and recent worker events.
   - Recent events have columns: Received, Worker, Event, Model, Detail.
   - Optional historical metrics endpoints:
     `/ui/metrics/summary`, `/ui/metrics/model`, and `/ui/metrics/worker`.
@@ -240,7 +241,8 @@ disabled the gateway still runs with no external database.
     downloading in the background.
   - Marks pending restart only when a config change affects currently loaded
     models.
-  - Heartbeats artifacts, running models, needs_restart, last_error, and events.
+  - Heartbeats artifacts, running models, GPU device stats from `nvidia-smi`,
+    needs_restart, last_error, and events.
   - Records local lifecycle events: artifact install/download events,
     `llama_swap_config_changed`, restart events, `model_loaded`,
     `model_state_changed`, and `model_unloaded`.

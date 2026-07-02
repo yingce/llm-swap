@@ -24,6 +24,7 @@ type Worker struct {
 	Tags               []string
 	LlamaSwapURL       string
 	RunningModels      []protocol.RunningModel
+	GPUDevices         []protocol.GPUDevice
 	Artifacts          map[string]string
 	Capacity           config.WorkerDefaults
 	NeedsRestart       bool
@@ -61,6 +62,7 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 		Tags:          append([]string(nil), hb.Tags...),
 		LlamaSwapURL:  hb.LlamaSwapURL,
 		RunningModels: append([]protocol.RunningModel(nil), hb.RunningModels...),
+		GPUDevices:    append([]protocol.GPUDevice(nil), hb.GPUDevices...),
 		Artifacts:     copyStringMap(hb.Artifacts),
 		Capacity:      hb.Capacity,
 		NeedsRestart:  hb.NeedsRestart,
@@ -240,6 +242,7 @@ func (r *WorkerRegistry) RecordReverseFailure(workerID string, now time.Time) bo
 func cloneWorker(w Worker) Worker {
 	w.Tags = append([]string(nil), w.Tags...)
 	w.RunningModels = append([]protocol.RunningModel(nil), w.RunningModels...)
+	w.GPUDevices = append([]protocol.GPUDevice(nil), w.GPUDevices...)
 	w.Artifacts = copyStringMap(w.Artifacts)
 	return w
 }

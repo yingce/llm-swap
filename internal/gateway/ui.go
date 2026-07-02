@@ -91,6 +91,7 @@ type uiWorker struct {
 	LastHeartbeatAgeMS   int64                   `json:"last_heartbeat_age_ms"`
 	ActiveRequests       int                     `json:"active_requests"`
 	RunningModels        []protocol.RunningModel `json:"running_models"`
+	GPUDevices           []protocol.GPUDevice    `json:"gpu_devices"`
 	Artifacts            map[string]string       `json:"artifacts"`
 	Capacity             config.WorkerDefaults   `json:"capacity"`
 	NeedsRestart         bool                    `json:"needs_restart"`
@@ -451,6 +452,7 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 			LastHeartbeatAgeMS:   now.Sub(worker.LastHeartbeat).Milliseconds(),
 			ActiveRequests:       active[worker.ID],
 			RunningModels:        runningModelsOrEmpty(worker.RunningModels),
+			GPUDevices:           gpuDevicesOrEmpty(worker.GPUDevices),
 			Artifacts:            copyStringMap(worker.Artifacts),
 			Capacity:             worker.Capacity,
 			NeedsRestart:         worker.NeedsRestart,
@@ -507,6 +509,13 @@ func runningModelsOrEmpty(values []protocol.RunningModel) []protocol.RunningMode
 		return []protocol.RunningModel{}
 	}
 	return append([]protocol.RunningModel(nil), values...)
+}
+
+func gpuDevicesOrEmpty(values []protocol.GPUDevice) []protocol.GPUDevice {
+	if len(values) == 0 {
+		return []protocol.GPUDevice{}
+	}
+	return append([]protocol.GPUDevice(nil), values...)
 }
 
 func buildUISummary(models []uiModelStatus, workers []uiWorker, events []uiAgentEvent) uiSummary {

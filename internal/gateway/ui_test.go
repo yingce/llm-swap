@@ -43,6 +43,16 @@ func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 		Artifacts:     map[string]string{"qwen": "ready"},
 		Capacity:      config.WorkerDefaults{MaxConcurrency: 2, MaxQueue: 4},
 		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		GPUDevices: []protocol.GPUDevice{{
+			Index:              0,
+			Name:               "NVIDIA GeForce RTX 4090",
+			UUID:               "GPU-test",
+			MemoryTotalMiB:     24564,
+			MemoryUsedMiB:      8192,
+			MemoryFreeMiB:      16372,
+			UtilizationPercent: 42,
+			TemperatureCelsius: 61,
+		}},
 		Events: []protocol.AgentEvent{
 			{
 				Time:            time.Unix(100, 0).UTC(),
@@ -86,6 +96,9 @@ func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	}
 	if len(status.Workers) != 1 || status.Workers[0].ID != "gpu-01" || status.Workers[0].Health != "healthy" {
 		t.Fatalf("workers = %+v, want healthy gpu-01", status.Workers)
+	}
+	if got := status.Workers[0].GPUDevices; len(got) != 1 || got[0].MemoryUsedMiB != 8192 || got[0].UtilizationPercent != 42 {
+		t.Fatalf("worker gpu devices = %+v, want 4090 memory/utilization", got)
 	}
 	if len(status.Events) != 1 || status.Events[0].WorkerID != "gpu-01" || status.Events[0].Event != "artifact_download_progress" {
 		t.Fatalf("events = %+v, want cached progress event", status.Events)
