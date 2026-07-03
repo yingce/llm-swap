@@ -11,7 +11,7 @@ import (
 
 // llama-swap /api/metrics is historical; keep recent rows without retaining one key per request forever.
 const defaultMaxSeenActivityKeys = 10000
-const defaultMetricsScrapeTimeout = 10 * time.Second
+const defaultMetricsScrapeTimeout = 3 * time.Second
 
 type MetricsScraper struct {
 	client               *http.Client

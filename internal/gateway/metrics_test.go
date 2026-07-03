@@ -45,6 +45,43 @@ func TestMetricsScraperDeduplicatesRowsAcrossPulls(t *testing.T) {
 	}
 }
 
+func TestMetricsObserveWorkersScrapesActiveWorkersConcurrently(t *testing.T) {
+	metrics := NewMetrics()
+	now := time.Unix(100, 0)
+	workers := []Worker{
+		{ID: "worker-a", LastHeartbeat: now, State: WorkerActive},
+		{ID: "worker-b", LastHeartbeat: now, State: WorkerActive},
+	}
+	started := make(chan string, len(workers))
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		metrics.ObserveWorkers(workers, nil, now, func(worker Worker) (ActivityStats, error) {
+			started <- worker.ID
+			<-release
+			return ActivityStats{}, nil
+		}, nil)
+		close(done)
+	}()
+
+	for range workers {
+		select {
+		case <-started:
+		case <-time.After(200 * time.Millisecond):
+			close(release)
+			t.Fatal("worker scrapes did not start concurrently")
+		}
+	}
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ObserveWorkers did not finish after releasing scrapes")
+	}
+}
+
 func TestMetricsScraperIsolatesWorkers(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"id":"shared-request","model":"qwen"}]`))

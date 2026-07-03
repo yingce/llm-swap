@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"llm-swap/internal/config"
@@ -394,55 +395,66 @@ func (m *Metrics) ObserveModelQueues(cfg config.GatewayConfig, limiter *QueueLim
 }
 
 func (m *Metrics) ObserveWorkers(workers []Worker, active map[string]int, now time.Time, pullActivity func(Worker) (ActivityStats, error), pullPerformance func(Worker) (int, error)) {
+	var wg sync.WaitGroup
 	for _, worker := range workers {
-		freshActive := now.Sub(worker.LastHeartbeat) < 6*time.Second && worker.State == WorkerActive
-		up := 0.0
-		if freshActive && !now.Before(worker.ScrapeBackoffUntil) {
-			up = 1
-		}
-		m.workerUp.WithLabelValues(worker.ID).Set(up)
-		m.workerActive.WithLabelValues(worker.ID).Set(float64(active[worker.ID]))
-		m.workerLastHeartbeat.WithLabelValues(worker.ID).Set(float64(worker.LastHeartbeat.Unix()))
-		m.observeWorkerState(worker)
-		m.observeWorkerGPUDevices(worker)
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.observeWorker(worker, active, now, pullActivity, pullPerformance)
+		}()
+	}
+	wg.Wait()
+}
 
-		for model, status := range worker.Artifacts {
-			ready := 0.0
-			if strings.EqualFold(status, "ready") {
-				ready = 1
-			}
-			m.workerModelReady.WithLabelValues(worker.ID, model).Set(ready)
+func (m *Metrics) observeWorker(worker Worker, active map[string]int, now time.Time, pullActivity func(Worker) (ActivityStats, error), pullPerformance func(Worker) (int, error)) {
+	freshActive := now.Sub(worker.LastHeartbeat) < 6*time.Second && worker.State == WorkerActive
+	up := 0.0
+	if freshActive && !now.Before(worker.ScrapeBackoffUntil) {
+		up = 1
+	}
+	m.workerUp.WithLabelValues(worker.ID).Set(up)
+	m.workerActive.WithLabelValues(worker.ID).Set(float64(active[worker.ID]))
+	m.workerLastHeartbeat.WithLabelValues(worker.ID).Set(float64(worker.LastHeartbeat.Unix()))
+	m.observeWorkerState(worker)
+	m.observeWorkerGPUDevices(worker)
+
+	for model, status := range worker.Artifacts {
+		ready := 0.0
+		if strings.EqualFold(status, "ready") {
+			ready = 1
 		}
-		for _, running := range worker.RunningModels {
-			value := 0.0
-			if strings.EqualFold(running.State, "ready") {
-				value = 1
-			}
-			m.workerModelRunning.WithLabelValues(worker.ID, running.Model).Set(value)
-			if strings.TrimSpace(running.State) != "" {
-				m.workerModelState.WithLabelValues(worker.ID, running.Model, running.State).Set(1)
+		m.workerModelReady.WithLabelValues(worker.ID, model).Set(ready)
+	}
+	for _, running := range worker.RunningModels {
+		value := 0.0
+		if strings.EqualFold(running.State, "ready") {
+			value = 1
+		}
+		m.workerModelRunning.WithLabelValues(worker.ID, running.Model).Set(value)
+		if strings.TrimSpace(running.State) != "" {
+			m.workerModelState.WithLabelValues(worker.ID, running.Model, running.State).Set(1)
+		}
+	}
+	if pullActivity != nil && freshActive {
+		activity, err := pullActivity(worker)
+		if err != nil {
+			m.workerScrapeErrors.WithLabelValues(worker.ID).Inc()
+		} else {
+			m.workerActivityRows.WithLabelValues(worker.ID).Add(float64(activity.Rows))
+			for _, request := range activity.Requests {
+				m.ObserveWorkerActivity(worker.ID, request)
 			}
 		}
-		if pullActivity != nil && freshActive {
-			activity, err := pullActivity(worker)
-			if err != nil {
-				m.workerScrapeErrors.WithLabelValues(worker.ID).Inc()
-			} else {
-				m.workerActivityRows.WithLabelValues(worker.ID).Add(float64(activity.Rows))
-				for _, request := range activity.Requests {
-					m.ObserveWorkerActivity(worker.ID, request)
-				}
-			}
-		}
-		if pullPerformance != nil && freshActive {
-			samples, err := pullPerformance(worker)
-			if err != nil {
-				m.workerScrapeErrors.WithLabelValues(worker.ID).Inc()
-			} else if samples > 0 {
-				m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(float64(samples))
-			} else {
-				m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(0)
-			}
+	}
+	if pullPerformance != nil && freshActive {
+		samples, err := pullPerformance(worker)
+		if err != nil {
+			m.workerScrapeErrors.WithLabelValues(worker.ID).Inc()
+		} else if samples > 0 {
+			m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(float64(samples))
+		} else {
+			m.workerPerformanceSamples.WithLabelValues(worker.ID).Add(0)
 		}
 	}
 }
