@@ -24,7 +24,7 @@ services:
     depends_on:
       - victoriametrics
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/metrics"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 15s
       timeout: 5s
       retries: 5

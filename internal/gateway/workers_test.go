@@ -31,6 +31,18 @@ func TestBearerAuthRejectsWrongToken(t *testing.T) {
 	}
 }
 
+func TestHealthzEndpointReturnsNoContent(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
 func TestAgentConfigEndpointReturnsTagScopedModels(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/internal/agent/config?tags=gpu-4090", nil)
