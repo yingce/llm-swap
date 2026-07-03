@@ -465,12 +465,6 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 			ReplicaCooldowns:     cooldownsForWorker(cooldowns, worker.ID, now),
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Health != out[j].Health {
-			return healthRank(out[i].Health) < healthRank(out[j].Health)
-		}
-		return out[i].ID < out[j].ID
-	})
 	return out
 }
 

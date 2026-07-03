@@ -372,6 +372,33 @@ func TestWorkerRegistryPrunesOfflineWorkerAfterRetention(t *testing.T) {
 	}
 }
 
+func TestWorkerRegistrySnapshotPreservesJoinOrder(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+	for _, workerID := range []string{"gpu-b", "gpu-a", "gpu-c"} {
+		reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+			AgentID:      workerID,
+			Tags:         []string{"gpu-4090"},
+			LlamaSwapURL: "http://worker",
+		}, now)
+	}
+
+	snapshot := reg.Snapshot(now)
+	if got := workerIDs(snapshot); strings.Join(got, ",") != "gpu-b,gpu-a,gpu-c" {
+		t.Fatalf("snapshot worker order = %v, want join order", got)
+	}
+
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "gpu-a",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-updated",
+	}, now.Add(time.Second))
+	snapshot = reg.Snapshot(now.Add(time.Second))
+	if got := workerIDs(snapshot); strings.Join(got, ",") != "gpu-b,gpu-a,gpu-c" {
+		t.Fatalf("snapshot worker order after heartbeat = %v, want original join order", got)
+	}
+}
+
 func TestHeartbeatDrainResponseAllowsRestartWhenIdle(t *testing.T) {
 	reg := NewWorkerRegistry(6 * time.Second)
 	resp := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
@@ -473,7 +500,7 @@ func TestWorkerRegistryAcquireReleaseDecrementsOnce(t *testing.T) {
 	}
 }
 
-func TestWorkerRegistryReverseFailureBacksOffImmediatelyAndSuccessClears(t *testing.T) {
+func TestWorkerRegistryReverseFailureBacksOffAfterRepeatedFailuresAndSuccessClears(t *testing.T) {
 	now := time.Unix(100, 0)
 	reg := NewWorkerRegistry(6 * time.Second)
 	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
@@ -482,15 +509,38 @@ func TestWorkerRegistryReverseFailureBacksOffImmediatelyAndSuccessClears(t *test
 		LlamaSwapURL: "http://worker",
 	}, now)
 
-	if marked := reg.RecordReverseFailure("gpu-01", now.Add(time.Second)); !marked {
-		t.Fatal("first reverse failure should mark worker unavailable")
+	if marked := reg.RecordReverseFailure("gpu-01", now.Add(time.Second)); marked {
+		t.Fatal("first reverse failure should not mark worker unavailable")
 	}
-	if reg.Healthy("gpu-01", now.Add(2*time.Second)) {
+	if !reg.Healthy("gpu-01", now.Add(2*time.Second)) {
+		t.Fatal("worker should remain healthy after one reverse-access failure")
+	}
+	if marked := reg.RecordReverseFailure("gpu-01", now.Add(2*time.Second)); marked {
+		t.Fatal("second reverse failure should not mark worker unavailable")
+	}
+	if !reg.Healthy("gpu-01", now.Add(3*time.Second)) {
+		t.Fatal("worker should remain healthy before reverse-access failure threshold")
+	}
+	if marked := reg.RecordReverseFailure("gpu-01", now.Add(3*time.Second)); !marked {
+		t.Fatal("third reverse failure should mark worker unavailable")
+	}
+	if reg.Healthy("gpu-01", now.Add(4*time.Second)) {
 		t.Fatal("worker should be unavailable during reverse-access backoff")
+	}
+	if marked := reg.RecordReverseFailure("gpu-01", now.Add(4*time.Second)); marked {
+		t.Fatal("already backed-off worker should not emit another unavailable transition")
 	}
 
 	reg.RecordScrapeSuccess("gpu-01")
-	if !reg.Healthy("gpu-01", now.Add(2*time.Second)) {
+	if !reg.Healthy("gpu-01", now.Add(5*time.Second)) {
 		t.Fatal("successful reverse access should clear backoff")
 	}
+}
+
+func workerIDs(workers []Worker) []string {
+	out := make([]string, 0, len(workers))
+	for _, worker := range workers {
+		out = append(out, worker.ID)
+	}
+	return out
 }

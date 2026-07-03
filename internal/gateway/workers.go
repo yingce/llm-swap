@@ -39,6 +39,7 @@ type WorkerRegistry struct {
 	mu           sync.RWMutex
 	staleAfter   time.Duration
 	workers      map[string]*Worker
+	workerOrder  []string
 	active       map[string]int
 	manualDrains map[string]bool
 }
@@ -57,6 +58,9 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 	defer r.mu.Unlock()
 
 	prev := r.workers[hb.AgentID]
+	if prev == nil {
+		r.workerOrder = append(r.workerOrder, hb.AgentID)
+	}
 	w := &Worker{
 		ID:            hb.AgentID,
 		Tags:          append([]string(nil), hb.Tags...),
@@ -134,13 +138,18 @@ func (r *WorkerRegistry) Snapshot(now time.Time) []Worker {
 
 	r.pruneOfflineLocked(now)
 	out := make([]Worker, 0, len(r.workers))
-	for _, w := range r.workers {
+	for _, workerID := range r.workerOrder {
+		w := r.workers[workerID]
+		if w == nil {
+			continue
+		}
 		out = append(out, cloneWorker(*w))
 	}
 	return out
 }
 
 func (r *WorkerRegistry) pruneOfflineLocked(now time.Time) {
+	pruned := false
 	for workerID, worker := range r.workers {
 		if now.Sub(worker.LastHeartbeat) <= workerOfflineRetention {
 			continue
@@ -148,7 +157,18 @@ func (r *WorkerRegistry) pruneOfflineLocked(now time.Time) {
 		delete(r.workers, workerID)
 		delete(r.active, workerID)
 		delete(r.manualDrains, workerID)
+		pruned = true
 	}
+	if !pruned {
+		return
+	}
+	kept := r.workerOrder[:0]
+	for _, workerID := range r.workerOrder {
+		if _, ok := r.workers[workerID]; ok {
+			kept = append(kept, workerID)
+		}
+	}
+	r.workerOrder = kept
 }
 
 func (r *WorkerRegistry) ActiveSnapshot() map[string]int {
@@ -233,10 +253,13 @@ func (r *WorkerRegistry) RecordReverseFailure(workerID string, now time.Time) bo
 	if worker == nil {
 		return false
 	}
-	wasHealthy := !now.Before(worker.ScrapeBackoffUntil)
+	alreadyBackedOff := now.Before(worker.ScrapeBackoffUntil)
 	worker.ScrapeFailures++
+	if worker.ScrapeFailures < workerScrapeFailureBackoffThreshold {
+		return false
+	}
 	worker.ScrapeBackoffUntil = now.Add(workerScrapeFailureBackoff)
-	return wasHealthy
+	return !alreadyBackedOff
 }
 
 func cloneWorker(w Worker) Worker {

@@ -197,22 +197,22 @@ func (s *Server) recordScrapeResult(workerID string, err error, now time.Time) {
 	s.workers.RecordScrapeSuccess(workerID)
 }
 
-func (s *Server) recordReverseAccessResult(workerID string, err error, now time.Time) {
+func (s *Server) recordReverseAccessResult(workerID string, err error, now time.Time) bool {
 	if err == nil {
 		if s.workers != nil {
 			s.workers.RecordScrapeSuccess(workerID)
 		}
-		return
+		return false
 	}
 	if !isReverseAccessFailure(err) {
-		return
+		return false
 	}
-	s.recordReverseAccessFailure(workerID, err, now)
+	return s.recordReverseAccessFailure(workerID, err, now)
 }
 
-func (s *Server) recordReverseAccessFailure(workerID string, err error, now time.Time) {
+func (s *Server) recordReverseAccessFailure(workerID string, err error, now time.Time) bool {
 	if s == nil || s.workers == nil || workerID == "" || err == nil {
-		return
+		return false
 	}
 	if marked := s.workers.RecordReverseFailure(workerID, now); marked {
 		s.logEvent("worker_reverse_access_unavailable", map[string]any{
@@ -223,7 +223,9 @@ func (s *Server) recordReverseAccessFailure(workerID string, err error, now time
 			Event: "gateway_worker_reverse_access_unavailable",
 			Error: err.Error(),
 		})
+		return true
 	}
+	return false
 }
 
 func isReverseAccessFailure(err error) bool {

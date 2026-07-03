@@ -203,6 +203,9 @@ func (s *Server) markReplicaCooldown(requestID, model string, worker Worker, fai
 	if s == nil || s.replicaCooldowns == nil || failure == nil {
 		return
 	}
+	if !failure.cooldownEligible {
+		return
+	}
 	now := time.Now()
 	entry, marked := s.replicaCooldowns.Mark(worker.ID, model, failure.code, now)
 	if !marked {
@@ -561,20 +564,22 @@ func (s *Server) logEvent(event string, fields map[string]any) {
 }
 
 type proxyDispatchFailure struct {
-	status  int
-	code    string
-	message string
+	status           int
+	code             string
+	message          string
+	cooldownEligible bool
 }
 
 func (f proxyDispatchFailure) write(w http.ResponseWriter) {
 	protocol.WriteOpenAIError(w, f.status, f.code, f.message)
 }
 
-func workerUnavailableFailure() *proxyDispatchFailure {
+func workerUnavailableFailure(cooldownEligible bool) *proxyDispatchFailure {
 	return &proxyDispatchFailure{
-		status:  http.StatusServiceUnavailable,
-		code:    "worker_unavailable",
-		message: "selected worker is unavailable",
+		status:           http.StatusServiceUnavailable,
+		code:             "worker_unavailable",
+		message:          "selected worker is unavailable",
+		cooldownEligible: cooldownEligible,
 	}
 }
 
@@ -584,23 +589,24 @@ func upstreamRetryExhaustedFailure(status int) *proxyDispatchFailure {
 		message = "upstream returned " + text + " after exhausting proxy attempts"
 	}
 	return &proxyDispatchFailure{
-		status:  status,
-		code:    "upstream_retry_exhausted",
-		message: message,
+		status:           status,
+		code:             "upstream_retry_exhausted",
+		message:          message,
+		cooldownEligible: true,
 	}
 }
 
 func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker, llamaSwapToken string) (bool, *proxyDispatchFailure, error, int, RequestLogEntry) {
 	upstreamURL, err := upstreamRequestURL(worker.LlamaSwapURL, r.URL)
 	if err != nil {
-		s.recordReverseAccessResult(worker.ID, err, time.Now())
-		return true, workerUnavailableFailure(), err, 0, RequestLogEntry{}
+		marked := s.recordReverseAccessResult(worker.ID, err, time.Now())
+		return true, workerUnavailableFailure(marked), err, 0, RequestLogEntry{}
 	}
 	entry := RequestLogEntry{UpstreamURL: upstreamURL}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		return true, workerUnavailableFailure(), err, 0, entry
+		return true, workerUnavailableFailure(true), err, 0, entry
 	}
 	copyRequestHeaders(req.Header, r.Header)
 	req.Header.Set("X-Request-Id", requestIDFromHeader(r))
@@ -615,9 +621,9 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 
 	resp, err := defaultProxyHTTPClient.Do(req)
 	if err != nil {
-		s.recordReverseAccessResult(worker.ID, err, time.Now())
+		marked := s.recordReverseAccessResult(worker.ID, err, time.Now())
 		if retryableProxyError(err, r.Context()) {
-			return true, workerUnavailableFailure(), err, 0, entry
+			return true, workerUnavailableFailure(marked), err, 0, entry
 		}
 		return false, nil, err, 0, entry
 	}

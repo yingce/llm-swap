@@ -766,20 +766,22 @@ func TestProxyAllWorkersReturn429PreservesTooManyRequests(t *testing.T) {
 	assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
 }
 
-func TestProxyMalformedWorkerURLReportsWorkerUnavailable(t *testing.T) {
+func TestProxyMalformedWorkerURLReportsWorkerUnavailableAfterRepeatedFailures(t *testing.T) {
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "broken", "", true)
 
-	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	for i := 0; i < workerScrapeFailureBackoffThreshold; i++ {
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("attempt %d status = %d, want %d: %s", i+1, rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+		}
+		assertOpenAIErrorCode(t, rr.Body.Bytes(), "worker_unavailable")
+		assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
 	}
-	assertOpenAIErrorCode(t, rr.Body.Bytes(), "worker_unavailable")
-	assertNotOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
 	if srv.workers.Healthy("broken", time.Now()) {
-		t.Fatal("worker with malformed reverse URL should be marked unavailable")
+		t.Fatal("worker with repeated malformed reverse URL failures should be marked unavailable")
 	}
 }
 
@@ -792,7 +794,10 @@ func TestProxySuccessfulReverseAccessClearsWorkerBackoff(t *testing.T) {
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
 	srv.workers.RecordReverseFailure("worker-a", time.Now())
+	srv.workers.RecordReverseFailure("worker-a", time.Now())
+	srv.workers.RecordReverseFailure("worker-a", time.Now())
 	srv.workers.RecordScrapeSuccess("worker-a")
+	srv.workers.RecordReverseFailure("worker-a", time.Now())
 	srv.workers.RecordReverseFailure("worker-a", time.Now())
 
 	rr := httptest.NewRecorder()

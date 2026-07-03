@@ -216,14 +216,43 @@ func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
 	}
 }
 
+func TestUIStatusPreservesWorkerJoinOrder(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	for _, workerID := range []string{"gpu-b", "gpu-a", "gpu-c"} {
+		postHeartbeat(t, srv, protocol.HeartbeatRequest{
+			AgentID:      workerID,
+			Tags:         []string{"gpu-4090"},
+			LlamaSwapURL: "http://worker",
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	var status uiStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if got := uiWorkerIDs(status.Workers); strings.Join(got, ",") != "gpu-b,gpu-a,gpu-c" {
+		t.Fatalf("ui worker order = %v, want join order", got)
+	}
+}
+
 func TestUIStatusShowsWorkerBackoffAfterReverseAccessFailure(t *testing.T) {
 	srv := NewServer(testProxyConfig())
 	registerProxyWorker(t, srv, "broken", "", true)
 
-	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("proxy status = %d, want 503: %s", rr.Code, rr.Body.String())
+	for i := 0; i < workerScrapeFailureBackoffThreshold; i++ {
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("proxy attempt %d status = %d, want 503: %s", i+1, rr.Code, rr.Body.String())
+		}
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
@@ -247,6 +276,14 @@ func TestUIStatusShowsWorkerBackoffAfterReverseAccessFailure(t *testing.T) {
 	if !strings.Contains(status.Workers[0].HealthProblem, "reverse access") {
 		t.Fatalf("worker health problem = %q, want reverse access detail", status.Workers[0].HealthProblem)
 	}
+}
+
+func uiWorkerIDs(workers []uiWorker) []string {
+	out := make([]string, 0, len(workers))
+	for _, worker := range workers {
+		out = append(out, worker.ID)
+	}
+	return out
 }
 
 func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {

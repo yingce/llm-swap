@@ -325,17 +325,19 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 	for {
 		cfg := s.currentConfig()
 		reconciler := LoadedReconciler{
-			Config:             cfg,
-			Workers:            s.workers,
-			Client:             LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
-			Access:             s.access,
-			Pressure:           s.pressure,
-			ReplicaCooldowns:   s.replicaCooldowns,
-			Cooldowns:          s.replicaCooldowns.Snapshot(time.Now()),
-			Metrics:            s.metrics,
-			RecordEvent:        s.recordGatewayWorkerEvent,
-			RecordReachability: s.recordReverseAccessResult,
-			LogEvent:           s.logEvent,
+			Config:           cfg,
+			Workers:          s.workers,
+			Client:           LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
+			Access:           s.access,
+			Pressure:         s.pressure,
+			ReplicaCooldowns: s.replicaCooldowns,
+			Cooldowns:        s.replicaCooldowns.Snapshot(time.Now()),
+			Metrics:          s.metrics,
+			RecordEvent:      s.recordGatewayWorkerEvent,
+			RecordReachability: func(workerID string, err error, now time.Time) {
+				s.recordReverseAccessResult(workerID, err, now)
+			},
+			LogEvent: s.logEvent,
 		}
 		_ = reconciler.Reconcile(ctx, time.Now())
 		select {
