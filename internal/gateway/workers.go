@@ -36,12 +36,13 @@ type Worker struct {
 }
 
 type WorkerRegistry struct {
-	mu           sync.RWMutex
-	staleAfter   time.Duration
-	workers      map[string]*Worker
-	workerOrder  []string
-	active       map[string]int
-	manualDrains map[string]bool
+	mu            sync.RWMutex
+	staleAfter    time.Duration
+	workers       map[string]*Worker
+	workerOrder   []string
+	active        map[string]int
+	manualDrains  map[string]bool
+	restartHolder string
 }
 
 func NewWorkerRegistry(staleAfter time.Duration) *WorkerRegistry {
@@ -57,6 +58,7 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.releaseExpiredRestartHolderLocked(now)
 	prev := r.workers[hb.AgentID]
 	if prev == nil {
 		r.workerOrder = append(r.workerOrder, hb.AgentID)
@@ -83,8 +85,32 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 	}
 	r.workers[hb.AgentID] = w
 
-	restartAllowed := hb.NeedsRestart && r.active[hb.AgentID] == 0
+	if !hb.NeedsRestart && r.restartHolder == hb.AgentID {
+		r.restartHolder = ""
+	}
+	restartAllowed := r.restartAllowedLocked(hb.AgentID, hb.NeedsRestart)
 	return protocol.HeartbeatResponse{WorkerState: string(w.State), RestartAllowed: restartAllowed}
+}
+
+func (r *WorkerRegistry) restartAllowedLocked(workerID string, needsRestart bool) bool {
+	if !needsRestart || r.active[workerID] != 0 {
+		return false
+	}
+	if r.restartHolder == "" {
+		r.restartHolder = workerID
+		return true
+	}
+	return r.restartHolder == workerID
+}
+
+func (r *WorkerRegistry) releaseExpiredRestartHolderLocked(now time.Time) {
+	if r.restartHolder == "" {
+		return
+	}
+	holder := r.workers[r.restartHolder]
+	if holder == nil || now.Sub(holder.LastHeartbeat) > workerOfflineRetention {
+		r.restartHolder = ""
+	}
 }
 
 func (r *WorkerRegistry) Drain(workerID string) (Worker, bool) {
@@ -157,6 +183,9 @@ func (r *WorkerRegistry) pruneOfflineLocked(now time.Time) {
 		delete(r.workers, workerID)
 		delete(r.active, workerID)
 		delete(r.manualDrains, workerID)
+		if r.restartHolder == workerID {
+			r.restartHolder = ""
+		}
 		pruned = true
 	}
 	if !pruned {
