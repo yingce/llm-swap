@@ -431,6 +431,12 @@ func TestReconcileConfigChangedForUnloadedModelDoesNotRequestRestart(t *testing.
 	if heartbeats[0].NeedsRestart {
 		t.Fatalf("heartbeat needs_restart = true, want false for unloaded model config change")
 	}
+	if got := heartbeats[0].Artifacts["cold"]; got != "stale_config" {
+		t.Fatalf("cold artifact status = %q, want stale_config while local config is deferred", got)
+	}
+	if got := heartbeats[0].Artifacts["qwen"]; got != "ready" {
+		t.Fatalf("qwen artifact status = %q, want ready for currently loaded unchanged model", got)
+	}
 	if svc.Restarts != 0 {
 		t.Fatalf("service restarts = %d, want 0", svc.Restarts)
 	}

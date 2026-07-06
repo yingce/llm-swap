@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,11 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 			if changed {
 				r.recordEvent(protocol.AgentEvent{Event: "llama_swap_config_changed"})
 			}
+			staleModels, staleErr := deferredConfigChangedModels(r.LlamaSwapConfig, content, runningModels)
+			if staleErr != nil {
+				reconcileErr = errors.Join(reconcileErr, staleErr)
+			}
+			markArtifactStatus(artifactStatus, staleModels, "stale_config")
 			if len(affectedModels) > 0 {
 				r.needsRestart = true
 				restartModels = affectedModels
@@ -424,6 +430,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 			if err != nil {
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
+			staleModels, staleErr := deferredConfigChangedModels(r.LlamaSwapConfig, content, runningModels)
+			if staleErr != nil {
+				reconcileErr = errors.Join(reconcileErr, staleErr)
+			}
+			markArtifactStatus(artifactStatus, staleModels, "stale_config")
 			if len(affectedModels) > 0 {
 				r.needsRestart = true
 				restartModels = affectedModels
@@ -746,6 +757,74 @@ func writeConfigIfChangedAndMarkPendingForRunningModels(path string, content []b
 	}
 	changed, err := writeConfigIfChangedWithoutMarkingPending(path, content)
 	return changed, nil, err
+}
+
+func deferredConfigChangedModels(path string, content []byte, runningModels []protocol.RunningModel) ([]string, error) {
+	if !hasRestartRelevantRunningModel(runningModels) {
+		return nil, nil
+	}
+	old, err := os.ReadFile(path)
+	if err == nil {
+		if bytes.Equal(old, content) {
+			return nil, nil
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else {
+		return nil, err
+	}
+
+	changedModels := llamaSwapConfigChangedModels(old, content)
+	if len(changedModels) == 0 {
+		return nil, nil
+	}
+	running := map[string]bool{}
+	for _, model := range restartRelevantRunningModelNames(runningModels) {
+		running[model] = true
+	}
+	stale := changedModels[:0]
+	for _, model := range changedModels {
+		if !running[model] {
+			stale = append(stale, model)
+		}
+	}
+	return stale, nil
+}
+
+func llamaSwapConfigChangedModels(oldContent []byte, newContent []byte) []string {
+	var oldConfig llamaSwapConfig
+	var newConfig llamaSwapConfig
+	if err := yaml.Unmarshal(oldContent, &oldConfig); err != nil {
+		return nil
+	}
+	if err := yaml.Unmarshal(newContent, &newConfig); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for model := range oldConfig.Models {
+		seen[model] = true
+	}
+	for model := range newConfig.Models {
+		seen[model] = true
+	}
+	out := make([]string, 0, len(seen))
+	for model := range seen {
+		oldModel, oldOK := oldConfig.Models[model]
+		newModel, newOK := newConfig.Models[model]
+		if oldOK != newOK || oldModel != newModel {
+			out = append(out, model)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func markArtifactStatus(status map[string]string, models []string, value string) {
+	for _, model := range models {
+		if strings.EqualFold(status[model], "ready") {
+			status[model] = value
+		}
+	}
 }
 
 func hasRestartRelevantRunningModel(runningModels []protocol.RunningModel) bool {
