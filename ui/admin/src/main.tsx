@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import YAML from "yaml";
 import {
@@ -754,6 +754,7 @@ function ConfigOps({
 
           {selectedModelConfig ? (
             <ModelEditor
+              key={selectedModel}
               name={selectedModel}
               model={selectedModelConfig}
               liveStatus={liveModelMap.get(selectedModel)}
@@ -872,6 +873,16 @@ function ModelEditor({
   onChange: (nextModel: EditableModelConfig) => void;
 }) {
   const isRawRunModel = Boolean(model.run && !model.runtime);
+  const runtimeArgsValue = model.runtime_args.join("\n");
+  const [runtimeArgsText, setRuntimeArgsText] = useState(runtimeArgsValue);
+  const lastRuntimeArgsValue = useRef(runtimeArgsValue);
+
+  useEffect(() => {
+    if (runtimeArgsValue !== lastRuntimeArgsValue.current) {
+      setRuntimeArgsText(runtimeArgsValue);
+      lastRuntimeArgsValue.current = runtimeArgsValue;
+    }
+  }, [name, runtimeArgsValue]);
 
   return (
     <div className="config-card">
@@ -956,9 +967,15 @@ function ModelEditor({
           <textarea
             className="mini-textarea"
             spellCheck={false}
-            value={model.runtime_args.join("\n")}
+            value={runtimeArgsText}
             disabled={isRawRunModel}
-            onChange={(event) => onChange({ ...model, runtime_args: splitLines(event.target.value) })}
+            onChange={(event) => {
+              const nextText = event.target.value;
+              const nextRuntimeArgs = splitLines(nextText);
+              setRuntimeArgsText(nextText);
+              lastRuntimeArgsValue.current = nextRuntimeArgs.join("\n");
+              onChange({ ...model, runtime_args: nextRuntimeArgs });
+            }}
           />
         </label>
       </div>
