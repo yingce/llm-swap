@@ -8,14 +8,23 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"llm-swap/internal/agent"
+	"llm-swap/internal/buildinfo"
 	"llm-swap/internal/config"
+	"llm-swap/internal/protocol"
 )
 
 func main() {
+	build := buildinfo.Current(protocol.AgentProtocolVersion)
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Print(agentVersionText(build))
+		return
+	}
+
 	cfg, err := config.LoadAgentRuntime(context.Background(), config.AgentRuntimeOptions{
 		Args: os.Args[1:],
 	})
@@ -54,10 +63,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("agent reconcile loop starting for %s advertised_swap_url=%s local_swap_url=%s", cfg.Agent.ID, cfg.Agent.LlamaSwapURL, llamaSwapState.BaseURL)
+	log.Printf("agent reconcile loop starting for %s advertised_swap_url=%s local_swap_url=%s %s", cfg.Agent.ID, cfg.Agent.LlamaSwapURL, llamaSwapState.BaseURL, strings.TrimSpace(agentVersionText(build)))
 	if err := reconciler.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+}
+
+func agentVersionText(build protocol.BuildInfo) string {
+	return fmt.Sprintf("agent_version=%s agent_commit=%s agent_protocol=%d build_time=%s\n", build.Version, build.Commit, build.ProtocolVersion, build.BuildTime)
 }
 
 func llamaSwapStateClient(cfg config.AgentConfig, httpClient *http.Client) agent.LlamaSwapStateClient {
