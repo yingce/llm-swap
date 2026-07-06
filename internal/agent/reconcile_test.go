@@ -1660,6 +1660,9 @@ func TestBuildHeartbeatCopiesTagsAndSetsCapacityArtifactsAndRestart(t *testing.T
 	if len(hb.Artifacts) != 0 {
 		t.Fatalf("artifacts=%v want empty map", hb.Artifacts)
 	}
+	if hb.AgentBuild.ProtocolVersion != protocol.AgentProtocolVersion {
+		t.Fatalf("agent protocol version=%d want %d", hb.AgentBuild.ProtocolVersion, protocol.AgentProtocolVersion)
+	}
 }
 
 func TestConfigClientGetConfigSuccess(t *testing.T) {

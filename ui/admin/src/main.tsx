@@ -440,6 +440,8 @@ function Workers({
         const runningModels = worker.running_models ?? [];
         const tags = worker.tags ?? [];
         const gpuDevices = worker.gpu_devices ?? [];
+        const agentCommit = shortCommit(worker.agent_build?.commit);
+        const agentVersion = worker.agent_build?.version || "unknown";
         return (
           <article className="worker" key={worker.id}>
             <div className="worker-head">
@@ -448,6 +450,10 @@ function Workers({
             </div>
             <p className="mono break">{worker.llama_swap_url}</p>
             <p>{worker.active_requests} active · {runningModels.length} running · {worker.scrape_failures} scrape failures</p>
+            <p>
+              agent {agentVersion}{agentCommit ? ` · ${agentCommit}` : ""}{" "}
+              <Badge tone={agentVersionTone(worker.agent_version_status)}>{worker.agent_version_status}</Badge>
+            </p>
             <div className="worker-models">
               <strong>Current models</strong>
               <div className="chips">
@@ -1269,6 +1275,20 @@ function formatMiB(value?: number) {
     return `${(mib / 1024).toFixed(1).replace(/\.0$/, "")}GiB`;
   }
   return `${Math.round(mib)}MiB`;
+}
+
+function shortCommit(commit?: string) {
+  return commit ? commit.slice(0, 12) : "";
+}
+
+function agentVersionTone(status?: string): "good" | "warn" | "bad" {
+  if (status === "current") {
+    return "good";
+  }
+  if (status === "outdated") {
+    return "bad";
+  }
+  return "warn";
 }
 
 function sortedKeys(record?: Record<string, unknown>) {

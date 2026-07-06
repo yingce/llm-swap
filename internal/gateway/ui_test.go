@@ -216,6 +216,52 @@ func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
 	}
 }
 
+func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "worker-current",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-current",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		AgentBuild: protocol.BuildInfo{
+			Version:         "dev",
+			Commit:          "abc123",
+			ProtocolVersion: protocol.AgentProtocolVersion,
+		},
+	})
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "worker-legacy",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-legacy",
+		Artifacts:    map[string]string{"qwen": "ready"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var status uiStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	workers := map[string]uiWorker{}
+	for _, worker := range status.Workers {
+		workers[worker.ID] = worker
+	}
+	if got := workers["worker-current"].AgentBuild.Commit; got != "abc123" {
+		t.Fatalf("worker-current commit=%q want abc123", got)
+	}
+	if got := workers["worker-current"].AgentVersionStatus; got != "current" {
+		t.Fatalf("worker-current version status=%q want current", got)
+	}
+	if got := workers["worker-legacy"].AgentVersionStatus; got != "legacy" {
+		t.Fatalf("worker-legacy version status=%q want legacy", got)
+	}
+}
+
 func TestUIStatusPreservesWorkerJoinOrder(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	for _, workerID := range []string{"gpu-b", "gpu-a", "gpu-c"} {

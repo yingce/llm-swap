@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"llm-swap/internal/buildinfo"
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
@@ -960,5 +961,6 @@ func BuildHeartbeat(agentID string, tags []string, llamaSwapURL string, cfg prot
 		Artifacts:    artifacts,
 		Capacity:     cfg.TagPolicy.WorkerDefaults,
 		NeedsRestart: needsRestart,
+		AgentBuild:   buildinfo.Current(protocol.AgentProtocolVersion),
 	}
 }

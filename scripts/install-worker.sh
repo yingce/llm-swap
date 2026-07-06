@@ -939,7 +939,18 @@ install_agent_binary() {
   fi
   if [[ -d cmd/agent ]]; then
     if command -v go >/dev/null 2>&1 || [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
-      run go build -o "$LLMSWAP_AGENT_BIN" ./cmd/agent
+      local build_version="${LLMSWAP_BUILD_VERSION:-dev}"
+      local build_commit="${LLMSWAP_BUILD_COMMIT:-}"
+      local build_time="${LLMSWAP_BUILD_TIME:-}"
+      if [[ -z "$build_commit" && "$LLMSWAP_DRY_RUN" != "1" && -d .git ]] && command -v git >/dev/null 2>&1; then
+        build_commit="$(git rev-parse HEAD 2>/dev/null || true)"
+      fi
+      if [[ -z "$build_time" ]]; then
+        build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      fi
+      run go build \
+        -ldflags "-X llm-swap/internal/buildinfo.Version=${build_version} -X llm-swap/internal/buildinfo.Commit=${build_commit} -X llm-swap/internal/buildinfo.BuildTime=${build_time}" \
+        -o "$LLMSWAP_AGENT_BIN" ./cmd/agent
       return 0
     fi
   fi

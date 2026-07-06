@@ -6,6 +6,15 @@ import (
 	"llm-swap/internal/config"
 )
 
+const AgentProtocolVersion = 2
+
+type BuildInfo struct {
+	Version         string `json:"version,omitempty"`
+	Commit          string `json:"commit,omitempty"`
+	BuildTime       string `json:"build_time,omitempty"`
+	ProtocolVersion int    `json:"protocol_version,omitempty"`
+}
+
 type AgentConfigResponse struct {
 	OSS       config.OSSConfig        `yaml:"oss" json:"oss"`
 	Models    map[string]config.Model `yaml:"models" json:"models"`
@@ -62,6 +71,7 @@ type HeartbeatRequest struct {
 	Capacity      config.WorkerDefaults `json:"capacity"`
 	NeedsRestart  bool                  `json:"needs_restart"`
 	RestartModels []string              `json:"restart_models,omitempty"`
+	AgentBuild    BuildInfo             `json:"agent_build,omitempty"`
 	LastError     string                `json:"last_error"`
 	Events        []AgentEvent          `json:"events,omitempty"`
 }

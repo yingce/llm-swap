@@ -3,6 +3,10 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.gateway
+      args:
+        LLMSWAP_BUILD_VERSION: ${LLMSWAP_BUILD_VERSION:-dev}
+        LLMSWAP_BUILD_COMMIT: ${LLMSWAP_BUILD_COMMIT:-}
+        LLMSWAP_BUILD_TIME: ${LLMSWAP_BUILD_TIME:-}
     image: llmswap-gateway:local
     container_name: llmswap-gateway
     restart: unless-stopped

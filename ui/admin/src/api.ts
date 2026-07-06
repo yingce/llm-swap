@@ -65,6 +65,15 @@ export type WorkerStatus = {
   scrape_failures: number;
   scrape_backoff_seconds?: number;
   health_problem?: string;
+  agent_build: BuildInfo;
+  agent_version_status: "current" | "outdated" | "legacy";
+};
+
+export type BuildInfo = {
+  version?: string;
+  commit?: string;
+  build_time?: string;
+  protocol_version?: number;
 };
 
 export type GPUDevice = {
@@ -255,7 +264,9 @@ function normalizeWorker(worker: WorkerStatus): WorkerStatus {
     running_models: worker.running_models ?? [],
     gpu_devices: worker.gpu_devices ?? [],
     capacity: worker.capacity ?? { max_concurrency: 0, max_queue: 0 },
-    allowed_models: worker.allowed_models ?? []
+    allowed_models: worker.allowed_models ?? [],
+    agent_build: worker.agent_build ?? {},
+    agent_version_status: worker.agent_version_status ?? "legacy"
   };
 }
 

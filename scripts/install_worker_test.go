@@ -300,7 +300,9 @@ func TestInstallWorkerDryRunInitializesAgentConfigAndBuildsAgent(t *testing.T) {
 		"--agent-token", "agent-token",
 	)
 
-	assertContains(t, out, "go build -o /opt/llmswap/bin/llm-swap-agent ./cmd/agent")
+	assertContains(t, out, "go build -ldflags")
+	assertContains(t, out, "llm-swap/internal/buildinfo.Commit=")
+	assertContains(t, out, "-o /opt/llmswap/bin/llm-swap-agent ./cmd/agent")
 	assertContains(t, out, "WRITE /opt/llmswap/agent.yaml")
 	assertContains(t, out, "id: gpu-01")
 	assertContains(t, out, "tags: [gpu-4090, gpu-a100]")

@@ -136,6 +136,9 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 ARG all_proxy=
+ARG LLMSWAP_BUILD_VERSION=dev
+ARG LLMSWAP_BUILD_COMMIT=
+ARG LLMSWAP_BUILD_TIME=
 
 ENV HOME=/root
 ENV GOTOOLCHAIN=auto
@@ -149,7 +152,9 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
 
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/llm-swap-agent ./cmd/agent
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+      -ldflags "-X llm-swap/internal/buildinfo.Version=${LLMSWAP_BUILD_VERSION} -X llm-swap/internal/buildinfo.Commit=${LLMSWAP_BUILD_COMMIT} -X llm-swap/internal/buildinfo.BuildTime=${LLMSWAP_BUILD_TIME}" \
+      -o /out/llm-swap-agent ./cmd/agent
 
 FROM runtime-base AS final
 

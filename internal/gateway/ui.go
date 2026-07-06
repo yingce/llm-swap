@@ -102,6 +102,8 @@ type uiWorker struct {
 	AllowedModels        []string                `json:"allowed_models"`
 	HealthProblem        string                  `json:"health_problem,omitempty"`
 	ReplicaCooldowns     []ReplicaCooldown       `json:"replica_cooldowns"`
+	AgentBuild           protocol.BuildInfo      `json:"agent_build"`
+	AgentVersionStatus   string                  `json:"agent_version_status"`
 }
 
 type uiAgentEvent struct {
@@ -463,9 +465,21 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 			AllowedModels:        stringsOrEmpty(allowedModelsForWorker(cfg, worker)),
 			HealthProblem:        workerHealthProblem(worker, now),
 			ReplicaCooldowns:     cooldownsForWorker(cooldowns, worker.ID, now),
+			AgentBuild:           worker.AgentBuild,
+			AgentVersionStatus:   agentVersionStatus(worker.AgentBuild),
 		})
 	}
 	return out
+}
+
+func agentVersionStatus(build protocol.BuildInfo) string {
+	if build.ProtocolVersion == 0 && build.Commit == "" && build.Version == "" {
+		return "legacy"
+	}
+	if build.ProtocolVersion < protocol.AgentProtocolVersion {
+		return "outdated"
+	}
+	return "current"
 }
 
 func cooldownsForWorker(cooldowns ReplicaCooldownSnapshot, workerID string, now time.Time) []ReplicaCooldown {

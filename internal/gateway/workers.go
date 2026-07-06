@@ -32,6 +32,7 @@ type Worker struct {
 	Capacity           config.WorkerDefaults
 	NeedsRestart       bool
 	LastError          string
+	AgentBuild         protocol.BuildInfo
 	LastHeartbeat      time.Time
 	State              WorkerState
 	ScrapeFailures     int
@@ -77,6 +78,7 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 		Capacity:      hb.Capacity,
 		NeedsRestart:  hb.NeedsRestart,
 		LastError:     hb.LastError,
+		AgentBuild:    hb.AgentBuild,
 		LastHeartbeat: now,
 		State:         WorkerActive,
 	}
