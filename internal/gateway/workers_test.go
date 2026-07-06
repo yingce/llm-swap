@@ -495,6 +495,88 @@ func TestHeartbeatDrainResponseAllowsOneRestartPerModel(t *testing.T) {
 	}
 }
 
+func TestHeartbeatDrainResponseWaitsWhenAnyRestartModelHeld(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+
+	first := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-01",
+		NeedsRestart:  true,
+		RestartModels: []string{"qwen", "vision"},
+	}, now)
+	second := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-02",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-02",
+		NeedsRestart:  true,
+		RestartModels: []string{"qwen", "vision"},
+	}, now.Add(time.Second))
+
+	if !first.RestartAllowed {
+		t.Fatal("first idle worker with multi-model needs_restart should be allowed to restart")
+	}
+	if second.RestartAllowed {
+		t.Fatal("second worker should wait while any requested restart model scope is held")
+	}
+	if first.WorkerState != "draining" || second.WorkerState != "active" {
+		t.Fatalf("states = %q/%q, want draining/active", first.WorkerState, second.WorkerState)
+	}
+}
+
+func TestHeartbeatDrainResponseGlobalScopeBlocksModelScopedRestart(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+
+	oldAgent := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-01",
+		NeedsRestart: true,
+	}, now)
+	newAgent := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-02",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-02",
+		NeedsRestart:  true,
+		RestartModels: []string{"qwen"},
+	}, now.Add(time.Second))
+
+	if !oldAgent.RestartAllowed {
+		t.Fatal("old agent global restart should be allowed first")
+	}
+	if newAgent.RestartAllowed {
+		t.Fatal("model-scoped restart should wait while a global restart holder is active")
+	}
+}
+
+func TestHeartbeatDrainResponseModelScopedRestartBlocksGlobalScope(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+
+	newAgent := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-01",
+		NeedsRestart:  true,
+		RestartModels: []string{"qwen"},
+	}, now)
+	oldAgent := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "gpu-02",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-02",
+		NeedsRestart: true,
+	}, now.Add(time.Second))
+
+	if !newAgent.RestartAllowed {
+		t.Fatal("model-scoped restart should be allowed first")
+	}
+	if oldAgent.RestartAllowed {
+		t.Fatal("global restart should wait while any model-scoped restart holder is active")
+	}
+}
+
 func TestHeartbeatDrainResponseAllowsNextRestartAfterHolderCompletes(t *testing.T) {
 	now := time.Unix(100, 0)
 	reg := NewWorkerRegistry(6 * time.Second)

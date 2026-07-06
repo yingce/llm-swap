@@ -39,12 +39,12 @@ type Worker struct {
 }
 
 type WorkerRegistry struct {
-	mu            sync.RWMutex
-	staleAfter    time.Duration
-	workers       map[string]*Worker
-	workerOrder   []string
-	active        map[string]int
-	manualDrains  map[string]bool
+	mu             sync.RWMutex
+	staleAfter     time.Duration
+	workers        map[string]*Worker
+	workerOrder    []string
+	active         map[string]int
+	manualDrains   map[string]bool
 	restartHolders map[string]string
 }
 
@@ -101,18 +101,35 @@ func (r *WorkerRegistry) restartDecisionLocked(workerID string, needsRestart boo
 		return false, false
 	}
 	scopes := restartScopes(restartModels)
-	for _, scope := range scopes {
-		if r.restartHolders[scope] == workerID {
-			return true, r.active[workerID] == 0
-		}
+	if r.restartBlockedByOtherLocked(workerID, scopes) {
+		return false, false
 	}
 	for _, scope := range scopes {
 		if r.restartHolders[scope] == "" {
 			r.restartHolders[scope] = workerID
-			return true, r.active[workerID] == 0
 		}
 	}
-	return false, false
+	return true, r.active[workerID] == 0
+}
+
+func (r *WorkerRegistry) restartBlockedByOtherLocked(workerID string, scopes []string) bool {
+	if holder := r.restartHolders[restartGlobalScope]; holder != "" && holder != workerID {
+		return true
+	}
+	if len(scopes) == 1 && scopes[0] == restartGlobalScope {
+		for _, holder := range r.restartHolders {
+			if holder != "" && holder != workerID {
+				return true
+			}
+		}
+		return false
+	}
+	for _, scope := range scopes {
+		if holder := r.restartHolders[scope]; holder != "" && holder != workerID {
+			return true
+		}
+	}
+	return false
 }
 
 func restartScopes(models []string) []string {
