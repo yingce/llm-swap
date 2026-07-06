@@ -168,3 +168,8 @@ func runningModelState(worker Worker, model string) (string, bool) {
 func artifactReady(worker Worker, model string) bool {
 	return strings.EqualFold(worker.Artifacts[model], "ready")
 }
+
+func artifactRefreshable(worker Worker, model string) bool {
+	status := worker.Artifacts[model]
+	return strings.EqualFold(status, "ready") || strings.EqualFold(status, "stale_config")
+}

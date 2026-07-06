@@ -248,7 +248,7 @@ func (r LoadedReconciler) pickColdVictimForModel(workers []Worker, active map[st
 		if runningModelReady(worker, targetModel) {
 			continue
 		}
-		if !workerAllowsModel(r.Config, worker, targetModel) || !artifactReady(worker, targetModel) {
+		if !workerAllowsModel(r.Config, worker, targetModel) || !artifactRefreshable(worker, targetModel) {
 			continue
 		}
 		for _, running := range worker.RunningModels {

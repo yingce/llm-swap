@@ -282,7 +282,7 @@ func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[
 	var best ControlAction
 	found := false
 	for _, worker := range workers {
-		if !p.warmEligibleWorker(worker, now, active, targetModel) {
+		if !p.warmEvictionCandidateWorker(worker, now, active, targetModel) {
 			continue
 		}
 		for _, running := range worker.RunningModels {
@@ -314,6 +314,11 @@ func (p Placement) planWarmEviction(now time.Time, workers []Worker, active map[
 				KeepScore:   keep,
 				SwitchCost:  defaultSwitchCost,
 			}
+			if !artifactReady(worker, targetModel) {
+				action.Type = ControlActionUnload
+				action.Model = running.Model
+				action.Reason = "free_capacity_for_predictive_scaleout_stale_config"
+			}
 			if !found || action.KeepScore < best.KeepScore || (action.KeepScore == best.KeepScore && (action.VictimModel < best.VictimModel || (action.VictimModel == best.VictimModel && action.Worker.ID < best.Worker.ID))) {
 				best = action
 				found = true
@@ -342,6 +347,23 @@ func (p Placement) warmEligibleWorker(worker Worker, now time.Time, active map[s
 		return false
 	}
 	if !workerAllowsModel(p.Config, worker, modelName) || !artifactReady(worker, modelName) {
+		return false
+	}
+	if p.Cooldowns.Active(worker.ID, modelName, now) {
+		return false
+	}
+	_, running := runningModelState(worker, modelName)
+	return !running
+}
+
+func (p Placement) warmEvictionCandidateWorker(worker Worker, now time.Time, active map[string]int, modelName string) bool {
+	if p.Workers != nil && !p.Workers.Healthy(worker.ID, now) {
+		return false
+	}
+	if active[worker.ID] > 0 {
+		return false
+	}
+	if !workerAllowsModel(p.Config, worker, modelName) || !artifactRefreshable(worker, modelName) {
 		return false
 	}
 	if p.Cooldowns.Active(worker.ID, modelName, now) {
@@ -432,7 +454,7 @@ func (p Placement) pickEvictionVictimForModel(now time.Time, workers []Worker, a
 		if runningModelReady(worker, targetModel) {
 			continue
 		}
-		if !workerAllowsModel(p.Config, worker, targetModel) || !artifactReady(worker, targetModel) {
+		if !workerAllowsModel(p.Config, worker, targetModel) || !artifactRefreshable(worker, targetModel) {
 			continue
 		}
 		for _, running := range worker.RunningModels {
@@ -508,7 +530,7 @@ func (p Placement) effectiveMaxLoaded(model config.Model, workers []Worker, mode
 		if p.Workers != nil && !p.Workers.Healthy(worker.ID, now) {
 			continue
 		}
-		if workerAllowsModel(p.Config, worker, modelName) && artifactReady(worker, modelName) {
+		if workerAllowsModel(p.Config, worker, modelName) && artifactRefreshable(worker, modelName) {
 			count++
 		}
 	}

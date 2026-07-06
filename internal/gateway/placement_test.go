@@ -545,6 +545,93 @@ func TestPlacementWarmEvictsOpportunityCacheOnlyWhenDemandBeatsSwitchCost(t *tes
 	}
 }
 
+func TestPlacementCanEvictForStaleConfigTargetModel(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"hot":  {Priority: 10, MinLoaded: 0},
+			"cold": {Priority: 100, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"hot", "cold"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "hot-worker",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://hot-worker",
+		Artifacts:    map[string]string{"hot": "ready", "cold": "stale_config"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "hot", State: "ready"},
+		},
+	}, now)
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker()}).PlanControlActions(now)
+	if len(actions) != 1 {
+		t.Fatalf("actions = %#v, want one unload action to make stale_config target refreshable", actions)
+	}
+	action := actions[0]
+	if action.Type != ControlActionUnload || action.Model != "hot" || action.Worker.ID != "hot-worker" {
+		t.Fatalf("action = %#v, want unload hot on hot-worker", action)
+	}
+	if action.Reason != "free_capacity_for_min_loaded" {
+		t.Fatalf("reason = %q, want free_capacity_for_min_loaded", action.Reason)
+	}
+}
+
+func TestPlacementPredictiveScaleOutUnloadsBeforeWarmingStaleConfigTarget(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"hot":  {Priority: 200, MinLoaded: 0},
+			"cold": {Priority: 10, MinLoaded: 0},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"hot", "cold"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "cold-worker",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://cold-worker",
+		Artifacts:    map[string]string{"hot": "stale_config", "cold": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "cold", State: "ready"},
+		},
+	}, now)
+	pressure := NewPressureTracker(defaultPressureWindow)
+	for i := 0; i < minScaleOutRequests+3; i++ {
+		pressure.RecordRequest(PressureRequestObservation{
+			Time:        now.Add(time.Duration(i) * time.Second),
+			Model:       "hot",
+			TotalTokens: 1000,
+		})
+	}
+	pressure.RecordQueue(PressureQueueObservation{
+		Time:             now.Add(5 * time.Second),
+		Model:            "hot",
+		Result:           QueueResultAdmittedAfterWait,
+		WaitMS:           800,
+		ReadyReplicas:    0,
+		OccupiedReplicas: 0,
+		ActiveBefore:     1,
+	})
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker(), Pressure: pressure}).PlanControlActions(now.Add(10 * time.Second))
+	if len(actions) != 1 {
+		t.Fatalf("actions = %#v, want one unload action before stale_config warm", actions)
+	}
+	action := actions[0]
+	if action.Type != ControlActionUnload || action.Model != "cold" || action.Worker.ID != "cold-worker" {
+		t.Fatalf("action = %#v, want unload cold on cold-worker", action)
+	}
+	if action.Reason != "free_capacity_for_predictive_scaleout_stale_config" {
+		t.Fatalf("reason = %q, want free_capacity_for_predictive_scaleout_stale_config", action.Reason)
+	}
+}
+
 func TestPlacementWarmDoesNotEvictWhenDemandDoesNotBeatSwitchCost(t *testing.T) {
 	now := time.Unix(1000, 0)
 	cfg := config.GatewayConfig{
@@ -585,7 +672,7 @@ func TestPlacementColdStartRequestCanEvictExcessReplicaAboveMinLoaded(t *testing
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{
 			"qwen2.5": {Priority: 10, MinLoaded: 0, MaxLoaded: 1, MaxLoadedSet: true},
-			"nsfw":   {Priority: 100, MinLoaded: 1, MaxLoaded: 2, MaxLoadedSet: true},
+			"nsfw":    {Priority: 100, MinLoaded: 1, MaxLoaded: 2, MaxLoadedSet: true},
 		},
 		TagPolicies: map[string]config.TagPolicy{
 			"gpu": {AllowedModels: []string{"qwen2.5", "nsfw"}},
@@ -630,7 +717,7 @@ func TestPlacementColdStartRequestDoesNotEvictReplicaAtMinLoaded(t *testing.T) {
 	cfg := config.GatewayConfig{
 		Models: map[string]config.Model{
 			"qwen2.5": {Priority: 10, MinLoaded: 0, MaxLoaded: 1, MaxLoadedSet: true},
-			"nsfw":   {Priority: 100, MinLoaded: 1, MaxLoaded: 2, MaxLoadedSet: true},
+			"nsfw":    {Priority: 100, MinLoaded: 1, MaxLoaded: 2, MaxLoadedSet: true},
 		},
 		TagPolicies: map[string]config.TagPolicy{
 			"gpu": {AllowedModels: []string{"qwen2.5", "nsfw"}},
