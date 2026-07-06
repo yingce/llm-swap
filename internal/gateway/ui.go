@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"llm-swap/internal/buildinfo"
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
@@ -477,6 +478,9 @@ func agentVersionStatus(build protocol.BuildInfo) string {
 		return "legacy"
 	}
 	if build.ProtocolVersion < protocol.AgentProtocolVersion {
+		return "outdated"
+	}
+	if build.Version != buildinfo.AgentVersion {
 		return "outdated"
 	}
 	return "current"

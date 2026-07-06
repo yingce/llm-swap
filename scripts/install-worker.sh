@@ -939,7 +939,7 @@ install_agent_binary() {
   fi
   if [[ -d cmd/agent ]]; then
     if command -v go >/dev/null 2>&1 || [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
-      local build_version="${LLMSWAP_BUILD_VERSION:-dev}"
+      local build_version="${LLMSWAP_BUILD_VERSION:-}"
       local build_commit="${LLMSWAP_BUILD_COMMIT:-}"
       local build_time="${LLMSWAP_BUILD_TIME:-}"
       if [[ -z "$build_commit" && "$LLMSWAP_DRY_RUN" != "1" && -d .git ]] && command -v git >/dev/null 2>&1; then

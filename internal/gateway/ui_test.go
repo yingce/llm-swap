@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"llm-swap/internal/buildinfo"
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
@@ -224,8 +225,19 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 		LlamaSwapURL: "http://worker-current",
 		Artifacts:    map[string]string{"qwen": "ready"},
 		AgentBuild: protocol.BuildInfo{
-			Version:         "dev",
+			Version:         buildinfo.AgentVersion,
 			Commit:          "abc123",
+			ProtocolVersion: protocol.AgentProtocolVersion,
+		},
+	})
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "worker-outdated",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-outdated",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		AgentBuild: protocol.BuildInfo{
+			Version:         "2026.07.06.0",
+			Commit:          "old123",
 			ProtocolVersion: protocol.AgentProtocolVersion,
 		},
 	})
@@ -256,6 +268,9 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 	}
 	if got := workers["worker-current"].AgentVersionStatus; got != "current" {
 		t.Fatalf("worker-current version status=%q want current", got)
+	}
+	if got := workers["worker-outdated"].AgentVersionStatus; got != "outdated" {
+		t.Fatalf("worker-outdated version status=%q want outdated", got)
 	}
 	if got := workers["worker-legacy"].AgentVersionStatus; got != "legacy" {
 		t.Fatalf("worker-legacy version status=%q want legacy", got)

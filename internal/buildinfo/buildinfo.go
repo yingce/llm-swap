@@ -6,15 +6,21 @@ import (
 	"llm-swap/internal/protocol"
 )
 
+const AgentVersion = "2026.07.06.2"
+
 var (
-	Version   = "dev"
+	Version   = ""
 	Commit    = ""
 	BuildTime = ""
 )
 
 func Current(protocolVersion int) protocol.BuildInfo {
+	version := Version
+	if version == "" {
+		version = AgentVersion
+	}
 	info := protocol.BuildInfo{
-		Version:         Version,
+		Version:         version,
 		Commit:          Commit,
 		BuildTime:       BuildTime,
 		ProtocolVersion: protocolVersion,
