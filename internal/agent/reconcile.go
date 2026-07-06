@@ -138,6 +138,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	gpuDevices, err := r.fetchGPUDevices(ctx)
 	reconcileErr = errors.Join(reconcileErr, err)
 
+	var pendingConfigContent []byte
 	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
@@ -152,6 +153,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 			}
 			if restartNeeded {
 				r.needsRestart = true
+				pendingConfigContent = content
 			}
 		}
 	}
@@ -171,6 +173,16 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	r.dropReportedEvents(len(hb.Events))
 
 	if resp.RestartAllowed && r.needsRestart {
+		if len(pendingConfigContent) > 0 {
+			changed, err := writeConfigIfChangedWithoutMarkingPending(r.LlamaSwapConfig, pendingConfigContent)
+			if err != nil {
+				r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
+				return resp, errors.Join(reconcileErr, err)
+			}
+			if changed {
+				r.recordEvent(protocol.AgentEvent{Event: "llama_swap_config_changed"})
+			}
+		}
 		r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_start"})
 		if err := r.restart(ctx); err != nil {
 			r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
@@ -396,17 +408,19 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	gpuDevices, err := r.fetchGPUDevices(ctx)
 	reconcileErr = errors.Join(reconcileErr, err)
 
+	var pendingConfigContent []byte
 	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
-			changed, restartNeeded, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
+			_, restartNeeded, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
 			if err != nil {
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
-			if changed && restartNeeded {
+			if restartNeeded {
 				r.needsRestart = true
+				pendingConfigContent = content
 			}
 		}
 	}
@@ -426,6 +440,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	r.dropReportedEvents(len(hb.Events))
 
 	if resp.RestartAllowed && r.needsRestart {
+		if len(pendingConfigContent) > 0 {
+			if _, err := writeConfigIfChangedWithoutMarkingPending(r.LlamaSwapConfig, pendingConfigContent); err != nil {
+				return resp, errors.Join(reconcileErr, err)
+			}
+		}
 		if err := r.restart(ctx); err != nil {
 			return resp, errors.Join(reconcileErr, err)
 		}
@@ -693,6 +712,20 @@ func writeConfigIfChangedAndMarkPendingForRunningModels(path string, content []b
 		return false, false, err
 	}
 
+	if hasRestartRelevantRunningModel(runningModels) {
+		restartNeeded := loadedModelConfigChanged(old, content, runningModels)
+		if restartNeeded {
+			if markPendingRestart == nil {
+				return false, false, fmt.Errorf("mark pending restart function is required")
+			}
+			if err := markPendingRestart(); err != nil {
+				return false, false, err
+			}
+			return false, true, nil
+		}
+		return false, false, nil
+	}
+
 	restartNeeded := loadedModelConfigChanged(old, content, runningModels)
 	if restartNeeded {
 		changed, err := writeConfigIfChangedAndMarkPending(path, content, markPendingRestart)
@@ -700,6 +733,18 @@ func writeConfigIfChangedAndMarkPendingForRunningModels(path string, content []b
 	}
 	changed, err := writeConfigIfChangedWithoutMarkingPending(path, content)
 	return changed, false, err
+}
+
+func hasRestartRelevantRunningModel(runningModels []protocol.RunningModel) bool {
+	for _, running := range runningModels {
+		if running.Model == "" {
+			continue
+		}
+		if runningModelStateRequiresConfigRestart(running.State) {
+			return true
+		}
+	}
+	return false
 }
 
 func loadedModelConfigChanged(oldContent []byte, newContent []byte, runningModels []protocol.RunningModel) bool {
