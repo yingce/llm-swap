@@ -450,8 +450,11 @@ func TestHeartbeatDrainResponseAllowsOnlyOneRestartAtATime(t *testing.T) {
 	if second.RestartAllowed {
 		t.Fatal("second worker should wait while another worker holds restart permission")
 	}
-	if first.WorkerState != "draining" || second.WorkerState != "draining" {
-		t.Fatalf("states = %q/%q, want both draining", first.WorkerState, second.WorkerState)
+	if first.WorkerState != "draining" || second.WorkerState != "active" {
+		t.Fatalf("states = %q/%q, want draining/active", first.WorkerState, second.WorkerState)
+	}
+	if _, ok := reg.Acquire("gpu-02", now.Add(2*time.Second)); !ok {
+		t.Fatal("waiting restart worker should remain routable until restart is allowed")
 	}
 }
 
@@ -518,6 +521,12 @@ func TestHeartbeatDrainResponseWaitsForAcquiredRequest(t *testing.T) {
 	}, now.Add(2*time.Second))
 	if resp.RestartAllowed {
 		t.Fatal("worker with acquired request should not be allowed to restart")
+	}
+	if resp.WorkerState != "draining" {
+		t.Fatalf("worker_state = %q, want draining while waiting for active request to finish", resp.WorkerState)
+	}
+	if _, ok := reg.Acquire("gpu-01", now.Add(2500*time.Millisecond)); ok {
+		t.Fatal("restart holder should not accept new requests while draining active requests")
 	}
 
 	release()

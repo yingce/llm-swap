@@ -80,27 +80,29 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 		w.ScrapeFailures = prev.ScrapeFailures
 		w.ScrapeBackoffUntil = prev.ScrapeBackoffUntil
 	}
-	if hb.NeedsRestart || r.manualDrains[hb.AgentID] {
-		w.State = WorkerDraining
-	}
 	r.workers[hb.AgentID] = w
 
 	if !hb.NeedsRestart && r.restartHolder == hb.AgentID {
 		r.restartHolder = ""
 	}
-	restartAllowed := r.restartAllowedLocked(hb.AgentID, hb.NeedsRestart)
+	restartDraining, restartAllowed := r.restartDecisionLocked(hb.AgentID, hb.NeedsRestart)
+	if restartDraining || r.manualDrains[hb.AgentID] {
+		w.State = WorkerDraining
+	}
 	return protocol.HeartbeatResponse{WorkerState: string(w.State), RestartAllowed: restartAllowed}
 }
 
-func (r *WorkerRegistry) restartAllowedLocked(workerID string, needsRestart bool) bool {
-	if !needsRestart || r.active[workerID] != 0 {
-		return false
+func (r *WorkerRegistry) restartDecisionLocked(workerID string, needsRestart bool) (bool, bool) {
+	if !needsRestart {
+		return false, false
 	}
 	if r.restartHolder == "" {
 		r.restartHolder = workerID
-		return true
 	}
-	return r.restartHolder == workerID
+	if r.restartHolder != workerID {
+		return false, false
+	}
+	return true, r.active[workerID] == 0
 }
 
 func (r *WorkerRegistry) releaseExpiredRestartHolderLocked(now time.Time) {
