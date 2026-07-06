@@ -139,26 +139,31 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	reconcileErr = errors.Join(reconcileErr, err)
 
 	var pendingConfigContent []byte
+	var restartModels []string
 	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
-			changed, restartNeeded, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
+			changed, affectedModels, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
 			if err != nil {
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
 			if changed {
 				r.recordEvent(protocol.AgentEvent{Event: "llama_swap_config_changed"})
 			}
-			if restartNeeded {
+			if len(affectedModels) > 0 {
 				r.needsRestart = true
+				restartModels = affectedModels
 				pendingConfigContent = content
 			}
 		}
 	}
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
+	if r.needsRestart {
+		hb.RestartModels = append([]string(nil), restartModels...)
+	}
 	hb.RunningModels = runningModels
 	hb.GPUDevices = gpuDevices
 	hb.Events = r.snapshotEventsForHeartbeat(agentEventHeartbeatLimit)
@@ -409,23 +414,28 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	reconcileErr = errors.Join(reconcileErr, err)
 
 	var pendingConfigContent []byte
+	var restartModels []string
 	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
-			_, restartNeeded, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
+			_, affectedModels, err := writeConfigIfChangedAndMarkPendingForRunningModels(r.LlamaSwapConfig, content, runningModels, r.markPendingRestart)
 			if err != nil {
 				reconcileErr = errors.Join(reconcileErr, err)
 			}
-			if restartNeeded {
+			if len(affectedModels) > 0 {
 				r.needsRestart = true
+				restartModels = affectedModels
 				pendingConfigContent = content
 			}
 		}
 	}
 
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
+	if r.needsRestart {
+		hb.RestartModels = append([]string(nil), restartModels...)
+	}
 	hb.RunningModels = runningModels
 	hb.GPUDevices = gpuDevices
 	hb.Events = r.snapshotEventsForHeartbeat(agentEventHeartbeatLimit)
@@ -699,80 +709,98 @@ func writeConfigIfChangedAndMarkPending(path string, content []byte, markPending
 	return true, nil
 }
 
-func writeConfigIfChangedAndMarkPendingForRunningModels(path string, content []byte, runningModels []protocol.RunningModel, markPendingRestart func() error) (bool, bool, error) {
+func writeConfigIfChangedAndMarkPendingForRunningModels(path string, content []byte, runningModels []protocol.RunningModel, markPendingRestart func() error) (bool, []string, error) {
 	old, err := os.ReadFile(path)
 	if err == nil {
 		if bytes.Equal(old, content) {
-			return false, false, nil
+			return false, nil, nil
 		}
 	} else if errors.Is(err, os.ErrNotExist) {
 		changed, err := writeConfigIfChangedAndMarkPending(path, content, markPendingRestart)
-		return changed, changed, err
+		if !changed {
+			return false, nil, err
+		}
+		return true, []string{""}, err
 	} else {
-		return false, false, err
+		return false, nil, err
 	}
 
 	if hasRestartRelevantRunningModel(runningModels) {
-		restartNeeded := loadedModelConfigChanged(old, content, runningModels)
-		if restartNeeded {
+		affectedModels := loadedModelConfigChangedModels(old, content, runningModels)
+		if len(affectedModels) > 0 {
 			if markPendingRestart == nil {
-				return false, false, fmt.Errorf("mark pending restart function is required")
+				return false, nil, fmt.Errorf("mark pending restart function is required")
 			}
 			if err := markPendingRestart(); err != nil {
-				return false, false, err
+				return false, nil, err
 			}
-			return false, true, nil
+			return false, affectedModels, nil
 		}
-		return false, false, nil
+		return false, nil, nil
 	}
 
-	restartNeeded := loadedModelConfigChanged(old, content, runningModels)
-	if restartNeeded {
+	affectedModels := loadedModelConfigChangedModels(old, content, runningModels)
+	if len(affectedModels) > 0 {
 		changed, err := writeConfigIfChangedAndMarkPending(path, content, markPendingRestart)
-		return changed, changed, err
+		return changed, affectedModels, err
 	}
 	changed, err := writeConfigIfChangedWithoutMarkingPending(path, content)
-	return changed, false, err
+	return changed, nil, err
 }
 
 func hasRestartRelevantRunningModel(runningModels []protocol.RunningModel) bool {
+	return len(restartRelevantRunningModelNames(runningModels)) > 0
+}
+
+func restartRelevantRunningModelNames(runningModels []protocol.RunningModel) []string {
+	seen := map[string]bool{}
+	out := []string{}
 	for _, running := range runningModels {
 		if running.Model == "" {
 			continue
 		}
-		if runningModelStateRequiresConfigRestart(running.State) {
-			return true
+		if !runningModelStateRequiresConfigRestart(running.State) || seen[running.Model] {
+			continue
 		}
+		seen[running.Model] = true
+		out = append(out, running.Model)
 	}
-	return false
+	return out
 }
 
 func loadedModelConfigChanged(oldContent []byte, newContent []byte, runningModels []protocol.RunningModel) bool {
+	return len(loadedModelConfigChangedModels(oldContent, newContent, runningModels)) > 0
+}
+
+func loadedModelConfigChangedModels(oldContent []byte, newContent []byte, runningModels []protocol.RunningModel) []string {
 	if len(runningModels) == 0 {
-		return false
+		return nil
 	}
 	var oldConfig llamaSwapConfig
 	var newConfig llamaSwapConfig
 	if err := yaml.Unmarshal(oldContent, &oldConfig); err != nil {
-		return true
+		return restartRelevantRunningModelNames(runningModels)
 	}
 	if err := yaml.Unmarshal(newContent, &newConfig); err != nil {
-		return true
+		return restartRelevantRunningModelNames(runningModels)
 	}
+	seen := map[string]bool{}
+	out := []string{}
 	for _, running := range runningModels {
 		if running.Model == "" {
 			continue
 		}
-		if !runningModelStateRequiresConfigRestart(running.State) {
+		if !runningModelStateRequiresConfigRestart(running.State) || seen[running.Model] {
 			continue
 		}
 		oldModel, oldOK := oldConfig.Models[running.Model]
 		newModel, newOK := newConfig.Models[running.Model]
 		if oldOK != newOK || oldModel != newModel {
-			return true
+			seen[running.Model] = true
+			out = append(out, running.Model)
 		}
 	}
-	return false
+	return out
 }
 
 func runningModelStateRequiresConfigRestart(state string) bool {

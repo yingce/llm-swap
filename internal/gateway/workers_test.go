@@ -458,6 +458,43 @@ func TestHeartbeatDrainResponseAllowsOnlyOneRestartAtATime(t *testing.T) {
 	}
 }
 
+func TestHeartbeatDrainResponseAllowsOneRestartPerModel(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+
+	qwen := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-01",
+		NeedsRestart:  true,
+		RestartModels: []string{"qwen"},
+	}, now)
+	vision := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-02",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-02",
+		NeedsRestart:  true,
+		RestartModels: []string{"vision"},
+	}, now.Add(time.Second))
+	qwenWaiter := reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-03",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-03",
+		NeedsRestart:  true,
+		RestartModels: []string{"qwen"},
+	}, now.Add(2*time.Second))
+
+	if !qwen.RestartAllowed || !vision.RestartAllowed {
+		t.Fatalf("restart_allowed = %v/%v, want both different-model holders allowed", qwen.RestartAllowed, vision.RestartAllowed)
+	}
+	if qwenWaiter.RestartAllowed {
+		t.Fatal("same-model restart waiter should not be allowed while qwen holder is active")
+	}
+	if qwen.WorkerState != "draining" || vision.WorkerState != "draining" || qwenWaiter.WorkerState != "active" {
+		t.Fatalf("states = %q/%q/%q, want draining/draining/active", qwen.WorkerState, vision.WorkerState, qwenWaiter.WorkerState)
+	}
+}
+
 func TestHeartbeatDrainResponseAllowsNextRestartAfterHolderCompletes(t *testing.T) {
 	now := time.Unix(100, 0)
 	reg := NewWorkerRegistry(6 * time.Second)

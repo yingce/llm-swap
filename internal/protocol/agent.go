@@ -61,6 +61,7 @@ type HeartbeatRequest struct {
 	Artifacts     map[string]string     `json:"artifacts"`
 	Capacity      config.WorkerDefaults `json:"capacity"`
 	NeedsRestart  bool                  `json:"needs_restart"`
+	RestartModels []string              `json:"restart_models,omitempty"`
 	LastError     string                `json:"last_error"`
 	Events        []AgentEvent          `json:"events,omitempty"`
 }

@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ const (
 const workerScrapeFailureBackoffThreshold = 3
 const workerScrapeFailureBackoff = 30 * time.Second
 const workerOfflineRetention = 10 * time.Minute
+const restartGlobalScope = "*"
 
 type Worker struct {
 	ID                 string
@@ -42,15 +45,16 @@ type WorkerRegistry struct {
 	workerOrder   []string
 	active        map[string]int
 	manualDrains  map[string]bool
-	restartHolder string
+	restartHolders map[string]string
 }
 
 func NewWorkerRegistry(staleAfter time.Duration) *WorkerRegistry {
 	return &WorkerRegistry{
-		staleAfter:   staleAfter,
-		workers:      make(map[string]*Worker),
-		active:       make(map[string]int),
-		manualDrains: make(map[string]bool),
+		staleAfter:     staleAfter,
+		workers:        make(map[string]*Worker),
+		active:         make(map[string]int),
+		manualDrains:   make(map[string]bool),
+		restartHolders: make(map[string]string),
 	}
 }
 
@@ -82,36 +86,67 @@ func (r *WorkerRegistry) UpsertHeartbeat(hb protocol.HeartbeatRequest, now time.
 	}
 	r.workers[hb.AgentID] = w
 
-	if !hb.NeedsRestart && r.restartHolder == hb.AgentID {
-		r.restartHolder = ""
+	if !hb.NeedsRestart {
+		r.releaseRestartHolderForWorkerLocked(hb.AgentID)
 	}
-	restartDraining, restartAllowed := r.restartDecisionLocked(hb.AgentID, hb.NeedsRestart)
+	restartDraining, restartAllowed := r.restartDecisionLocked(hb.AgentID, hb.NeedsRestart, hb.RestartModels)
 	if restartDraining || r.manualDrains[hb.AgentID] {
 		w.State = WorkerDraining
 	}
 	return protocol.HeartbeatResponse{WorkerState: string(w.State), RestartAllowed: restartAllowed}
 }
 
-func (r *WorkerRegistry) restartDecisionLocked(workerID string, needsRestart bool) (bool, bool) {
+func (r *WorkerRegistry) restartDecisionLocked(workerID string, needsRestart bool, restartModels []string) (bool, bool) {
 	if !needsRestart {
 		return false, false
 	}
-	if r.restartHolder == "" {
-		r.restartHolder = workerID
+	scopes := restartScopes(restartModels)
+	for _, scope := range scopes {
+		if r.restartHolders[scope] == workerID {
+			return true, r.active[workerID] == 0
+		}
 	}
-	if r.restartHolder != workerID {
-		return false, false
+	for _, scope := range scopes {
+		if r.restartHolders[scope] == "" {
+			r.restartHolders[scope] = workerID
+			return true, r.active[workerID] == 0
+		}
 	}
-	return true, r.active[workerID] == 0
+	return false, false
+}
+
+func restartScopes(models []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		out = append(out, model)
+	}
+	if len(out) == 0 {
+		return []string{restartGlobalScope}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (r *WorkerRegistry) releaseExpiredRestartHolderLocked(now time.Time) {
-	if r.restartHolder == "" {
-		return
+	for scope, workerID := range r.restartHolders {
+		holder := r.workers[workerID]
+		if holder == nil || now.Sub(holder.LastHeartbeat) > workerOfflineRetention {
+			delete(r.restartHolders, scope)
+		}
 	}
-	holder := r.workers[r.restartHolder]
-	if holder == nil || now.Sub(holder.LastHeartbeat) > workerOfflineRetention {
-		r.restartHolder = ""
+}
+
+func (r *WorkerRegistry) releaseRestartHolderForWorkerLocked(workerID string) {
+	for scope, holder := range r.restartHolders {
+		if holder == workerID {
+			delete(r.restartHolders, scope)
+		}
 	}
 }
 
@@ -185,9 +220,7 @@ func (r *WorkerRegistry) pruneOfflineLocked(now time.Time) {
 		delete(r.workers, workerID)
 		delete(r.active, workerID)
 		delete(r.manualDrains, workerID)
-		if r.restartHolder == workerID {
-			r.restartHolder = ""
-		}
+		r.releaseRestartHolderForWorkerLocked(workerID)
 		pruned = true
 	}
 	if !pruned {

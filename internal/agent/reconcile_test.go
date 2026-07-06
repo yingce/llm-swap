@@ -606,6 +606,9 @@ func TestReconcileConfigChangedForLoadedModelRequestsRestart(t *testing.T) {
 	if !heartbeats[0].NeedsRestart {
 		t.Fatalf("heartbeat needs_restart = false, want true for loaded model config change")
 	}
+	if got := strings.Join(heartbeats[0].RestartModels, ","); got != "qwen" {
+		t.Fatalf("heartbeat restart_models = %q, want qwen", got)
+	}
 	if _, err := os.Stat(configPath + ".restart-pending"); err != nil {
 		t.Fatalf("pending restart marker missing: %v", err)
 	}
@@ -663,6 +666,9 @@ func TestReconcileConfigChangedForLoadedModelWritesConfigWhenRestartAllowed(t *t
 	}
 	if !heartbeats[0].NeedsRestart {
 		t.Fatalf("heartbeat needs_restart = false, want true for loaded model config change")
+	}
+	if got := strings.Join(heartbeats[0].RestartModels, ","); got != "qwen" {
+		t.Fatalf("heartbeat restart_models = %q, want qwen", got)
 	}
 	if svc.Restarts != 1 {
 		t.Fatalf("service restarts = %d, want 1", svc.Restarts)
