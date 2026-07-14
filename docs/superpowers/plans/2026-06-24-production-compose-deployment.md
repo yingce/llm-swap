@@ -14,7 +14,7 @@
 
 **Files:**
 - Create: `Dockerfile.gateway`
-- Create: `deploy/production/compose.yaml`
+- Create: `deploy/production/docker-compose.yaml`
 - Create: `deploy/production/vmagent/promscrape.yml`
 - Modify: `docs/agents/project-map.md`
 
@@ -25,7 +25,7 @@ and copies it into a Debian bookworm slim runtime with certificates.
 
 - [ ] **Step 2: Create production compose stack**
 
-Create `deploy/production/compose.yaml` with `gateway`,
+Create `deploy/production/docker-compose.yaml` with `gateway`,
 `victoriametrics`, and `vmagent`. Mount `/opt/llmswap/gateway.yaml` read-only,
 `/opt/llmswap/logs`, and `/opt/llmswap/data/victoriametrics`.
 
@@ -45,7 +45,7 @@ Run:
 
 ```bash
 go test ./...
-docker compose -f deploy/production/compose.yaml config
+docker compose -f deploy/production/docker-compose.yaml config
 ```
 
 Commit:
@@ -100,7 +100,7 @@ Stop supervisor `llmswap-gateway`, start compose:
 ```bash
 supervisorctl stop llmswap-gateway
 cd /opt/llmswap/deploy/current
-docker compose -f deploy/production/compose.yaml up -d --build
+docker compose -f deploy/production/docker-compose.yaml up -d --build
 ```
 
 - [ ] **Step 5: Verify production**
@@ -108,7 +108,7 @@ docker compose -f deploy/production/compose.yaml up -d --build
 Run:
 
 ```bash
-docker compose -f deploy/production/compose.yaml ps
+docker compose -f deploy/production/docker-compose.yaml ps
 curl -fsS http://127.0.0.1:8080/metrics
 curl -fsS -H "Authorization: Bearer <agent-token>" http://127.0.0.1:8080/ui/status
 ```
@@ -116,5 +116,5 @@ curl -fsS -H "Authorization: Bearer <agent-token>" http://127.0.0.1:8080/ui/stat
 Check gateway logs:
 
 ```bash
-docker compose -f deploy/production/compose.yaml logs --tail=80 gateway
+docker compose -f deploy/production/docker-compose.yaml logs --tail=80 gateway
 ```

@@ -125,7 +125,7 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
         RELEASE_DIR={release_dir}
         BUILD_CACHE_DIR={BUILD_CACHE_DIR}
         GATEWAY_CONTEXT="$APP_ROOT/docker-gateway-tailscale"
-        COMPOSE_FILE="$RELEASE_DIR/deploy/production/compose.yaml"
+        COMPOSE_FILE="$RELEASE_DIR/deploy/production/docker-compose.yaml"
         IMAGE={IMAGE}
         CONTAINER={CONTAINER}
         COMPOSE_PROJECT={COMPOSE_PROJECT}
@@ -242,8 +242,17 @@ DOCKERFILE
           docker stop "$CONTAINER.previous" >/dev/null
         fi
 
+        for service_container in llmswap-victoriametrics llmswap-vmagent; do
+          if docker ps -a --format '{{{{.Names}}}}' | grep -Fxq "$service_container"; then
+            existing_project="$(docker inspect -f '{{{{ index .Config.Labels "com.docker.compose.project" }}}}' "$service_container" 2>/dev/null || true)"
+            if [ "$existing_project" != "$COMPOSE_PROJECT" ]; then
+              docker rm -f "$service_container" >/dev/null
+            fi
+          fi
+        done
+
         set +e
-        LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate gateway
+        LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
         run_status=$?
         set -e
         if [ "$run_status" -ne 0 ]; then

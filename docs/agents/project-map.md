@@ -706,7 +706,7 @@ Deployment helpers:
 - `deploy/docker-compose.metrics.yml`
 - `deploy/vmagent/promscrape.yml`
 - `Dockerfile.gateway`
-- `deploy/production/compose.yaml`
+- `deploy/production/docker-compose.yaml`
 - `deploy/production/vmagent/promscrape.yml`
 
 vmagent scrapes gateway `/metrics` and remote-writes to VictoriaMetrics. The
@@ -722,7 +722,7 @@ read-write. VictoriaMetrics stores data under
 `/opt/llmswap/data/victoriametrics`. Start it from the repository root with:
 
 ```bash
-docker compose -f deploy/production/compose.yaml up -d --build
+docker compose -f deploy/production/docker-compose.yaml up -d --build
 ```
 
 The gateway Dockerfile builds `ui/admin` with Node/Vite before compiling the Go

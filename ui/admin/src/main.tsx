@@ -925,7 +925,7 @@ function ModelEditor({
         </label>
         <NumberField
           label="Max loaded"
-          value={model.max_loaded}
+          value={model.max_loaded_auto ? "" : model.max_loaded}
           disabled={model.max_loaded_auto}
           onChange={(value) => onChange({ ...model, max_loaded: value })}
         />
@@ -1131,7 +1131,7 @@ function NumberField({
   onChange
 }: {
   label: string;
-  value: number;
+  value: number | "";
   disabled?: boolean;
   onChange: (value: number) => void;
 }) {
@@ -1140,7 +1140,7 @@ function NumberField({
       <span>{label}</span>
       <input
         type="number"
-        value={Number.isFinite(value) ? value : 0}
+        value={value === "" ? "" : Number.isFinite(value) ? value : 0}
         disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value || 0))}
       />

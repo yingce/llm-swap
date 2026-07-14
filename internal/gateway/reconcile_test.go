@@ -259,6 +259,44 @@ func TestLoadedReconcilerKeepsOpportunityCacheWhenNoModelNeedsCapacity(t *testin
 	}
 }
 
+func TestLoadedReconcilerUnloadsExplicitZeroMaxLoaded(t *testing.T) {
+	now := time.Now()
+	var unloadCold atomic.Int32
+	coldServer := unloadServerForModel(t, "cold", &unloadCold)
+	defer coldServer.Close()
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"cold": {MinLoaded: 0, MaxLoaded: 0, MaxLoadedSet: true},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"cold"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: coldServer.URL,
+		Artifacts:    map[string]string{"cold": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "cold", State: "ready"},
+		},
+	}, now)
+	reconciler := LoadedReconciler{
+		Config:  cfg,
+		Workers: reg,
+		Client:  LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:  NewAccessTracker(),
+	}
+
+	if err := reconciler.Reconcile(context.Background(), now); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if unloadCold.Load() != 1 {
+		t.Fatalf("cold unload calls = %d, want 1 for explicit max_loaded=0", unloadCold.Load())
+	}
+}
+
 func TestLoadedReconcilerWarmsMinLoadedOnEmptyWorker(t *testing.T) {
 	now := time.Unix(1000, 0)
 	var loadCalls atomic.Int32

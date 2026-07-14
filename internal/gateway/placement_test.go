@@ -87,6 +87,39 @@ func TestPlacementCountsLoadingReplicaAsOccupiedButNotRoutable(t *testing.T) {
 	}
 }
 
+func TestPlacementDoesNotRouteExplicitZeroMaxLoaded(t *testing.T) {
+	now := time.Now()
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {MinLoaded: 0, MaxLoaded: 0, MaxLoadedSet: true},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "loaded",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: "http://loaded",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "ready"},
+		},
+	}, now)
+
+	decision, err := (Placement{Config: cfg, Workers: reg}).PickReadyWorker("qwen", now, nil)
+	if err == nil {
+		t.Fatalf("PickReadyWorker error = nil, want max_loaded=0 rejection")
+	}
+	if decision.ReadyReplicas != 1 || decision.OccupiedReplicas != 1 {
+		t.Fatalf("replicas ready=%d occupied=%d, want 1/1", decision.ReadyReplicas, decision.OccupiedReplicas)
+	}
+	if decision.MaxLoaded != 0 || decision.MaxLoadedAuto {
+		t.Fatalf("max loaded = %d auto=%v, want explicit 0", decision.MaxLoaded, decision.MaxLoadedAuto)
+	}
+}
+
 func TestPlacementMissingMaxLoadedUsesEligibleWorkerCountAsAutoCeiling(t *testing.T) {
 	now := time.Now()
 	cfg := config.GatewayConfig{

@@ -53,7 +53,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 	var outErr error
 	for modelName, model := range r.Config.Models {
 		maxLoaded := model.EffectiveMaxLoaded()
-		if maxLoaded <= 0 {
+		if maxLoaded <= 0 && !model.MaxLoadedSet {
 			continue
 		}
 		loaded := loadedWorkersForModel(workers, modelName, now, r.Workers)

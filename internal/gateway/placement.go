@@ -91,6 +91,14 @@ func (p Placement) PickReadyWorker(model string, now time.Time, exclude map[stri
 
 	targetLoaded := readyCount > 0
 	maxLoaded, maxLoadedAuto := p.effectiveMaxLoaded(modelCfg, workers, model, now)
+	if maxLoaded <= 0 && !maxLoadedAuto {
+		return PlacementDecision{
+			ReadyReplicas:    readyCount,
+			OccupiedReplicas: occupiedCount,
+			MaxLoaded:        maxLoaded,
+			MaxLoadedAuto:    maxLoadedAuto,
+		}, fmt.Errorf("model %q has max_loaded=0", model)
+	}
 	canScaleOut := maxLoaded > 0 && occupiedCount < maxLoaded
 	loadingAtCeiling := maxLoaded > 0 && readyCount == 0 && occupiedCount >= maxLoaded
 

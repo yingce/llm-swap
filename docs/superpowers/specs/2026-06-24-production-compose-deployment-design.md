@@ -12,7 +12,7 @@ The repository will include a production gateway image and compose stack:
 
 - `Dockerfile.gateway` builds a static `llm-swap-gateway` binary and runs it in
   a small Debian runtime image.
-- `deploy/production/compose.yaml` runs:
+- `deploy/production/docker-compose.yaml` runs:
   - `gateway`, exposing `8080`;
   - `victoriametrics`, exposing `8428` locally for query access;
   - `vmagent`, scraping gateway `/metrics` and remote-writing to
@@ -38,7 +38,7 @@ On the production host:
 4. Enable `metrics_store` in the production config with
    `query_url: http://victoriametrics:8428`.
 5. Stop supervisor `llmswap-gateway`.
-6. Start `docker compose -f deploy/production/compose.yaml up -d --build`.
+6. Start `docker compose -f deploy/production/docker-compose.yaml up -d --build`.
 7. Verify `/ui/status`, `/metrics`, and compose service health.
 
 Rollback is to stop the compose gateway and start supervisor `llmswap-gateway`

@@ -1,3 +1,5 @@
+name: llmswap
+
 services:
   gateway:
     image: ${LLMSWAP_GATEWAY_IMAGE:-llmswap-gateway:tailscale}
