@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -22,6 +20,7 @@ BUILD_CACHE_DIR = f"{DEPLOY_ROOT}/cache"
 IMAGE = "llmswap-gateway:tailscale"
 CONTAINER = "llmswap-gateway"
 GO_IMAGE = "golang:1.23-bookworm"
+COMPOSE_PROJECT = "llmswap"
 
 
 def repo_root() -> Path:
@@ -126,8 +125,10 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
         RELEASE_DIR={release_dir}
         BUILD_CACHE_DIR={BUILD_CACHE_DIR}
         GATEWAY_CONTEXT="$APP_ROOT/docker-gateway-tailscale"
+        COMPOSE_FILE="$RELEASE_DIR/deploy/production/compose.yaml"
         IMAGE={IMAGE}
         CONTAINER={CONTAINER}
+        COMPOSE_PROJECT={COMPOSE_PROJECT}
         GO_IMAGE={GO_IMAGE}
         COMMIT={commit}
         FULL_COMMIT={full_commit}
@@ -228,9 +229,9 @@ DOCKERFILE
 
         docker build -t "$IMAGE" "$GATEWAY_CONTEXT"
 
-        docker rm -f "$CONTAINER.previous" >/dev/null 2>&1 || true
         had_previous=0
         if docker ps -a --format '{{{{.Names}}}}' | grep -Fxq "$CONTAINER"; then
+          docker rm -f "$CONTAINER.previous" >/dev/null 2>&1 || true
           had_previous=1
           docker rename "$CONTAINER" "$CONTAINER.previous"
           docker update --restart=no "$CONTAINER.previous" >/dev/null
@@ -238,21 +239,7 @@ DOCKERFILE
         fi
 
         set +e
-        docker run -d \\
-          --name "$CONTAINER" \\
-          --restart unless-stopped \\
-          -p 8080:8080 \\
-          --cap-add NET_ADMIN \\
-          --device /dev/net/tun:/dev/net/tun \\
-          -v "$APP_ROOT/gateway.yaml:/opt/llmswap/gateway.yaml" \\
-          -v "$APP_ROOT/logs:/opt/llmswap/logs" \\
-          -v "$APP_ROOT/tailscale:/opt/llmswap/tailscale" \\
-          -e LLMSWAP_GATEWAY_CONFIG=/opt/llmswap/gateway.yaml \\
-          -e LLMSWAP_ENABLE_TAILSCALE=1 \\
-          -e LLMSWAP_TAILSCALE_AUTHKEY_FILE=/opt/llmswap/tailscale/authkey \\
-          -e LLMSWAP_TAILSCALE_HOSTNAME=llmswap-gateway-8-141-111-101 \\
-          -e LLMSWAP_TAILSCALE_TUN=tun \\
-          "$IMAGE"
+        LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate gateway
         run_status=$?
         set -e
         if [ "$run_status" -ne 0 ]; then
@@ -273,7 +260,7 @@ DOCKERFILE
         if [ "$healthy" != "1" ]; then
           echo "new gateway failed health check; rolling back" >&2
           docker logs --tail=120 "$CONTAINER" >&2 || true
-          docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+          LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" rm -sf gateway >/dev/null 2>&1 || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
           if [ "$had_previous" = "1" ]; then
             docker start "$CONTAINER.previous" >/dev/null
             docker rename "$CONTAINER.previous" "$CONTAINER"
@@ -290,7 +277,6 @@ DOCKERFILE
 
         printf '%s\\n' "$FULL_COMMIT" > "$DEPLOY_ROOT/.deployed-commit"
         printf '%s\\n' "$BUILD_TIME" > "$DEPLOY_ROOT/.deployed-at"
-        docker rm -f "$CONTAINER.previous" >/dev/null 2>&1 || true
 
         docker ps --filter name="$CONTAINER" --format 'table {{{{.Names}}}}\\t{{{{.Image}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}'
         curl -s -o /dev/null -w 'healthz=%{{http_code}}\\n' http://127.0.0.1:8080/healthz

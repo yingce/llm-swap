@@ -1,21 +1,15 @@
 services:
   gateway:
-    build:
-      context: ../..
-      dockerfile: Dockerfile.gateway
-      args:
-        LLMSWAP_BUILD_VERSION: ${LLMSWAP_BUILD_VERSION:-}
-        LLMSWAP_BUILD_COMMIT: ${LLMSWAP_BUILD_COMMIT:-}
-        LLMSWAP_BUILD_TIME: ${LLMSWAP_BUILD_TIME:-}
-    image: llmswap-gateway:local
+    image: ${LLMSWAP_GATEWAY_IMAGE:-llmswap-gateway:tailscale}
     container_name: llmswap-gateway
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      LLMSWAP_ENABLE_TAILSCALE: ${LLMSWAP_GATEWAY_ENABLE_TAILSCALE:-0}
-      LLMSWAP_TAILSCALE_AUTHKEY: ${LLMSWAP_GATEWAY_TAILSCALE_AUTHKEY:-}
-      LLMSWAP_TAILSCALE_HOSTNAME: ${LLMSWAP_GATEWAY_TAILSCALE_HOSTNAME:-llmswap-gateway}
+      LLMSWAP_GATEWAY_CONFIG: /opt/llmswap/gateway.yaml
+      LLMSWAP_ENABLE_TAILSCALE: ${LLMSWAP_GATEWAY_ENABLE_TAILSCALE:-1}
+      LLMSWAP_TAILSCALE_AUTHKEY_FILE: ${LLMSWAP_GATEWAY_TAILSCALE_AUTHKEY_FILE:-/opt/llmswap/tailscale/authkey}
+      LLMSWAP_TAILSCALE_HOSTNAME: ${LLMSWAP_GATEWAY_TAILSCALE_HOSTNAME:-llmswap-gateway-8-141-111-101}
       LLMSWAP_TAILSCALE_TUN: ${LLMSWAP_GATEWAY_TAILSCALE_TUN:-tun}
     cap_add:
       - NET_ADMIN

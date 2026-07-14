@@ -1,5 +1,6 @@
 .worktrees/
 .tmp/
+.deploy/
 .superpowers/
 node_modules/
 ui/admin/node_modules/
