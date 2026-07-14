@@ -146,6 +146,8 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
 
         if [ "$RUN_TESTS" = "1" ]; then
           docker run --rm \\
+            -e GOPROXY=https://goproxy.cn,direct \\
+            -e GOSUMDB=sum.golang.google.cn \\
             -v "$RELEASE_DIR:/src" \\
             -v "$BUILD_CACHE_DIR/go-build:/root/.cache/go-build" \\
             -v "$BUILD_CACHE_DIR/go-mod:/go/pkg/mod" \\
@@ -154,6 +156,8 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
         fi
 
         docker run --rm \\
+          -e GOPROXY=https://goproxy.cn,direct \\
+          -e GOSUMDB=sum.golang.google.cn \\
           -v "$RELEASE_DIR:/src" \\
           -v "$BUILD_CACHE_DIR/go-build:/root/.cache/go-build" \\
           -v "$BUILD_CACHE_DIR/go-mod:/go/pkg/mod" \\
