@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.23.12
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.20.5
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0

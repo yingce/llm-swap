@@ -29,6 +29,7 @@ type Server struct {
 	access             *AccessTracker
 	pressure           *PressureTracker
 	replicaCooldowns   *ReplicaCooldowns
+	tunnels            *AgentTunnelRegistry
 	requestLogPath     string
 	workerEventLogPath string
 	proxyAttempts      int
@@ -106,6 +107,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 		access:             access,
 		pressure:           NewPressureTracker(defaultPressureWindow),
 		replicaCooldowns:   NewReplicaCooldowns(defaultReplicaCooldownTTL),
+		tunnels:            NewAgentTunnelRegistry(),
 		requestLogPath:     requestLogPath,
 		workerEventLogPath: workerEventLogPath,
 		proxyAttempts:      configuredProxyAttempts(cfg),
@@ -138,6 +140,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	s.mux.Handle("POST /ui/api/cooldowns/clear", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUICooldownClear)))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
+	s.mux.Handle("GET /internal/agent/tunnel", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentTunnel)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))
 	s.mux.Handle("POST /v1/chat/completions", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModelProxy)))
 
@@ -168,14 +171,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if s.scraper == nil || worker.LlamaSwapURL == "" {
 			return ActivityStats{}, nil
 		}
-		activity, err := s.scraper.PullActivity(worker.ID, worker.LlamaSwapURL)
+		activity, err := s.scraper.PullActivityViaTunnel(worker.ID, worker.LlamaSwapURL, s.tunnelForWorker(worker.ID))
 		s.recordScrapeResult(worker.ID, err, time.Now())
 		return activity, err
 	}, func(worker Worker) (int, error) {
 		if s.scraper == nil || worker.LlamaSwapURL == "" {
 			return 0, nil
 		}
-		samples, err := s.scraper.PullPerformance(worker.ID, worker.LlamaSwapURL)
+		samples, err := s.scraper.PullPerformanceViaTunnel(worker.ID, worker.LlamaSwapURL, s.tunnelForWorker(worker.ID))
 		s.recordScrapeResult(worker.ID, err, time.Now())
 		return samples, err
 	})

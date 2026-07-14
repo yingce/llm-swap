@@ -14,6 +14,7 @@ import (
 type LlamaSwapClient struct {
 	BearerToken string
 	HTTPClient  *http.Client
+	Tunnel      *AgentTunnel
 }
 
 type HTTPStatusError struct {
@@ -65,12 +66,7 @@ func (c LlamaSwapClient) do(req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
 	}
 
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return err
 	}
@@ -82,6 +78,17 @@ func (c LlamaSwapClient) do(req *http.Request) error {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+func (c LlamaSwapClient) doRequest(req *http.Request) (*http.Response, error) {
+	if c.Tunnel != nil {
+		return c.Tunnel.RoundTripHTTP(req.Context(), "", req, nil)
+	}
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return httpClient.Do(req)
 }
 
 func ExtractModel(body []byte) string {

@@ -78,7 +78,7 @@ func (s *Server) handleUIModelWarm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordGatewayWorkerEvent(worker.ID, protocol.AgentEvent{Event: "gateway_model_warm_start", Model: model})
-	client := LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap}
+	client := s.llamaSwapClientForWorker(worker, cfg)
 	if err := client.Load(r.Context(), worker.LlamaSwapURL, model); err != nil {
 		s.recordReverseAccessResult(worker.ID, err, time.Now())
 		s.recordGatewayWorkerEvent(worker.ID, protocol.AgentEvent{Event: "gateway_model_warm_error", Model: model, Error: err.Error()})
@@ -115,7 +115,7 @@ func (s *Server) handleUIModelUnload(w http.ResponseWriter, r *http.Request) {
 		writeAdminActionError(w, http.StatusConflict, "model_unload", worker.ID, model, "model is not ready on worker")
 		return
 	}
-	client := LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap}
+	client := s.llamaSwapClientForWorker(worker, cfg)
 	if err := client.Unload(r.Context(), worker.LlamaSwapURL, model); err != nil {
 		s.recordReverseAccessResult(worker.ID, err, time.Now())
 		s.recordGatewayWorkerEvent(worker.ID, protocol.AgentEvent{Event: "gateway_model_unload_error", Model: model, Error: err.Error()})

@@ -20,6 +20,7 @@ type LoadedReconciler struct {
 	ReplicaCooldowns   *ReplicaCooldowns
 	Cooldowns          ReplicaCooldownSnapshot
 	Metrics            *Metrics
+	ClientForWorker    func(Worker) LlamaSwapClient
 	RecordEvent        func(workerID string, event protocol.AgentEvent)
 	RecordReachability func(workerID string, err error, now time.Time)
 	LogEvent           func(event string, fields map[string]any)
@@ -70,7 +71,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 				continue
 			}
 			r.observeControlAction("unload", modelName, worker.ID, "max_loaded", "planned")
-			if err := r.Client.Unload(ctx, worker.LlamaSwapURL, modelName); err != nil {
+			if err := r.clientForWorker(worker).Unload(ctx, worker.LlamaSwapURL, modelName); err != nil {
 				if r.RecordReachability != nil {
 					r.RecordReachability(worker.ID, err, time.Now())
 				}
@@ -97,7 +98,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			}
 			r.logControlAction("control_action_planned", action, nil)
 			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
-			if err := r.Client.Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+			if err := r.clientForWorker(action.Worker).Unload(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
 				if r.RecordReachability != nil {
 					r.RecordReachability(action.Worker.ID, err, time.Now())
 				}
@@ -120,7 +121,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			r.logControlAction("control_action_planned", action, nil)
 			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
 			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_start", nil)
-			if err := r.Client.Load(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
+			if err := r.clientForWorker(action.Worker).Load(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
 				if r.RecordReachability != nil {
 					r.RecordReachability(action.Worker.ID, err, time.Now())
 				}
@@ -177,7 +178,7 @@ func (r LoadedReconciler) unloadColdModelsForUnderloadedHotModels(ctx context.Co
 		if !ok {
 			continue
 		}
-		if err := r.Client.Unload(ctx, victim.LlamaSwapURL, victimModel); err != nil {
+		if err := r.clientForWorker(victim).Unload(ctx, victim.LlamaSwapURL, victimModel); err != nil {
 			r.recordUnloadEvent(victim.ID, victimModel, "gateway_model_unload_error", err)
 			outErr = errors.Join(outErr, err)
 			continue
@@ -200,6 +201,13 @@ func (r LoadedReconciler) recordUnloadEvent(workerID string, modelName string, e
 		event.Error = err.Error()
 	}
 	r.RecordEvent(workerID, event)
+}
+
+func (r LoadedReconciler) clientForWorker(worker Worker) LlamaSwapClient {
+	if r.ClientForWorker != nil {
+		return r.ClientForWorker(worker)
+	}
+	return r.Client
 }
 
 func (r LoadedReconciler) recordWarmEvent(workerID string, modelName string, eventName string, err error) {
@@ -325,9 +333,12 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 	for {
 		cfg := s.currentConfig()
 		reconciler := LoadedReconciler{
-			Config:           cfg,
-			Workers:          s.workers,
-			Client:           LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
+			Config:  cfg,
+			Workers: s.workers,
+			Client:  LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
+			ClientForWorker: func(worker Worker) LlamaSwapClient {
+				return s.llamaSwapClientForWorker(worker, cfg)
+			},
 			Access:           s.access,
 			Pressure:         s.pressure,
 			ReplicaCooldowns: s.replicaCooldowns,

@@ -6,7 +6,7 @@ import (
 	"llm-swap/internal/protocol"
 )
 
-const AgentVersion = "2026.07.06.3"
+const AgentVersion = "2026.07.14.1"
 
 var (
 	Version   = ""

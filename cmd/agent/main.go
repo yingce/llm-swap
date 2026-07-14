@@ -64,6 +64,21 @@ func main() {
 	defer stop()
 
 	log.Printf("agent reconcile loop starting for %s advertised_swap_url=%s local_swap_url=%s %s", cfg.Agent.ID, cfg.Agent.LlamaSwapURL, llamaSwapState.BaseURL, strings.TrimSpace(agentVersionText(build)))
+	tunnel := agent.TunnelClient{
+		GatewayURL: cfg.Agent.GatewayURL,
+		AgentID:    cfg.Agent.ID,
+		Token:      cfg.Agent.Token,
+		LocalURL:   config.LocalLlamaSwapURL(cfg.Agent.SwapPort),
+		HTTPClient: &http.Client{},
+		Logf:       log.Printf,
+	}
+	go func() {
+		log.Printf("agent tunnel starting for %s gateway_url=%s local_swap_url=%s", cfg.Agent.ID, cfg.Agent.GatewayURL, tunnel.LocalURL)
+		if err := tunnel.Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("agent tunnel stopped: %v", err)
+		}
+	}()
+
 	if err := reconciler.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}

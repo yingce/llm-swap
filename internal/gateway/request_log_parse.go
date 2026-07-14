@@ -3,6 +3,8 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -54,6 +56,49 @@ func requestLogEntryFromBody(requestID string, model string, body []byte) Reques
 		}
 	}
 	return entry
+}
+
+func requestXHeadersForLog(header http.Header) httpHeader {
+	out := httpHeader{}
+	names := make([]string, 0, len(header))
+	for name := range header {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		if !strings.HasPrefix(lower, "x-") || skipRequestHeaderLog(lower) {
+			continue
+		}
+		names = append(names, lower)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		values := header.Values(name)
+		copied := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			copied = append(copied, value)
+		}
+		if len(copied) > 0 {
+			out[name] = copied
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func skipRequestHeaderLog(lowerName string) bool {
+	if lowerName == "x-api-key" || lowerName == "x-goog-api-key" {
+		return true
+	}
+	for _, marker := range []string{"authorization", "credential", "password", "secret", "token"} {
+		if strings.Contains(lowerName, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeRequestLogEntry(base RequestLogEntry, extra RequestLogEntry) RequestLogEntry {

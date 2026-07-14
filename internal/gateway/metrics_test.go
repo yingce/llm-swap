@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"llm-swap/internal/protocol"
 )
@@ -42,6 +45,36 @@ func TestMetricsScraperDeduplicatesRowsAcrossPulls(t *testing.T) {
 	}
 	if second.Rows != 0 {
 		t.Fatalf("second PullActivity rows = %d, want 0", second.Rows)
+	}
+}
+
+func TestMetricsScraperPullActivityCanUseAgentTunnel(t *testing.T) {
+	tunnel := newTestAgentTunnel(t, func(t *testing.T, conn *websocket.Conn) {
+		var req tunnelHTTPRequest
+		if err := conn.ReadJSON(&req); err != nil {
+			t.Fatalf("read tunnel request: %v", err)
+		}
+		if req.Method != http.MethodGet || req.Path != "/api/metrics" {
+			t.Fatalf("tunnel request = %s %s, want GET /api/metrics", req.Method, req.Path)
+		}
+		if err := conn.WriteJSON(tunnelHTTPResponse{
+			Type:       "http_response",
+			ID:         req.ID,
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			BodyBase64: base64.StdEncoding.EncodeToString([]byte(`[{"id":"request-1","model":"qwen","duration_ms":42}]`)),
+		}); err != nil {
+			t.Fatalf("write tunnel response: %v", err)
+		}
+	})
+
+	scraper := NewMetricsScraper()
+	stats, err := scraper.PullActivityViaTunnel("worker-a", "http://worker-unreachable", tunnel)
+	if err != nil {
+		t.Fatalf("PullActivityViaTunnel returned error: %v", err)
+	}
+	if stats.Rows != 1 {
+		t.Fatalf("rows = %d, want 1", stats.Rows)
 	}
 }
 
