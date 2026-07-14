@@ -166,7 +166,7 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
           -e LLMSWAP_BUILD_VERSION="$COMMIT" \\
           -e LLMSWAP_BUILD_COMMIT="$COMMIT" \\
           -e LLMSWAP_BUILD_TIME="$BUILD_TIME" \\
-          "$GO_IMAGE" bash -lc 'mkdir -p dist && go build -ldflags "-X llm-swap/internal/buildinfo.Version=$LLMSWAP_BUILD_VERSION -X llm-swap/internal/buildinfo.Commit=$LLMSWAP_BUILD_COMMIT -X llm-swap/internal/buildinfo.BuildTime=$LLMSWAP_BUILD_TIME" -o dist/llm-swap-gateway ./cmd/gateway'
+          "$GO_IMAGE" bash -lc 'mkdir -p dist && /usr/local/go/bin/go build -ldflags "-X llm-swap/internal/buildinfo.Version=$LLMSWAP_BUILD_VERSION -X llm-swap/internal/buildinfo.Commit=$LLMSWAP_BUILD_COMMIT -X llm-swap/internal/buildinfo.BuildTime=$LLMSWAP_BUILD_TIME" -o dist/llm-swap-gateway ./cmd/gateway'
 
         install -m 0755 "$RELEASE_DIR/dist/llm-swap-gateway" "$GATEWAY_CONTEXT/llm-swap-gateway"
 
