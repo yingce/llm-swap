@@ -43,6 +43,28 @@ func TestHealthzEndpointReturnsNoContent(t *testing.T) {
 	}
 }
 
+func TestInstallWorkerScriptEndpointServesShellScriptWithoutAuth(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/install-worker.sh", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/x-shellscript") {
+		t.Fatalf("content-type = %q, want text/x-shellscript", got)
+	}
+	body := rr.Body.String()
+	if !strings.HasPrefix(body, "#!/usr/bin/env bash") {
+		t.Fatalf("script should start with bash shebang:\n%s", body[:min(len(body), 80)])
+	}
+	if !strings.Contains(body, "Usage: install-worker.sh [options]") {
+		t.Fatalf("script missing usage text")
+	}
+}
+
 func TestAgentConfigEndpointReturnsTagScopedModels(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/internal/agent/config?tags=gpu-4090", nil)

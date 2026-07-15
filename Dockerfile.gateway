@@ -68,9 +68,12 @@ WORKDIR /opt/llmswap
 
 COPY --from=build /out/llm-swap-gateway /usr/local/bin/llm-swap-gateway
 COPY scripts/gateway-container-entrypoint.sh /usr/local/bin/gateway-container-entrypoint.sh
+COPY scripts/install-worker.sh /usr/local/share/llmswap/install-worker.sh
 
 RUN sed -i 's/\r$//' /usr/local/bin/gateway-container-entrypoint.sh \
+ && sed -i 's/\r$//' /usr/local/share/llmswap/install-worker.sh \
  && chmod 0755 /usr/local/bin/gateway-container-entrypoint.sh \
+ && chmod 0644 /usr/local/share/llmswap/install-worker.sh \
  && mkdir -p /opt/llmswap/bin /opt/llmswap/logs /opt/llmswap/tailscale /etc/supervisor/conf.d
 
 EXPOSE 8080

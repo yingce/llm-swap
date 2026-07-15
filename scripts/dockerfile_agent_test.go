@@ -159,3 +159,18 @@ func TestDockerfileAgentUsesStableRuntimeBaseBeforeAgentBuild(t *testing.T) {
 		t.Fatalf("agent install should happen in the final stage")
 	}
 }
+
+func TestDockerfileGatewayCopiesInstallWorkerScript(t *testing.T) {
+	repo := repoRoot(t)
+	path := filepath.Join(repo, "Dockerfile.gateway")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+
+	want := "COPY scripts/install-worker.sh /usr/local/share/llmswap/install-worker.sh"
+	if !strings.Contains(text, want) {
+		t.Fatalf("Dockerfile.gateway missing %q", want)
+	}
+}

@@ -36,6 +36,25 @@ func TestFabricDeployPreparesImagesBeforeGatewayCutover(t *testing.T) {
 	}
 }
 
+func TestFabricDeployPackagesInstallWorkerScript(t *testing.T) {
+	fabfile := filepath.Join(fabfileRepoRoot(t), "scripts", "fabfile.py")
+	data, err := os.ReadFile(fabfile)
+	if err != nil {
+		t.Fatalf("read fabfile: %v", err)
+	}
+	text := string(data)
+
+	for _, want := range []string{
+		`install -m 0644 "$RELEASE_DIR/scripts/install-worker.sh" "$GATEWAY_CONTEXT/install-worker.sh"`,
+		`COPY install-worker.sh /usr/local/share/llmswap/install-worker.sh`,
+		`chmod 0644 /usr/local/share/llmswap/install-worker.sh`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("deploy script missing %q", want)
+		}
+	}
+}
+
 func fabfileRepoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

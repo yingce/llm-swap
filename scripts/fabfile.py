@@ -169,6 +169,7 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
           "$GO_IMAGE" bash -lc 'mkdir -p dist && /usr/local/go/bin/go build -ldflags "-X llm-swap/internal/buildinfo.Version=$LLMSWAP_BUILD_VERSION -X llm-swap/internal/buildinfo.Commit=$LLMSWAP_BUILD_COMMIT -X llm-swap/internal/buildinfo.BuildTime=$LLMSWAP_BUILD_TIME" -o dist/llm-swap-gateway ./cmd/gateway'
 
         install -m 0755 "$RELEASE_DIR/dist/llm-swap-gateway" "$GATEWAY_CONTEXT/llm-swap-gateway"
+        install -m 0644 "$RELEASE_DIR/scripts/install-worker.sh" "$GATEWAY_CONTEXT/install-worker.sh"
 
         if [ ! -x "$GATEWAY_CONTEXT/tailscale" ] || [ ! -x "$GATEWAY_CONTEXT/tailscaled" ]; then
           if docker ps -a --format '{{{{.Names}}}}' | grep -Fxq "$CONTAINER"; then
@@ -224,7 +225,9 @@ COPY llm-swap-gateway /usr/local/bin/llm-swap-gateway
 COPY tailscale /usr/bin/tailscale
 COPY tailscaled /usr/sbin/tailscaled
 COPY entrypoint.sh /usr/local/bin/gateway-entrypoint.sh
+COPY install-worker.sh /usr/local/share/llmswap/install-worker.sh
 RUN chmod 0755 /usr/local/bin/llm-swap-gateway /usr/bin/tailscale /usr/sbin/tailscaled /usr/local/bin/gateway-entrypoint.sh \
+ && chmod 0644 /usr/local/share/llmswap/install-worker.sh \
  && mkdir -p /opt/llmswap/logs /opt/llmswap/tailscale /run/tailscale
 ENV LLMSWAP_GATEWAY_CONFIG=/opt/llmswap/gateway.yaml
 EXPOSE 8080

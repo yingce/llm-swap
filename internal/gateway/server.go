@@ -137,6 +137,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	s.mux.Handle("GET /healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	s.mux.Handle("GET /install-worker.sh", http.HandlerFunc(s.handleInstallWorkerScript))
 	s.mux.Handle("GET /metrics", http.HandlerFunc(s.handleMetrics))
 	s.mux.Handle("GET /ui", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUI)))
 	s.mux.Handle("GET /ui/assets/", uiAuth(cfg.Tokens.Agent, embeddedAdminAssetHandler()))
