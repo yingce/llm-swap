@@ -233,6 +233,8 @@ DOCKERFILE
 
         docker build -t "$IMAGE" "$GATEWAY_CONTEXT"
 
+        LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" pull records-postgres victoriametrics vmagent
+
         had_previous=0
         if docker ps -a --format '{{{{.Names}}}}' | grep -Fxq "$CONTAINER"; then
           docker rm -f "$CONTAINER.previous" >/dev/null 2>&1 || true
@@ -252,7 +254,7 @@ DOCKERFILE
         done
 
         set +e
-        LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
+        LLMSWAP_GATEWAY_IMAGE="$IMAGE" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d --no-build --pull never
         run_status=$?
         set -e
         if [ "$run_status" -ne 0 ]; then
