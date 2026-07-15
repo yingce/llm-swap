@@ -80,7 +80,7 @@ func requestXHeadersForLog(header http.Header) httpHeader {
 			copied = append(copied, value)
 		}
 		if len(copied) > 0 {
-			out[name] = copied
+			out[name] = strings.Join(copied, ", ")
 		}
 	}
 	if len(out) == 0 {
@@ -90,6 +90,9 @@ func requestXHeadersForLog(header http.Header) httpHeader {
 }
 
 func skipRequestHeaderLog(lowerName string) bool {
+	if lowerName == "x-request-id" || lowerName == "request-id" {
+		return true
+	}
 	if lowerName == "x-api-key" || lowerName == "x-goog-api-key" {
 		return true
 	}

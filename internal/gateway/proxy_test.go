@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -347,6 +348,7 @@ func TestProxyRecordsXRequestHeaders(t *testing.T) {
 	req.Header.Set("X-Oneapi-Request-Id", "oneapi-456")
 	req.Header.Add("X-Trace-Id", "trace-a")
 	req.Header.Add("X-Trace-Id", "trace-b")
+	req.Header.Set("Request-Id", "plain-request-id")
 	req.Header.Set("X-Api-Key", "secret")
 	req.Header.Set("X-Internal-Token", "secret")
 	req.Header.Set("User-Agent", "client")
@@ -358,14 +360,20 @@ func TestProxyRecordsXRequestHeaders(t *testing.T) {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
 	entry := readSingleRequestLogEntry(t, logPath)
-	if got := entry.RequestHeaders["x-user-id"]; len(got) != 1 || got[0] != "user-123" {
+	if got := fmt.Sprint(entry.RequestHeaders["x-user-id"]); got != "user-123" {
 		t.Fatalf("request_headers[x-user-id] = %#v, want user-123; entry=%+v", got, entry)
 	}
-	if got := entry.RequestHeaders["x-oneapi-request-id"]; len(got) != 1 || got[0] != "oneapi-456" {
+	if got := fmt.Sprint(entry.RequestHeaders["x-oneapi-request-id"]); got != "oneapi-456" {
 		t.Fatalf("request_headers[x-oneapi-request-id] = %#v, want oneapi-456; entry=%+v", got, entry)
 	}
-	if got := entry.RequestHeaders["x-trace-id"]; len(got) != 2 || got[0] != "trace-a" || got[1] != "trace-b" {
+	if got := fmt.Sprint(entry.RequestHeaders["x-trace-id"]); got != "trace-a, trace-b" {
 		t.Fatalf("request_headers[x-trace-id] = %#v, want both trace values; entry=%+v", got, entry)
+	}
+	if _, ok := entry.RequestHeaders["x-request-id"]; ok {
+		t.Fatalf("request_headers duplicated x-request-id: %+v", entry.RequestHeaders)
+	}
+	if _, ok := entry.RequestHeaders["request-id"]; ok {
+		t.Fatalf("request_headers duplicated request-id: %+v", entry.RequestHeaders)
 	}
 	if _, ok := entry.RequestHeaders["x-api-key"]; ok {
 		t.Fatalf("request_headers logged x-api-key: %+v", entry.RequestHeaders)

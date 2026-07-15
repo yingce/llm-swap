@@ -124,6 +124,8 @@ type uiAgentEvent struct {
 	Error           string    `json:"error,omitempty"`
 }
 
+type WorkerEventRecord = uiAgentEvent
+
 type uiEventsResponse struct {
 	Events     []uiAgentEvent `json:"events"`
 	NextOffset int            `json:"next_offset"`
@@ -159,6 +161,18 @@ func (s *Server) handleUIStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if s.recordsStore != nil {
+		resp, err := s.recordsStore.PageWorkerEvents(r.Context(), offset, limit)
+		if err != nil {
+			http.Error(w, "failed to load worker events", http.StatusInternalServerError)
+			return
+		}
+		if resp.Events == nil {
+			resp.Events = []uiAgentEvent{}
+		}
+		writeJSON(w, resp)
+		return
+	}
 	if s.workerEventLogPath == "" {
 		events := s.recentAgentEvents()
 		if offset < 0 {
@@ -195,6 +209,18 @@ func (s *Server) handleUIEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUIRequests(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if s.recordsStore != nil {
+		resp, err := s.recordsStore.PageRequestRecords(r.Context(), offset, limit)
+		if err != nil {
+			http.Error(w, "failed to load request records", http.StatusInternalServerError)
+			return
+		}
+		if resp.Requests == nil {
+			resp.Requests = []RequestLogEntry{}
+		}
+		writeJSON(w, resp)
+		return
+	}
 	if s.requestLogPath == "" {
 		requests := s.recentRequestLogs()
 		if offset < 0 {

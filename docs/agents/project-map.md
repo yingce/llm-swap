@@ -32,8 +32,11 @@ worker agent
      events to gateway
 ```
 
-Gateway state is in-process, with append-only JSONL files for request
-accounting and worker events. Historical metrics storage is optional:
+Gateway state is in-process, with append-only JSONL files for local request
+and worker event debugging/backups. A Postgres `records_store` can be enabled
+as the query source for request records and worker events; when it is enabled,
+the gateway still writes local JSONL but UI detail pages read from Postgres.
+Historical metrics storage is optional:
 VictoriaMetrics can be attached through vmagent scraping `/metrics`; when it is
 disabled the gateway still runs with no external database.
 
@@ -170,7 +173,27 @@ disabled the gateway still runs with no external database.
   - Append and parse gateway request JSONL.
   - Request log captures status, latency, bytes, media counts, max_tokens,
     temperature/top_p/top_k, usage tokens, cache tokens, reasoning tokens,
-    retry count, and filtered incoming `x-` request headers.
+    retry count, and filtered incoming `x-` request headers as strings.
+  - `x-request-id` and `request-id` are omitted from `request_headers` because
+    the canonical gateway request id is already stored as top-level
+    `request_id`.
+
+- `internal/gateway/records_store.go` and `internal/gateway/migrations/`
+  - Optional Postgres record store for request records and worker events.
+  - `records_store.auto_migrate` runs the embedded SQL migration at gateway
+    startup.
+  - The schema includes `request_records`, `worker_events`, and
+    `worker_model_ready_intervals`; cost/billing queries should build on these
+    PG tables instead of local JSONL.
+  - Imported historical JSONL rows use `source_hash` unique indexes so
+    interrupted imports can be rerun without duplicating rows.
+
+- `cmd/import-records` and `scripts/import-records-jsonl.sh`
+  - Import historical `gateway-requests.jsonl` and
+    `gateway-worker-events.jsonl` into the Postgres records store.
+  - The script expects `PG_DSN` or `LLMSWAP_RECORDS_STORE_DSN`; when `go` is
+    unavailable on the host, it falls back to running the command in the Go
+    Docker image on the compose network.
 
 - `internal/gateway/access.go`
   - Replays request logs into access accounting.
@@ -554,6 +577,13 @@ Gateway runtime envs should also use `LLMSWAP_*`:
 - `LLMSWAP_CLIENT_TOKEN`
 - `LLMSWAP_AGENT_TOKEN`
 - `LLMSWAP_LLAMA_SWAP_TOKEN`
+- `LLMSWAP_RECORDS_STORE_ENABLED`
+- `LLMSWAP_RECORDS_STORE_TYPE`
+- `LLMSWAP_RECORDS_STORE_DSN`
+- `PG_DSN` as the shorter records store DSN alias used by compose files.
+- `LLMSWAP_RECORDS_STORE_GATEWAY_ID`
+- `LLMSWAP_RECORDS_STORE_AUTO_MIGRATE`
+- `LLMSWAP_RECORDS_STORE_TIMEOUT_MS`
 
 Legacy gateway aliases such as `LLM_SWAP_GATEWAY_TOKENS_AGENT` are not
 accepted. Keep gateway runtime envs on the `LLMSWAP_*` names above.
@@ -659,6 +689,12 @@ Persistent gateway files:
 
 - `/opt/llmswap/logs/gateway-requests.jsonl`
 - `/opt/llmswap/logs/gateway-worker-events.jsonl`
+
+When `records_store.enabled=true`, these files remain local logs only. UI
+request/event pages query Postgres, and future billing/reporting should query
+Postgres records rather than replaying JSONL.
+Use `scripts/import-records-jsonl.sh` to backfill existing JSONL history into
+Postgres after enabling the records store.
 
 Worker-side model runtime logs:
 

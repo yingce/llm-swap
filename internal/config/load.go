@@ -52,6 +52,14 @@ func validateGateway(cfg GatewayConfig) error {
 	if cfg.MetricsStore.Enabled && cfg.MetricsStore.Type != "victoriametrics" {
 		return fmt.Errorf("metrics_store.type must be victoriametrics")
 	}
+	if cfg.RecordsStore.Enabled {
+		if cfg.RecordsStore.Type != "postgres" {
+			return fmt.Errorf("records_store.type must be postgres")
+		}
+		if strings.TrimSpace(cfg.RecordsStore.DSN) == "" {
+			return fmt.Errorf("records_store.dsn is required when records_store.enabled is true")
+		}
+	}
 	if strings.TrimSpace(cfg.OSS.BaseURL) == "" {
 		return fmt.Errorf("oss.base_url is required")
 	}
@@ -127,6 +135,12 @@ func applyGatewayDefaults(cfg *GatewayConfig) {
 	}
 	if cfg.MetricsStore.TimeoutMS <= 0 {
 		cfg.MetricsStore.TimeoutMS = 3000
+	}
+	if cfg.RecordsStore.Type == "" {
+		cfg.RecordsStore.Type = "postgres"
+	}
+	if cfg.RecordsStore.TimeoutMS <= 0 {
+		cfg.RecordsStore.TimeoutMS = 3000
 	}
 }
 

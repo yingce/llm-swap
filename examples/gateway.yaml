@@ -21,6 +21,16 @@ metrics_store:
   max_range: 7d
   timeout_ms: 3000
 
+# Optional Postgres record store. When enabled, request and worker event
+# records are written to Postgres and UI detail pages query Postgres.
+# Local JSONL logs are still written for debugging/backups.
+records_store:
+  enabled: false
+  type: postgres
+  dsn: postgres://llmswap:llmswap@postgres:5432/llmswap?sslmode=disable
+  auto_migrate: true
+  timeout_ms: 3000
+
 models:
   qwen3-32b-awq:
     priority: 10

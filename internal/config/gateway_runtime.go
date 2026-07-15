@@ -66,6 +66,12 @@ func LoadGatewayRuntime(ctx context.Context, opts GatewayRuntimeOptions) (Gatewa
 	_ = v.BindEnv("tokens.client", "LLMSWAP_CLIENT_TOKEN")
 	_ = v.BindEnv("tokens.agent", "LLMSWAP_AGENT_TOKEN")
 	_ = v.BindEnv("tokens.llama_swap", "LLMSWAP_LLAMA_SWAP_TOKEN")
+	_ = v.BindEnv("records_store.enabled", "LLMSWAP_RECORDS_STORE_ENABLED")
+	_ = v.BindEnv("records_store.type", "LLMSWAP_RECORDS_STORE_TYPE")
+	_ = v.BindEnv("records_store.dsn", "LLMSWAP_RECORDS_STORE_DSN", "PG_DSN")
+	_ = v.BindEnv("records_store.gateway_id", "LLMSWAP_RECORDS_STORE_GATEWAY_ID")
+	_ = v.BindEnv("records_store.auto_migrate", "LLMSWAP_RECORDS_STORE_AUTO_MIGRATE")
+	_ = v.BindEnv("records_store.timeout_ms", "LLMSWAP_RECORDS_STORE_TIMEOUT_MS")
 
 	overrides := GatewayRuntimeOverrides{
 		ListenAddr:    v.IsSet("addr") || v.IsSet("gateway.listen_addr"),
@@ -118,6 +124,24 @@ func applyGatewayEnv(v *viper.Viper, cfg *GatewayConfig) {
 	if value := strings.TrimSpace(v.GetString("tokens.llama_swap")); value != "" {
 		cfg.Tokens.LlamaSwap = value
 		llamaSwapTokenOverridden = true
+	}
+	if v.IsSet("records_store.enabled") {
+		cfg.RecordsStore.Enabled = v.GetBool("records_store.enabled")
+	}
+	if value := strings.TrimSpace(v.GetString("records_store.type")); value != "" {
+		cfg.RecordsStore.Type = value
+	}
+	if value := strings.TrimSpace(v.GetString("records_store.dsn")); value != "" {
+		cfg.RecordsStore.DSN = value
+	}
+	if value := strings.TrimSpace(v.GetString("records_store.gateway_id")); value != "" {
+		cfg.RecordsStore.GatewayID = value
+	}
+	if v.IsSet("records_store.auto_migrate") {
+		cfg.RecordsStore.AutoMigrate = v.GetBool("records_store.auto_migrate")
+	}
+	if value := v.GetInt("records_store.timeout_ms"); value > 0 {
+		cfg.RecordsStore.TimeoutMS = value
 	}
 	if llamaSwapInheritedAgentToken && !llamaSwapTokenOverridden {
 		cfg.Tokens.LlamaSwap = cfg.Tokens.Agent

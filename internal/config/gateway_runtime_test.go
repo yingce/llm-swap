@@ -160,6 +160,26 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayRuntimeAcceptsPGDSNForRecordsStore(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(configPath, []byte(validGatewayYAML("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSWAP_RECORDS_STORE_ENABLED", "true")
+	t.Setenv("PG_DSN", "postgres://llmswap:llmswap@postgres:5432/llmswap?sslmode=disable")
+
+	runtime, err := LoadGatewayRuntime(context.Background(), GatewayRuntimeOptions{ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("LoadGatewayRuntime returned error: %v", err)
+	}
+	if !runtime.Config.RecordsStore.Enabled {
+		t.Fatal("records_store.enabled = false, want true")
+	}
+	if runtime.Config.RecordsStore.DSN != "postgres://llmswap:llmswap@postgres:5432/llmswap?sslmode=disable" {
+		t.Fatalf("records_store.dsn = %q, want PG_DSN", runtime.Config.RecordsStore.DSN)
+	}
+}
+
 func TestLoadGatewayRuntimeIgnoresLegacyShortGatewayEnvNames(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	if err := os.WriteFile(configPath, []byte(validGatewayYAML("")), 0o644); err != nil {

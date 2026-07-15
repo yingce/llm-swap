@@ -7,6 +7,7 @@ type GatewayConfig struct {
 	OSS          OSSConfig            `yaml:"oss" json:"oss"`
 	Tokens       TokenConfig          `yaml:"tokens" json:"tokens"`
 	MetricsStore MetricsStoreConfig   `yaml:"metrics_store" json:"metrics_store"`
+	RecordsStore RecordsStoreConfig   `yaml:"records_store" json:"records_store"`
 	Models       map[string]Model     `yaml:"models" json:"models"`
 	TagPolicies  map[string]TagPolicy `yaml:"tag_policies" json:"tag_policies"`
 }
@@ -33,6 +34,15 @@ type MetricsStoreConfig struct {
 	DefaultRange string `yaml:"default_range" json:"default_range"`
 	MaxRange     string `yaml:"max_range" json:"max_range"`
 	TimeoutMS    int    `yaml:"timeout_ms" json:"timeout_ms"`
+}
+
+type RecordsStoreConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	Type        string `yaml:"type" json:"type"`
+	DSN         string `yaml:"dsn" json:"dsn"`
+	GatewayID   string `yaml:"gateway_id" json:"gateway_id"`
+	AutoMigrate bool   `yaml:"auto_migrate" json:"auto_migrate"`
+	TimeoutMS   int    `yaml:"timeout_ms" json:"timeout_ms"`
 }
 
 type Model struct {

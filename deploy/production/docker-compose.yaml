@@ -13,6 +13,11 @@ services:
       LLMSWAP_TAILSCALE_AUTHKEY_FILE: ${LLMSWAP_GATEWAY_TAILSCALE_AUTHKEY_FILE:-}
       LLMSWAP_TAILSCALE_HOSTNAME: ${LLMSWAP_GATEWAY_TAILSCALE_HOSTNAME:-}
       LLMSWAP_TAILSCALE_TUN: ${LLMSWAP_GATEWAY_TAILSCALE_TUN:-tun}
+      LLMSWAP_RECORDS_STORE_ENABLED: ${LLMSWAP_RECORDS_STORE_ENABLED:-1}
+      LLMSWAP_RECORDS_STORE_TYPE: postgres
+      PG_DSN: postgres://llmswap:llmswap@records-postgres:5432/llmswap?sslmode=disable
+      LLMSWAP_RECORDS_STORE_AUTO_MIGRATE: ${LLMSWAP_RECORDS_STORE_AUTO_MIGRATE:-1}
+      LLMSWAP_RECORDS_STORE_GATEWAY_ID: ${LLMSWAP_RECORDS_STORE_GATEWAY_ID:-production-gateway}
     cap_add:
       - NET_ADMIN
     devices:
@@ -22,7 +27,10 @@ services:
       - /opt/llmswap/logs:/opt/llmswap/logs
       - /opt/llmswap/tailscale:/opt/llmswap/tailscale
     depends_on:
-      - victoriametrics
+      records-postgres:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 15s
@@ -41,6 +49,22 @@ services:
       - "127.0.0.1:8428:8428"
     volumes:
       - /opt/llmswap/data/victoriametrics:/victoria-metrics-data
+
+  records-postgres:
+    image: postgres:16-alpine
+    container_name: llmswap-records-postgres
+    environment:
+      POSTGRES_DB: llmswap
+      POSTGRES_USER: llmswap
+      POSTGRES_PASSWORD: llmswap
+    restart: unless-stopped
+    volumes:
+      - /opt/llmswap/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llmswap -d llmswap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   vmagent:
     image: victoriametrics/vmagent:latest

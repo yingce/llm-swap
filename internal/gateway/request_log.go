@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -42,7 +43,40 @@ type RequestLogEntry struct {
 	RequestHeaders   httpHeader `json:"request_headers,omitempty"`
 }
 
-type httpHeader map[string][]string
+type httpHeader map[string]string
+
+func (h *httpHeader) UnmarshalJSON(data []byte) error {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out := httpHeader{}
+	for key, value := range raw {
+		switch typed := value.(type) {
+		case string:
+			if typed != "" {
+				out[key] = typed
+			}
+		case []any:
+			values := make([]string, 0, len(typed))
+			for _, item := range typed {
+				text, ok := item.(string)
+				if ok && text != "" {
+					values = append(values, text)
+				}
+			}
+			if len(values) > 0 {
+				out[key] = strings.Join(values, ", ")
+			}
+		}
+	}
+	if len(out) == 0 {
+		*h = nil
+		return nil
+	}
+	*h = out
+	return nil
+}
 
 func appendRequestLog(path string, entry RequestLogEntry) error {
 	if path == "" {

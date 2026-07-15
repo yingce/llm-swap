@@ -30,6 +30,7 @@ type Server struct {
 	pressure           *PressureTracker
 	replicaCooldowns   *ReplicaCooldowns
 	tunnels            *AgentTunnelRegistry
+	recordsStore       RecordsStore
 	requestLogPath     string
 	workerEventLogPath string
 	proxyAttempts      int
@@ -95,6 +96,21 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	if cfg.MetricsStore.Enabled && strings.TrimSpace(cfg.MetricsStore.QueryURL) != "" {
 		metricsStore = NewVictoriaMetricsClient(cfg.MetricsStore.QueryURL, time.Duration(cfg.MetricsStore.TimeoutMS)*time.Millisecond)
 	}
+	var recordsStore RecordsStore
+	if cfg.RecordsStore.Enabled {
+		store, err := NewPostgresRecordsStore(
+			context.Background(),
+			cfg.RecordsStore.DSN,
+			cfg.RecordsStore.GatewayID,
+			time.Duration(cfg.RecordsStore.TimeoutMS)*time.Millisecond,
+			cfg.RecordsStore.AutoMigrate,
+		)
+		if err != nil {
+			log.Printf("records_store_init_error: %v", err)
+		} else {
+			recordsStore = store
+		}
+	}
 
 	s := &Server{
 		configManager:      NewConfigManagerWithOverrides(cfg, configPath, overrides),
@@ -108,6 +124,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 		pressure:           NewPressureTracker(defaultPressureWindow),
 		replicaCooldowns:   NewReplicaCooldowns(defaultReplicaCooldownTTL),
 		tunnels:            NewAgentTunnelRegistry(),
+		recordsStore:       recordsStore,
 		requestLogPath:     requestLogPath,
 		workerEventLogPath: workerEventLogPath,
 		proxyAttempts:      configuredProxyAttempts(cfg),
@@ -356,6 +373,15 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		if cached.Event == "" {
 			continue
 		}
+		if s.recordsStore != nil {
+			if err := s.recordsStore.AppendWorkerEvent(r.Context(), cached); err != nil {
+				s.logEvent("worker_event_record_store_error", map[string]any{
+					"worker_id": hb.AgentID,
+					"event":     cached.Event,
+					"error":     err.Error(),
+				})
+			}
+		}
 		if err := appendWorkerEventLog(s.workerEventLogPath, cached); err != nil {
 			s.logEvent("worker_event_log_error", map[string]any{
 				"worker_id": hb.AgentID,
@@ -415,6 +441,15 @@ func (s *Server) recordGatewayWorkerEvent(workerID string, event protocol.AgentE
 	cached := s.recordAgentEvent(workerID, event, time.Now())
 	if cached.Event == "" {
 		return
+	}
+	if s.recordsStore != nil {
+		if err := s.recordsStore.AppendWorkerEvent(context.Background(), cached); err != nil {
+			s.logEvent("worker_event_record_store_error", map[string]any{
+				"worker_id": workerID,
+				"event":     cached.Event,
+				"error":     err.Error(),
+			})
+		}
 	}
 	if err := appendWorkerEventLog(s.workerEventLogPath, cached); err != nil {
 		s.logEvent("worker_event_log_error", map[string]any{

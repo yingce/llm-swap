@@ -268,6 +268,11 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 			StatusCode:  entry.StatusCode,
 		})
 	}
+	if s.recordsStore != nil {
+		if err := s.recordsStore.AppendRequestRecord(context.Background(), entry); err != nil {
+			s.logEvent("request_record_store_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})
+		}
+	}
 	if s.requestLogPath != "" {
 		if err := appendRequestLog(s.requestLogPath, entry); err != nil {
 			s.logEvent("request_log_write_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})

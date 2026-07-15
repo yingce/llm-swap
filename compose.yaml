@@ -10,7 +10,22 @@ services:
       - go-mod-cache:/go/pkg/mod
     environment:
       CGO_ENABLED: "0"
+      PG_DSN: postgres://llmswap:llmswap@postgres:5432/llmswap?sslmode=disable
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: llmswap
+      POSTGRES_USER: llmswap
+      POSTGRES_PASSWORD: llmswap
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
 
 volumes:
   go-build-cache:
   go-mod-cache:
+  postgres-data:
