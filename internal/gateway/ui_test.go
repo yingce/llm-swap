@@ -350,7 +350,7 @@ func uiWorkerIDs(workers []uiWorker) []string {
 func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 
-	for _, path := range []string{"/ui", "/ui/assets/", "/ui/status", "/ui/events", "/ui/requests", "/ui/metrics/summary", "/ui/metrics/model", "/ui/metrics/worker", "/ui/api/config"} {
+	for _, path := range []string{"/ui", "/ui/assets/", "/ui/status", "/ui/events", "/ui/requests", "/ui/metrics/summary", "/ui/metrics/model", "/ui/metrics/worker", "/ui/api/billing", "/ui/api/config"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 

@@ -55,6 +55,9 @@ type Metrics struct {
 	modelLoadedReplicas          *prometheus.GaugeVec
 	modelUnderprovisioned        *prometheus.GaugeVec
 	modelQueueDepth              *prometheus.GaugeVec
+	billingModelCostRMB          *prometheus.GaugeVec
+	billingModelBillableSeconds  *prometheus.GaugeVec
+	billingModelCostPerMTokRMB   *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -222,9 +225,21 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_model_queue_depth",
 		Help: "Current number of queued requests at the gateway model gate.",
 	}, []string{"model"})
+	billingModelCostRMB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_cost_rmb",
+		Help: "Estimated model ready occupancy cost in RMB for the billing scrape window.",
+	}, []string{"model"})
+	billingModelBillableSeconds := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_billable_worker_seconds",
+		Help: "Model billable worker seconds for the billing scrape window after same-worker multi-model sharing.",
+	}, []string{"model"})
+	billingModelCostPerMTokRMB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_cost_per_million_tokens_rmb",
+		Help: "Estimated model cost per million tokens in RMB for the billing scrape window.",
+	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostRMB, billingModelBillableSeconds, billingModelCostPerMTokRMB)
 
 	return &Metrics{
 		registry:                     registry,
@@ -268,6 +283,9 @@ func NewMetrics() *Metrics {
 		modelLoadedReplicas:          modelLoadedReplicas,
 		modelUnderprovisioned:        modelUnderprovisioned,
 		modelQueueDepth:              modelQueueDepth,
+		billingModelCostRMB:          billingModelCostRMB,
+		billingModelBillableSeconds:  billingModelBillableSeconds,
+		billingModelCostPerMTokRMB:   billingModelCostPerMTokRMB,
 	}
 }
 
@@ -323,6 +341,20 @@ func (m *Metrics) ObserveControlAction(action, model, workerID, reason, result s
 		result = "unknown"
 	}
 	m.controlActions.WithLabelValues(action, workerID, model, reason, result).Inc()
+}
+
+func (m *Metrics) ObserveBillingSummary(summary BillingSummary) {
+	if m == nil {
+		return
+	}
+	m.billingModelCostRMB.Reset()
+	m.billingModelBillableSeconds.Reset()
+	m.billingModelCostPerMTokRMB.Reset()
+	for _, model := range summary.Models {
+		m.billingModelCostRMB.WithLabelValues(model.Model).Set(model.ModelCostRMB)
+		m.billingModelBillableSeconds.WithLabelValues(model.Model).Set(model.BillableWorkerSeconds)
+		m.billingModelCostPerMTokRMB.WithLabelValues(model.Model).Set(model.CostPerMillionTokensRMB)
+	}
 }
 
 func (m *Metrics) ObserveQueueEvent(model, result string) {

@@ -3,12 +3,14 @@ import { createRoot } from "react-dom/client";
 import YAML from "yaml";
 import {
   applyConfig,
+  BillingSummary,
   ConfigChange,
   ConfigImpact,
   ConfigResponse,
   drainWorker,
   GatewayConfigView,
   getConfig,
+  getBilling,
   getEvents,
   getStatus,
   getRequests,
@@ -26,7 +28,7 @@ import {
 } from "./api";
 import "./styles.css";
 
-type Tab = "dashboard" | "models" | "workers" | "events" | "requests" | "configOps" | "advanced";
+type Tab = "dashboard" | "models" | "workers" | "billing" | "events" | "requests" | "configOps" | "advanced";
 
 type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
   runtime_args: string[];
@@ -42,6 +44,7 @@ const tabs: Array<{ id: Tab; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
   { id: "models", label: "Models" },
   { id: "workers", label: "Workers" },
+  { id: "billing", label: "Billing" },
   { id: "events", label: "Events" },
   { id: "requests", label: "Requests" },
   { id: "configOps", label: "Config Ops" },
@@ -57,6 +60,9 @@ function App() {
   const [requests, setRequests] = useState<RequestLogEntry[]>([]);
   const [requestOffset, setRequestOffset] = useState(0);
   const [hasMoreRequests, setHasMoreRequests] = useState(false);
+  const [billing, setBilling] = useState<BillingSummary | null>(null);
+  const [billingRangeHours, setBillingRangeHours] = useState(24);
+  const [billingError, setBillingError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -107,6 +113,17 @@ function App() {
     setHasMoreRequests(page.has_more);
   }
 
+  async function loadBilling(rangeHours = billingRangeHours) {
+    try {
+      const next = await getBilling(rangeHours, true);
+      setBilling(next);
+      setBillingRangeHours(rangeHours);
+      setBillingError("");
+    } catch (err) {
+      setBillingError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function runAction(action: () => Promise<{ action: string; worker_id?: string; model?: string }>) {
     try {
       const result = await action();
@@ -123,6 +140,7 @@ function App() {
     void refreshConfig();
     void loadEvents(0);
     void loadRequests(0);
+    void loadBilling(24);
     const timer = window.setInterval(refresh, 5000);
     return () => window.clearInterval(timer);
   }, []);
@@ -266,6 +284,9 @@ function App() {
           )}
           {tab === "models" && <Models models={status?.models ?? []} onAction={runAction} />}
           {tab === "workers" && <Workers workers={status?.workers ?? []} onAction={runAction} />}
+          {tab === "billing" && (
+            <Billing billing={billing} rangeHours={billingRangeHours} error={billingError} onRangeChange={(hours) => void loadBilling(hours)} />
+          )}
           {tab === "events" && (
             <Events events={events} hasMore={hasMoreEvents} onMore={() => void loadEvents(eventOffset)} />
           )}
@@ -542,6 +563,133 @@ function Requests({
   );
 }
 
+function Billing({
+  billing,
+  rangeHours,
+  error,
+  onRangeChange
+}: {
+  billing: BillingSummary | null;
+  rangeHours: number;
+  error: string;
+  onRangeChange: (hours: number) => void;
+}) {
+  const recentRequestCosts = billing?.request_costs?.slice(-20).reverse() ?? [];
+  return (
+    <div className="stack">
+      <div className="config-toolbar">
+        <div>
+          <h2>Billing</h2>
+          <p className="toolbar-sub">
+            {billing ? `${new Date(billing.start).toLocaleString()} - ${new Date(billing.end).toLocaleString()}` : "Loading cost records"}
+          </p>
+        </div>
+        <div className="segmented">
+          {[6, 24, 72, 168].map((hours) => (
+            <button key={hours} className={rangeHours === hours ? "active" : ""} onClick={() => onRangeChange(hours)}>
+              {hours < 24 ? `${hours}h` : `${hours / 24}d`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? <div className="alert">Billing unavailable: {error}</div> : null}
+
+      <div className="traffic-summary">
+        <Metric label="Model cost" value={formatMoney(billing?.totals.model_cost_rmb)} />
+        <Metric label="Billable hours" value={formatHours(billing?.totals.billable_worker_seconds)} />
+        <Metric label="Requests" value={compactNumber(billing?.totals.requests)} />
+        <Metric label="Total tokens" value={compactNumber(billing?.totals.total_tokens)} />
+        <Metric label="Worker day price" value={formatMoney(billing?.worker_day_cost_rmb)} />
+      </div>
+
+      <div className="table-wrap">
+        <h3>Model cost</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Cost</th>
+              <th>Billable time</th>
+              <th>Requests</th>
+              <th>Tokens</th>
+              <th>Per request</th>
+              <th>Per 1M tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(billing?.models ?? []).map((model) => (
+              <tr key={model.model}>
+                <td><strong>{model.model}</strong></td>
+                <td>{formatMoney(model.model_cost_rmb)}</td>
+                <td>{formatHours(model.billable_worker_seconds)}</td>
+                <td>{compactNumber(model.requests)}</td>
+                <td>{compactNumber(model.total_tokens)}</td>
+                <td>{formatMoney(model.cost_per_request_rmb)}</td>
+                <td>{formatMoney(model.cost_per_million_tokens_rmb)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="table-wrap">
+        <h3>App cost</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>App ID</th>
+              <th>Requests</th>
+              <th>Tokens</th>
+              <th>Token allocation</th>
+              <th>Request allocation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(billing?.apps ?? []).map((app) => (
+              <tr key={app.app_id}>
+                <td><strong>{app.app_id}</strong></td>
+                <td>{compactNumber(app.requests)}</td>
+                <td>{compactNumber(app.total_tokens)}</td>
+                <td>{formatMoney(app.request_cost_by_token_rmb)}</td>
+                <td>{formatMoney(app.request_cost_by_request_rmb)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="table-wrap">
+        <h3>Recent allocated requests</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Model</th>
+              <th>App</th>
+              <th>Tokens</th>
+              <th>Token cost</th>
+              <th>Request cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recentRequestCosts.map((request) => (
+              <tr key={`${request.time}-${request.request_id}`}>
+                <td>{new Date(request.time).toLocaleTimeString()}</td>
+                <td>{request.model}</td>
+                <td>{request.app_id || "-"}</td>
+                <td>{compactNumber(request.total_tokens)}</td>
+                <td>{formatMoney(request.request_cost_by_token_rmb)}</td>
+                <td>{formatMoney(request.request_cost_by_request_rmb)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function EventList({ events, compact = false }: { events: WorkerEvent[]; compact?: boolean }) {
   if (events.length === 0) {
     return <div className="empty">No worker events yet.</div>;
@@ -615,6 +763,7 @@ function RequestList({ requests, compact = false }: { requests: RequestLogEntry[
         <strong>Status</strong>
         <strong>Parts</strong>
         <strong>Tokens</strong>
+        <strong>Cost</strong>
         <strong>Detail</strong>
       </div>
       {requests.map((request, index) => (
@@ -625,6 +774,7 @@ function RequestList({ requests, compact = false }: { requests: RequestLogEntry[
           <span>{request.status_code}</span>
           <span>{requestParts(request) || "-"}</span>
           <span>{requestTokens(request) || "-"}</span>
+          <span>{requestCost(request) || "-"}</span>
           <span>{requestDetail(request) || "-"}</span>
         </div>
       ))}
@@ -1185,6 +1335,22 @@ function compactNumber(value: number | bigint | undefined) {
   return String(Math.round(numberValue));
 }
 
+function formatMoney(value: number | undefined) {
+  const numberValue = Number(value ?? 0);
+  if (!Number.isFinite(numberValue)) {
+    return "¥0.00";
+  }
+  return `¥${numberValue.toFixed(numberValue >= 100 ? 1 : 2)}`;
+}
+
+function formatHours(seconds: number | undefined) {
+  const numberValue = Number(seconds ?? 0);
+  if (!Number.isFinite(numberValue) || numberValue <= 0) {
+    return "0h";
+  }
+  return `${(numberValue / 3600).toFixed(2)}h`;
+}
+
 function formatTime(value?: string) {
   if (!value || value.startsWith("0001-")) {
     return "-";
@@ -1230,6 +1396,15 @@ function requestTokens(request: RequestLogEntry) {
     request.reasoning_tokens ? `reason=${compactNumber(request.reasoning_tokens)}` : ""
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : "";
+}
+
+function requestCost(request: RequestLogEntry) {
+  const tokenCost = request.cost_by_token_rmb ?? 0;
+  const requestCostValue = request.cost_by_request_rmb ?? 0;
+  if (!tokenCost && !requestCostValue) {
+    return "";
+  }
+  return `tok ${formatMoney(tokenCost)} · req ${formatMoney(requestCostValue)}`;
 }
 
 function requestDetail(request: RequestLogEntry) {

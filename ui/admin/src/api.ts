@@ -132,6 +132,9 @@ export type RequestLogEntry = {
   error_message?: string;
   retry_count?: number;
   upstream_url?: string;
+  cost_by_token_rmb?: number;
+  cost_by_request_rmb?: number;
+  cost_calculated_at?: string;
 };
 
 export type StatusResponse = {
@@ -245,6 +248,56 @@ export type MetricsResponse = {
   series: MetricsSeries[];
 };
 
+export type BillingSummary = {
+  start: string;
+  end: string;
+  worker_day_cost_rmb: number;
+  totals: {
+    ready_seconds: number;
+    billable_worker_seconds: number;
+    model_cost_rmb: number;
+    request_cost_by_token_rmb: number;
+    request_cost_by_request_rmb: number;
+    requests: number;
+    total_tokens: number;
+  };
+  models: BillingModelSummary[];
+  apps: BillingAppSummary[];
+  request_costs?: BillingRequestCost[];
+};
+
+export type BillingModelSummary = {
+  model: string;
+  ready_seconds: number;
+  billable_worker_seconds: number;
+  ready_share: number;
+  cost_share: number;
+  model_cost_rmb: number;
+  requests: number;
+  total_tokens: number;
+  cost_per_request_rmb: number;
+  cost_per_million_tokens_rmb: number;
+};
+
+export type BillingAppSummary = {
+  app_id: string;
+  requests: number;
+  total_tokens: number;
+  request_cost_by_token_rmb: number;
+  request_cost_by_request_rmb: number;
+};
+
+export type BillingRequestCost = {
+  request_id: string;
+  time: string;
+  model: string;
+  app_id?: string;
+  worker_id?: string;
+  total_tokens: number;
+  request_cost_by_token_rmb: number;
+  request_cost_by_request_rmb: number;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -322,6 +375,20 @@ export function applyConfig(yaml: string): Promise<ConfigDryRunResponse> {
 
 export function getSummaryMetrics(range: string): Promise<MetricsResponse> {
   return request<MetricsResponse>(`/ui/metrics/summary?range=${encodeURIComponent(range)}&step=1m`);
+}
+
+export function getBilling(rangeHours = 24, includeRequests = false): Promise<BillingSummary> {
+  const end = new Date();
+  const start = new Date(end.getTime() - rangeHours * 60 * 60 * 1000);
+  const params = new URLSearchParams({
+    start: start.toISOString(),
+    end: end.toISOString(),
+    worker_day_cost_rmb: "55"
+  });
+  if (includeRequests) {
+    params.set("include_requests", "1");
+  }
+  return request<BillingSummary>(`/ui/api/billing?${params.toString()}`);
 }
 
 export type AdminActionResponse = {

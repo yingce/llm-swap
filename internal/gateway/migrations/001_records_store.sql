@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS request_records (
 -- statement-breakpoint
 ALTER TABLE request_records ADD COLUMN IF NOT EXISTS source_hash TEXT NOT NULL DEFAULT '';
 -- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_by_token_rmb NUMERIC(18, 6) NOT NULL DEFAULT 0;
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_by_request_rmb NUMERIC(18, 6) NOT NULL DEFAULT 0;
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_calculated_at TIMESTAMPTZ;
+-- statement-breakpoint
 CREATE INDEX IF NOT EXISTS request_records_event_time_idx ON request_records (event_time DESC);
 -- statement-breakpoint
 CREATE INDEX IF NOT EXISTS request_records_model_time_idx ON request_records (model, event_time DESC);

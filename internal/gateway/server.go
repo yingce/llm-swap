@@ -147,6 +147,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	s.mux.Handle("GET /ui/metrics/summary", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsSummary)))
 	s.mux.Handle("GET /ui/metrics/model", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsModel)))
 	s.mux.Handle("GET /ui/metrics/worker", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsWorker)))
+	s.mux.Handle("GET /ui/api/billing", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIBilling)))
 	s.mux.Handle("GET /ui/api/config", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfig)))
 	s.mux.Handle("POST /ui/api/config/validate", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigValidate)))
 	s.mux.Handle("POST /ui/api/config/dry-run", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigDryRun)))
@@ -203,7 +204,30 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.metrics.ObserveModelProvisioning(cfg, workers, now)
 	s.metrics.ObserveModelQueues(cfg, s.limiter)
 	s.metrics.ObserveReplicaCooldowns(s.replicaCooldowns.Snapshot(now), now)
+	s.observeBillingMetrics(r.Context(), now)
 	s.metrics.Handler().ServeHTTP(w, r)
+}
+
+func (s *Server) observeBillingMetrics(ctx context.Context, now time.Time) {
+	if s == nil || s.metrics == nil || s.recordsStore == nil {
+		return
+	}
+	store, ok := s.recordsStore.(interface {
+		BillingSummary(context.Context, BillingQuery) (BillingSummary, error)
+	})
+	if !ok {
+		return
+	}
+	summary, err := store.BillingSummary(ctx, BillingQuery{
+		Start:            now.Add(-time.Hour),
+		End:              now,
+		WorkerDayCostRMB: defaultWorkerDayCostRMB,
+	})
+	if err != nil {
+		s.logEvent("billing_metrics_error", map[string]any{"error": err.Error()})
+		return
+	}
+	s.metrics.ObserveBillingSummary(summary)
 }
 
 func (s *Server) recordScrapeResult(workerID string, err error, now time.Time) {

@@ -158,25 +158,98 @@ func (s *PostgresRecordsStore) AppendImportedWorkerEvent(ctx context.Context, ev
 	}
 	runCtx, cancel := s.context(ctx)
 	defer cancel()
-	result, err := s.db.ExecContext(runCtx, `
+	var eventID int64
+	err = s.db.QueryRowContext(runCtx, `
 INSERT INTO worker_events (
   gateway_id, received_at, worker_id, event_time, event, model, from_state, to_state,
   object, kind, downloaded_bytes, total_bytes, percent, duration_ms, error, raw, source_hash
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
   $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17
-) ON CONFLICT DO NOTHING`,
+) ON CONFLICT DO NOTHING
+RETURNING id`,
 		s.gatewayID, event.ReceivedAt.UTC(), event.WorkerID, event.Time.UTC(), event.Event, event.Model, event.FromState, event.ToState,
 		event.Object, event.Kind, event.DownloadedBytes, event.TotalBytes, event.Percent, event.DurationMS, event.Error, string(raw), strings.TrimSpace(sourceHash),
-	)
+	).Scan(&eventID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
 		return false, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return true, nil
+	if err := s.applyWorkerModelReadyEvent(runCtx, event, eventID); err != nil {
+		return false, err
 	}
-	return affected > 0, nil
+	return true, nil
+}
+
+func (s *PostgresRecordsStore) applyWorkerModelReadyEvent(ctx context.Context, event WorkerEventRecord, eventID int64) error {
+	workerID := strings.TrimSpace(event.WorkerID)
+	model := strings.TrimSpace(event.Model)
+	if workerID == "" || model == "" {
+		return nil
+	}
+	eventTime := event.Time
+	if eventTime.IsZero() {
+		eventTime = event.ReceivedAt
+	}
+	if eventTime.IsZero() {
+		eventTime = time.Now()
+	}
+	switch {
+	case opensReadyInterval(event):
+		_, err := s.db.ExecContext(ctx, `
+INSERT INTO worker_model_ready_intervals (
+  gateway_id, worker_id, model, started_at, share_ratio, source_event_id
+)
+SELECT $1, $2, $3, $4, 1, $5
+WHERE NOT EXISTS (
+  SELECT 1 FROM worker_model_ready_intervals
+  WHERE source_event_id = $5
+) AND NOT EXISTS (
+  SELECT 1 FROM worker_model_ready_intervals
+  WHERE worker_id = $2 AND model = $3 AND started_at = $4
+) AND NOT EXISTS (
+  SELECT 1 FROM worker_model_ready_intervals
+  WHERE worker_id = $2 AND model = $3 AND ended_at IS NULL
+)`, s.gatewayID, workerID, model, eventTime.UTC(), eventID)
+		return err
+	case closesReadyInterval(event):
+		_, err := s.db.ExecContext(ctx, `
+UPDATE worker_model_ready_intervals
+SET ended_at = $3, close_event_id = $4, updated_at = now()
+WHERE worker_id = $1 AND model = $2 AND ended_at IS NULL AND started_at <= $3`,
+			workerID, model, eventTime.UTC(), eventID)
+		return err
+	default:
+		return nil
+	}
+}
+
+func opensReadyInterval(event WorkerEventRecord) bool {
+	switch event.Event {
+	case "model_loaded", "gateway_model_warm_done":
+		return true
+	case "model_state_changed":
+		return readyState(event.ToState)
+	default:
+		return false
+	}
+}
+
+func closesReadyInterval(event WorkerEventRecord) bool {
+	switch event.Event {
+	case "model_unloaded", "gateway_model_unload_done":
+		return true
+	case "model_state_changed":
+		return readyState(event.FromState) && !readyState(event.ToState)
+	default:
+		return false
+	}
+}
+
+func readyState(state string) bool {
+	return strings.EqualFold(strings.TrimSpace(state), "ready")
 }
 
 func (s *PostgresRecordsStore) PageRequestRecords(ctx context.Context, offset int, limit int) (uiRequestsResponse, error) {
@@ -196,7 +269,7 @@ SELECT request_id, event_time, model, worker_id, tag, status_code, duration_ms,
   stream, request_bytes, response_bytes, message_count, image_count, video_count, audio_count,
   max_tokens, temperature, top_p, top_k, prompt_tokens, completion_tokens, total_tokens,
   cache_tokens, reasoning_tokens, finish_reason, error_type, error_code, error_message,
-  retry_count, upstream_url, request_headers
+  retry_count, upstream_url, request_headers, cost_by_token_rmb::float8, cost_by_request_rmb::float8, cost_calculated_at
 FROM request_records
 ORDER BY id DESC
 OFFSET $1 LIMIT $2`, offset, limit+1)
@@ -268,13 +341,15 @@ OFFSET $1 LIMIT $2`, offset, limit+1)
 func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	var entry RequestLogEntry
 	var temperature, topP, topK sql.NullFloat64
+	var costByToken, costByRequest sql.NullFloat64
+	var costCalculatedAt sql.NullTime
 	var headers []byte
 	err := rows.Scan(
 		&entry.RequestID, &entry.Time, &entry.Model, &entry.WorkerID, &entry.Tag, &entry.StatusCode, &entry.DurationMS,
 		&entry.Stream, &entry.RequestBytes, &entry.ResponseBytes, &entry.MessageCount, &entry.ImageCount, &entry.VideoCount, &entry.AudioCount,
 		&entry.MaxTokens, &temperature, &topP, &topK, &entry.PromptTokens, &entry.CompletionTokens, &entry.TotalTokens,
 		&entry.CacheTokens, &entry.ReasoningTokens, &entry.FinishReason, &entry.ErrorType, &entry.ErrorCode, &entry.ErrorMessage,
-		&entry.RetryCount, &entry.UpstreamURL, &headers,
+		&entry.RetryCount, &entry.UpstreamURL, &headers, &costByToken, &costByRequest, &costCalculatedAt,
 	)
 	if err != nil {
 		return RequestLogEntry{}, err
@@ -290,6 +365,16 @@ func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	}
 	if len(headers) > 0 {
 		_ = json.Unmarshal(headers, &entry.RequestHeaders)
+	}
+	if costByToken.Valid {
+		entry.CostByTokenRMB = costByToken.Float64
+	}
+	if costByRequest.Valid {
+		entry.CostByRequestRMB = costByRequest.Float64
+	}
+	if costCalculatedAt.Valid {
+		calculatedAt := costCalculatedAt.Time
+		entry.CostCalculatedAt = &calculatedAt
 	}
 	return entry, nil
 }

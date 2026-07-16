@@ -41,6 +41,9 @@ type RequestLogEntry struct {
 	RetryCount       int        `json:"retry_count,omitempty"`
 	UpstreamURL      string     `json:"upstream_url,omitempty"`
 	RequestHeaders   httpHeader `json:"request_headers,omitempty"`
+	CostByTokenRMB   float64    `json:"cost_by_token_rmb,omitempty"`
+	CostByRequestRMB float64    `json:"cost_by_request_rmb,omitempty"`
+	CostCalculatedAt *time.Time `json:"cost_calculated_at,omitempty"`
 }
 
 type httpHeader map[string]string
