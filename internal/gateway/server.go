@@ -393,9 +393,10 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.workers.UpsertHeartbeat(hb, time.Now())
+	now := time.Now()
+	resp := s.workers.UpsertHeartbeat(hb, now)
 	for _, event := range hb.Events {
-		cached := s.recordAgentEvent(hb.AgentID, event, time.Now())
+		cached := s.recordAgentEvent(hb.AgentID, event, now)
 		if cached.Event == "" {
 			continue
 		}
@@ -415,6 +416,18 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		s.logAgentEvent(hb.AgentID, event)
+	}
+	if s.recordsStore != nil {
+		if store, ok := s.recordsStore.(interface {
+			RecordWorkerModelSnapshot(context.Context, string, []protocol.RunningModel, time.Time) error
+		}); ok {
+			if err := store.RecordWorkerModelSnapshot(r.Context(), hb.AgentID, hb.RunningModels, now); err != nil {
+				s.logEvent("worker_model_snapshot_store_error", map[string]any{
+					"worker_id": hb.AgentID,
+					"error":     err.Error(),
+				})
+			}
+		}
 	}
 	writeJSON(w, resp)
 }

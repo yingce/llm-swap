@@ -11,6 +11,10 @@ import (
 )
 
 const defaultWorkerDayCostRMB = 55.0
+const openReadyIntervalGrace = 10 * time.Minute
+const capacityUtilizationTarget = 0.90
+
+var billingLocalLocation = time.FixedZone("UTC+8", 8*60*60)
 
 type BillingSummary struct {
 	Start            time.Time               `json:"start"`
@@ -33,16 +37,34 @@ type BillingCostTotals struct {
 }
 
 type BillingModelSummary struct {
-	Model                   string  `json:"model"`
-	ReadySeconds            float64 `json:"ready_seconds"`
-	BillableWorkerSeconds   float64 `json:"billable_worker_seconds"`
-	ReadyShare              float64 `json:"ready_share"`
-	CostShare               float64 `json:"cost_share"`
-	ModelCostRMB            float64 `json:"model_cost_rmb"`
-	Requests                int     `json:"requests"`
-	TotalTokens             int64   `json:"total_tokens"`
-	CostPerRequestRMB       float64 `json:"cost_per_request_rmb"`
-	CostPerMillionTokensRMB float64 `json:"cost_per_million_tokens_rmb"`
+	Model                   string               `json:"model"`
+	ReadySeconds            float64              `json:"ready_seconds"`
+	BillableWorkerSeconds   float64              `json:"billable_worker_seconds"`
+	ReadyShare              float64              `json:"ready_share"`
+	CostShare               float64              `json:"cost_share"`
+	ModelCostRMB            float64              `json:"model_cost_rmb"`
+	Requests                int                  `json:"requests"`
+	TotalTokens             int64                `json:"total_tokens"`
+	CostPerRequestRMB       float64              `json:"cost_per_request_rmb"`
+	CostPerMillionTokensRMB float64              `json:"cost_per_million_tokens_rmb"`
+	Capacity90              BillingModelCapacity `json:"capacity_90"`
+}
+
+type BillingModelCapacity struct {
+	UtilizationTarget             float64 `json:"utilization_target"`
+	ObservedDurationSeconds       float64 `json:"observed_duration_seconds"`
+	HourlyInputTokens             float64 `json:"hourly_input_tokens"`
+	DailyInputTokens              float64 `json:"daily_input_tokens"`
+	InputTokenUnitPriceRMB        float64 `json:"input_token_unit_price_rmb"`
+	InputCostPerMillionTokensRMB  float64 `json:"input_cost_per_million_tokens_rmb"`
+	HourlyOutputTokens            float64 `json:"hourly_output_tokens"`
+	DailyOutputTokens             float64 `json:"daily_output_tokens"`
+	OutputTokenUnitPriceRMB       float64 `json:"output_token_unit_price_rmb"`
+	OutputCostPerMillionTokensRMB float64 `json:"output_cost_per_million_tokens_rmb"`
+	HourlyCacheTokens             float64 `json:"hourly_cache_tokens"`
+	DailyCacheTokens              float64 `json:"daily_cache_tokens"`
+	CacheTokenUnitPriceRMB        float64 `json:"cache_token_unit_price_rmb"`
+	CacheCostPerMillionTokensRMB  float64 `json:"cache_cost_per_million_tokens_rmb"`
 }
 
 type BillingAppSummary struct {
@@ -74,13 +96,18 @@ type billingReadyInterval struct {
 }
 
 type billingRequestRecord struct {
-	ID          int64
-	RequestID   string
-	Time        time.Time
-	Model       string
-	WorkerID    string
-	AppID       string
-	TotalTokens int
+	ID               int64
+	RequestID        string
+	Time             time.Time
+	Model            string
+	WorkerID         string
+	AppID            string
+	TotalTokens      int
+	PromptTokens     int
+	CompletionTokens int
+	CacheTokens      int
+	DurationMS       int64
+	StatusCode       int
 }
 
 func (s *Server) handleBilling(w http.ResponseWriter, r *http.Request) {
@@ -124,15 +151,40 @@ func parseBillingQuery(r *http.Request) (BillingQuery, error) {
 		WorkerDayCostRMB: defaultWorkerDayCostRMB,
 	}
 	values := r.URL.Query()
+	if raw := strings.TrimSpace(values.Get("day")); raw == "" {
+		if raw = strings.TrimSpace(values.Get("date")); raw != "" {
+			start, end, err := parseBillingNaturalDay(raw)
+			if err != nil {
+				return BillingQuery{}, err
+			}
+			query.Start = start
+			query.End = end
+		}
+	} else {
+		start, end, err := parseBillingNaturalDay(raw)
+		if err != nil {
+			return BillingQuery{}, err
+		}
+		query.Start = start
+		query.End = end
+	}
+	if raw := strings.TrimSpace(values.Get("hour")); raw != "" {
+		start, end, err := parseBillingNaturalHour(raw)
+		if err != nil {
+			return BillingQuery{}, err
+		}
+		query.Start = start
+		query.End = end
+	}
 	if raw := strings.TrimSpace(values.Get("start")); raw != "" {
-		parsed, err := time.Parse(time.RFC3339, raw)
+		parsed, err := parseBillingTimestamp(raw)
 		if err != nil {
 			return BillingQuery{}, err
 		}
 		query.Start = parsed
 	}
 	if raw := strings.TrimSpace(values.Get("end")); raw != "" {
-		parsed, err := time.Parse(time.RFC3339, raw)
+		parsed, err := parseBillingTimestamp(raw)
 		if err != nil {
 			return BillingQuery{}, err
 		}
@@ -141,7 +193,7 @@ func parseBillingQuery(r *http.Request) (BillingQuery, error) {
 	if raw := strings.TrimSpace(values.Get("worker_day_cost_rmb")); raw != "" {
 		parsed, err := strconv.ParseFloat(raw, 64)
 		if err != nil || parsed <= 0 {
-			return BillingQuery{}, err
+			return BillingQuery{}, billingQueryError("worker_day_cost_rmb must be greater than 0")
 		}
 		query.WorkerDayCostRMB = parsed
 	}
@@ -151,6 +203,58 @@ func parseBillingQuery(r *http.Request) (BillingQuery, error) {
 		return BillingQuery{}, errInvalidBillingRange
 	}
 	return query, nil
+}
+
+func parseBillingNaturalDay(raw string) (time.Time, time.Time, error) {
+	parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(raw), billingLocalLocation)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	start := parsed.UTC()
+	return start, parsed.AddDate(0, 0, 1).UTC(), nil
+}
+
+func parseBillingNaturalHour(raw string) (time.Time, time.Time, error) {
+	value := strings.TrimSpace(raw)
+	for _, layout := range []string{"2006-01-02T15", "2006-01-02 15"} {
+		parsed, err := time.ParseInLocation(layout, value, billingLocalLocation)
+		if err == nil {
+			start := parsed.UTC()
+			return start, parsed.Add(time.Hour).UTC(), nil
+		}
+	}
+	parsed, err := parseBillingTimestamp(value)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	local := parsed.In(billingLocalLocation)
+	start := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, billingLocalLocation)
+	return start.UTC(), start.Add(time.Hour).UTC(), nil
+}
+
+func parseBillingTimestamp(raw string) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	for _, layout := range []string{
+		"2006-01-02",
+		"2006-01-02 15",
+		"2006-01-02T15",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+	} {
+		parsed, err := time.ParseInLocation(layout, value, billingLocalLocation)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, billingQueryError("time must be RFC3339 or local UTC+8 timestamp")
 }
 
 var errInvalidBillingRange = billingQueryError("end must be after start")
@@ -233,10 +337,19 @@ func (s *PostgresRecordsStore) billingReadyIntervals(ctx context.Context, start,
 	runCtx, cancel := s.context(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(runCtx, `
-SELECT worker_id, model, GREATEST(started_at, $1), LEAST(COALESCE(ended_at, $2), $2)
-FROM worker_model_ready_intervals
-WHERE started_at < $2 AND COALESCE(ended_at, $2) > $1
-ORDER BY worker_id, started_at`, start.UTC(), end.UTC())
+WITH intervals AS (
+  SELECT worker_id, model, started_at,
+    CASE
+      WHEN ended_at IS NOT NULL THEN ended_at
+      WHEN COALESCE(last_seen_at, started_at) + ($3 * interval '1 second') >= $2 THEN $2
+      ELSE COALESCE(last_seen_at, started_at) + ($3 * interval '1 second')
+    END AS effective_end
+  FROM worker_model_ready_intervals
+)
+SELECT worker_id, model, GREATEST(started_at, $1), LEAST(effective_end, $2)
+FROM intervals
+WHERE started_at < $2 AND effective_end > $1
+ORDER BY worker_id, started_at`, start.UTC(), end.UTC(), int(openReadyIntervalGrace.Seconds()))
 	if err != nil {
 		return nil, err
 	}
@@ -259,6 +372,7 @@ func (s *PostgresRecordsStore) billingRequests(ctx context.Context, start, end t
 	defer cancel()
 	rows, err := s.db.QueryContext(runCtx, `
 SELECT id, request_id, event_time, model, worker_id, app_id, total_tokens
+  , prompt_tokens, completion_tokens, cache_tokens, duration_ms, status_code
 FROM request_records
 WHERE event_time >= $1 AND event_time < $2
 ORDER BY id`, start.UTC(), end.UTC())
@@ -269,7 +383,10 @@ ORDER BY id`, start.UTC(), end.UTC())
 	var requests []billingRequestRecord
 	for rows.Next() {
 		var request billingRequestRecord
-		if err := rows.Scan(&request.ID, &request.RequestID, &request.Time, &request.Model, &request.WorkerID, &request.AppID, &request.TotalTokens); err != nil {
+		if err := rows.Scan(
+			&request.ID, &request.RequestID, &request.Time, &request.Model, &request.WorkerID, &request.AppID, &request.TotalTokens,
+			&request.PromptTokens, &request.CompletionTokens, &request.CacheTokens, &request.DurationMS, &request.StatusCode,
+		); err != nil {
 			return nil, err
 		}
 		if request.Model != "" {
@@ -378,6 +495,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		row.Requests++
 		row.TotalTokens += int64(request.TotalTokens)
 	}
+	calculateCapacityTokenPrices(models, requestsByModel, query.WorkerDayCostRMB)
 
 	requestCostRows := make([]BillingRequestCostRow, 0, len(requests))
 	apps := map[string]*BillingAppSummary{}
@@ -492,6 +610,64 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			TotalTokens:             totalTokens,
 		},
 		RequestCosts: requestCostRows,
+	}
+}
+
+func calculateCapacityTokenPrices(models map[string]*BillingModelSummary, requestsByModel map[string][]billingRequestRecord, workerDayCostRMB float64) {
+	for model, modelRequests := range requestsByModel {
+		row := ensureBillingModel(models, model)
+		var durationSeconds float64
+		var inputTokens, outputTokens, cacheTokens int64
+		for _, request := range modelRequests {
+			if request.DurationMS <= 0 || !successfulBillingRequest(request.StatusCode) {
+				continue
+			}
+			durationSeconds += float64(request.DurationMS) / 1000.0
+			inputTokens += int64(request.PromptTokens)
+			outputTokens += int64(request.CompletionTokens)
+			cacheTokens += int64(request.CacheTokens)
+		}
+		if durationSeconds <= 0 {
+			continue
+		}
+		row.Capacity90 = BillingModelCapacity{
+			UtilizationTarget:       capacityUtilizationTarget,
+			ObservedDurationSeconds: roundSeconds(durationSeconds),
+		}
+		applyCapacityTokenPrice(&row.Capacity90, "input", float64(inputTokens), durationSeconds, workerDayCostRMB)
+		applyCapacityTokenPrice(&row.Capacity90, "output", float64(outputTokens), durationSeconds, workerDayCostRMB)
+		applyCapacityTokenPrice(&row.Capacity90, "cache", float64(cacheTokens), durationSeconds, workerDayCostRMB)
+	}
+}
+
+func successfulBillingRequest(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
+}
+
+func applyCapacityTokenPrice(capacity *BillingModelCapacity, kind string, tokens float64, durationSeconds float64, workerDayCostRMB float64) {
+	if tokens <= 0 || durationSeconds <= 0 || workerDayCostRMB <= 0 {
+		return
+	}
+	hourlyTokens := tokens / durationSeconds * 3600 * capacityUtilizationTarget
+	dailyTokens := hourlyTokens * 24
+	unitPrice := workerDayCostRMB / dailyTokens
+	perMillion := unitPrice * 1_000_000
+	switch kind {
+	case "input":
+		capacity.HourlyInputTokens = roundSeconds(hourlyTokens)
+		capacity.DailyInputTokens = roundSeconds(dailyTokens)
+		capacity.InputTokenUnitPriceRMB = roundUnitPrice(unitPrice)
+		capacity.InputCostPerMillionTokensRMB = roundMoney(perMillion)
+	case "output":
+		capacity.HourlyOutputTokens = roundSeconds(hourlyTokens)
+		capacity.DailyOutputTokens = roundSeconds(dailyTokens)
+		capacity.OutputTokenUnitPriceRMB = roundUnitPrice(unitPrice)
+		capacity.OutputCostPerMillionTokensRMB = roundMoney(perMillion)
+	case "cache":
+		capacity.HourlyCacheTokens = roundSeconds(hourlyTokens)
+		capacity.DailyCacheTokens = roundSeconds(dailyTokens)
+		capacity.CacheTokenUnitPriceRMB = roundUnitPrice(unitPrice)
+		capacity.CacheCostPerMillionTokensRMB = roundMoney(perMillion)
 	}
 }
 

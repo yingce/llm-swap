@@ -58,6 +58,7 @@ type Metrics struct {
 	billingModelCostRMB          *prometheus.GaugeVec
 	billingModelBillableSeconds  *prometheus.GaugeVec
 	billingModelCostPerMTokRMB   *prometheus.GaugeVec
+	billingModelCapacityPerMTok  *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -237,9 +238,13 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_billing_model_cost_per_million_tokens_rmb",
 		Help: "Estimated model cost per million tokens in RMB for the billing scrape window.",
 	}, []string{"model"})
+	billingModelCapacityPerMTok := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_capacity_90_cost_per_million_tokens_rmb",
+		Help: "Estimated model token price per million tokens in RMB at 90 percent observed throughput capacity.",
+	}, []string{"model", "type"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostRMB, billingModelBillableSeconds, billingModelCostPerMTokRMB)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostRMB, billingModelBillableSeconds, billingModelCostPerMTokRMB, billingModelCapacityPerMTok)
 
 	return &Metrics{
 		registry:                     registry,
@@ -286,6 +291,7 @@ func NewMetrics() *Metrics {
 		billingModelCostRMB:          billingModelCostRMB,
 		billingModelBillableSeconds:  billingModelBillableSeconds,
 		billingModelCostPerMTokRMB:   billingModelCostPerMTokRMB,
+		billingModelCapacityPerMTok:  billingModelCapacityPerMTok,
 	}
 }
 
@@ -350,10 +356,14 @@ func (m *Metrics) ObserveBillingSummary(summary BillingSummary) {
 	m.billingModelCostRMB.Reset()
 	m.billingModelBillableSeconds.Reset()
 	m.billingModelCostPerMTokRMB.Reset()
+	m.billingModelCapacityPerMTok.Reset()
 	for _, model := range summary.Models {
 		m.billingModelCostRMB.WithLabelValues(model.Model).Set(model.ModelCostRMB)
 		m.billingModelBillableSeconds.WithLabelValues(model.Model).Set(model.BillableWorkerSeconds)
 		m.billingModelCostPerMTokRMB.WithLabelValues(model.Model).Set(model.CostPerMillionTokensRMB)
+		m.billingModelCapacityPerMTok.WithLabelValues(model.Model, "input").Set(model.Capacity90.InputCostPerMillionTokensRMB)
+		m.billingModelCapacityPerMTok.WithLabelValues(model.Model, "output").Set(model.Capacity90.OutputCostPerMillionTokensRMB)
+		m.billingModelCapacityPerMTok.WithLabelValues(model.Model, "cache").Set(model.Capacity90.CacheCostPerMillionTokensRMB)
 	}
 }
 

@@ -100,10 +100,13 @@ CREATE TABLE IF NOT EXISTS worker_model_ready_intervals (
   share_ratio NUMERIC(12, 6) NOT NULL DEFAULT 1,
   source_event_id BIGINT REFERENCES worker_events(id),
   close_event_id BIGINT REFERENCES worker_events(id),
+  last_seen_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
+-- statement-breakpoint
+ALTER TABLE worker_model_ready_intervals ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
 -- statement-breakpoint
 CREATE INDEX IF NOT EXISTS worker_model_ready_intervals_model_time_idx ON worker_model_ready_intervals (model, started_at, ended_at);
 -- statement-breakpoint

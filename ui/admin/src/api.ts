@@ -277,6 +277,24 @@ export type BillingModelSummary = {
   total_tokens: number;
   cost_per_request_rmb: number;
   cost_per_million_tokens_rmb: number;
+  capacity_90: BillingModelCapacity;
+};
+
+export type BillingModelCapacity = {
+  utilization_target: number;
+  observed_duration_seconds: number;
+  hourly_input_tokens: number;
+  daily_input_tokens: number;
+  input_token_unit_price_rmb: number;
+  input_cost_per_million_tokens_rmb: number;
+  hourly_output_tokens: number;
+  daily_output_tokens: number;
+  output_token_unit_price_rmb: number;
+  output_cost_per_million_tokens_rmb: number;
+  hourly_cache_tokens: number;
+  daily_cache_tokens: number;
+  cache_token_unit_price_rmb: number;
+  cache_cost_per_million_tokens_rmb: number;
 };
 
 export type BillingAppSummary = {

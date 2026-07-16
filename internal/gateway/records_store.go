@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	"llm-swap/internal/protocol"
+
+	"github.com/lib/pq"
 )
 
 //go:embed migrations/*.sql
@@ -200,9 +202,9 @@ func (s *PostgresRecordsStore) applyWorkerModelReadyEvent(ctx context.Context, e
 	case opensReadyInterval(event):
 		_, err := s.db.ExecContext(ctx, `
 INSERT INTO worker_model_ready_intervals (
-  gateway_id, worker_id, model, started_at, share_ratio, source_event_id
+  gateway_id, worker_id, model, started_at, share_ratio, source_event_id, last_seen_at
 )
-SELECT $1, $2, $3, $4, 1, $5
+SELECT $1, $2, $3, $4, 1, $5, $4
 WHERE NOT EXISTS (
   SELECT 1 FROM worker_model_ready_intervals
   WHERE source_event_id = $5
@@ -217,7 +219,7 @@ WHERE NOT EXISTS (
 	case closesReadyInterval(event):
 		_, err := s.db.ExecContext(ctx, `
 UPDATE worker_model_ready_intervals
-SET ended_at = $3, close_event_id = $4, updated_at = now()
+SET ended_at = $3, close_event_id = $4, last_seen_at = $3, updated_at = now()
 WHERE worker_id = $1 AND model = $2 AND ended_at IS NULL AND started_at <= $3`,
 			workerID, model, eventTime.UTC(), eventID)
 		return err
@@ -250,6 +252,72 @@ func closesReadyInterval(event WorkerEventRecord) bool {
 
 func readyState(state string) bool {
 	return strings.EqualFold(strings.TrimSpace(state), "ready")
+}
+
+func (s *PostgresRecordsStore) RecordWorkerModelSnapshot(ctx context.Context, workerID string, models []protocol.RunningModel, seenAt time.Time) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return nil
+	}
+	if seenAt.IsZero() {
+		seenAt = time.Now()
+	}
+	ready := map[string]bool{}
+	for _, model := range models {
+		name := strings.TrimSpace(model.Model)
+		if name == "" || !readyState(model.State) {
+			continue
+		}
+		ready[name] = true
+	}
+	runCtx, cancel := s.context(ctx)
+	defer cancel()
+	tx, err := s.db.BeginTx(runCtx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for model := range ready {
+		if _, err := tx.ExecContext(runCtx, `
+INSERT INTO worker_model_ready_intervals (
+  gateway_id, worker_id, model, started_at, share_ratio, last_seen_at
+)
+SELECT $1::text, $2::text, $3::text, $4::timestamptz, 1, $4::timestamptz
+WHERE NOT EXISTS (
+  SELECT 1 FROM worker_model_ready_intervals
+  WHERE worker_id = $2::text AND model = $3::text AND ended_at IS NULL
+)`, s.gatewayID, workerID, model, seenAt.UTC()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(runCtx, `
+UPDATE worker_model_ready_intervals
+SET last_seen_at = $3, updated_at = now()
+WHERE worker_id = $1 AND model = $2 AND ended_at IS NULL AND started_at <= $3`,
+			workerID, model, seenAt.UTC()); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(runCtx, `
+UPDATE worker_model_ready_intervals
+SET ended_at = $2, last_seen_at = $2, updated_at = now()
+WHERE worker_id = $1
+  AND ended_at IS NULL
+  AND NOT (model = ANY($3::text[]))`,
+		workerID, seenAt.UTC(), pq.Array(mapKeys(ready))); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func mapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func (s *PostgresRecordsStore) PageRequestRecords(ctx context.Context, offset int, limit int) (uiRequestsResponse, error) {

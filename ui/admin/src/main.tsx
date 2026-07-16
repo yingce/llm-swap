@@ -614,7 +614,11 @@ function Billing({
               <th>Requests</th>
               <th>Tokens</th>
               <th>Per request</th>
-              <th>Per 1M tokens</th>
+              <th>Allocated / 1M</th>
+              <th>90% input / 1M</th>
+              <th>90% output / 1M</th>
+              <th>90% cache / 1M</th>
+              <th>90% output / day</th>
             </tr>
           </thead>
           <tbody>
@@ -627,6 +631,10 @@ function Billing({
                 <td>{compactNumber(model.total_tokens)}</td>
                 <td>{formatMoney(model.cost_per_request_rmb)}</td>
                 <td>{formatMoney(model.cost_per_million_tokens_rmb)}</td>
+                <td>{formatMoney(model.capacity_90?.input_cost_per_million_tokens_rmb)}</td>
+                <td>{formatMoney(model.capacity_90?.output_cost_per_million_tokens_rmb)}</td>
+                <td>{formatMoney(model.capacity_90?.cache_cost_per_million_tokens_rmb)}</td>
+                <td>{compactNumber(model.capacity_90?.daily_output_tokens)}</td>
               </tr>
             ))}
           </tbody>
