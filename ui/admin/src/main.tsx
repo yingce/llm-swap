@@ -42,7 +42,6 @@ type EditableGatewayConfig = {
 };
 
 type ModelBillingPriceField = keyof ModelBillingConfig;
-const recommendationUtilization = 0.9;
 const secondsPerDay = 86400;
 
 const tabs: Array<{ id: Tab; label: string }> = [
@@ -1615,7 +1614,7 @@ function capacityUnitPrice(workerDayCostUSD: number, durationSeconds: number, un
   if (!Number.isFinite(workerDayCostUSD) || !Number.isFinite(durationSeconds) || !Number.isFinite(units) || units <= 0) {
     return undefined;
   }
-  return workerDayCostUSD * durationSeconds * multiplier / (units * secondsPerDay * recommendationUtilization);
+  return workerDayCostUSD * durationSeconds * multiplier / (units * secondsPerDay);
 }
 
 function roundPricingValue(value: number | undefined) {
