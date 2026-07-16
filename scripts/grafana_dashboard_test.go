@@ -97,8 +97,10 @@ func TestGrafanaDashboardIncludesBillingAndAppUsage(t *testing.T) {
 	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_requests_total{app_id=~"$app",model=~"$model"}`)
 	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_tokens_total{app_id=~"$app",model=~"$model",type="total"}`)
 	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_model_used_cost_usd_total{app_id=~"$app",model=~"$model"}`)
-	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_billing_app_cost_usd{app_id=~"$app"}`)
-	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_billing_app_idle_cost_usd{app_id=~"$app"}`)
+	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_request_duration_seconds_sum{app_id=~"$app",model=~"$model"}`)
+	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_request_duration_seconds_sum{model=~"$model"}`)
+	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_billing_model_idle_cost_usd{model=~"$model"}`)
+	assertExprNotContains(t, appOverviewExprs, `llm_swap_gateway_billing_app_`)
 
 	appOccupancy := dashboard.panel(t, "App occupancy")
 	assertExprContains(t, appOccupancy.exprs(), `llm_swap_gateway_app_request_duration_seconds_sum{app_id=~"$app",model=~"$model"}`)
@@ -107,9 +109,12 @@ func TestGrafanaDashboardIncludesBillingAndAppUsage(t *testing.T) {
 	assertExprContains(t, appTokenRate.exprs(), `llm_swap_gateway_app_tokens_total{app_id=~"$app",model=~"$model"}`)
 
 	appBillingCost := dashboard.panel(t, "App billing cost")
-	assertExprContains(t, appBillingCost.exprs(), `llm_swap_gateway_billing_app_cost_usd{app_id=~"$app"}`)
-	assertExprContains(t, appBillingCost.exprs(), `llm_swap_gateway_billing_app_used_cost_usd{app_id=~"$app"}`)
-	assertExprContains(t, appBillingCost.exprs(), `llm_swap_gateway_billing_app_idle_cost_usd{app_id=~"$app"}`)
+	appBillingCostExprs := appBillingCost.exprs()
+	assertExprContains(t, appBillingCostExprs, `llm_swap_gateway_app_model_used_cost_usd_total{app_id=~"$app",model=~"$model"}`)
+	assertExprContains(t, appBillingCostExprs, `llm_swap_gateway_app_request_duration_seconds_sum{app_id=~"$app",model=~"$model"}`)
+	assertExprContains(t, appBillingCostExprs, `llm_swap_gateway_request_duration_seconds_sum{model=~"$model"}`)
+	assertExprContains(t, appBillingCostExprs, `llm_swap_gateway_billing_model_idle_cost_usd{model=~"$model"}`)
+	assertExprNotContains(t, appBillingCostExprs, `llm_swap_gateway_billing_app_`)
 }
 
 func readGrafanaDashboard(t *testing.T) grafanaDashboard {
@@ -161,5 +166,12 @@ func assertExprContains(t *testing.T, exprs, want string) {
 	t.Helper()
 	if !strings.Contains(exprs, want) {
 		t.Fatalf("dashboard expressions missing %q; expressions:\n%s", want, exprs)
+	}
+}
+
+func assertExprNotContains(t *testing.T, exprs, unwanted string) {
+	t.Helper()
+	if strings.Contains(exprs, unwanted) {
+		t.Fatalf("dashboard expressions unexpectedly contain %q; expressions:\n%s", unwanted, exprs)
 	}
 }

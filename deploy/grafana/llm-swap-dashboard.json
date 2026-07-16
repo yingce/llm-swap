@@ -2445,11 +2445,11 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "last_over_time(llm_swap_gateway_billing_app_cost_usd{app_id=~\"$app\"}[$__range])",
-          "refId": "G",
+          "expr": "(sum by (app_id) (increase(llm_swap_gateway_app_model_used_cost_usd_total{app_id=~\"$app\",model=~\"$model\"}[$__range]))) + (sum by (app_id) (((sum by (app_id, model) (increase(llm_swap_gateway_app_request_duration_seconds_sum{app_id=~\"$app\",model=~\"$model\"}[$__range]))) / on(model) group_left clamp_min(sum by (model) (increase(llm_swap_gateway_request_duration_seconds_sum{model=~\"$model\"}[$__range])), 0.001)) * on(model) group_left last_over_time(llm_swap_gateway_billing_model_idle_cost_usd{model=~\"$model\"}[$__range])))",
+          "format": "table",
           "instant": true,
           "range": false,
-          "format": "table"
+          "refId": "G"
         },
         {
           "datasource": {
@@ -2457,23 +2457,11 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "last_over_time(llm_swap_gateway_billing_app_used_cost_usd{app_id=~\"$app\"}[$__range])",
-          "refId": "H",
+          "expr": "sum by (app_id) (((sum by (app_id, model) (increase(llm_swap_gateway_app_request_duration_seconds_sum{app_id=~\"$app\",model=~\"$model\"}[$__range]))) / on(model) group_left clamp_min(sum by (model) (increase(llm_swap_gateway_request_duration_seconds_sum{model=~\"$model\"}[$__range])), 0.001)) * on(model) group_left last_over_time(llm_swap_gateway_billing_model_idle_cost_usd{model=~\"$model\"}[$__range]))",
+          "format": "table",
           "instant": true,
           "range": false,
-          "format": "table"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "last_over_time(llm_swap_gateway_billing_app_idle_cost_usd{app_id=~\"$app\"}[$__range])",
-          "refId": "I",
-          "instant": true,
-          "range": false,
-          "format": "table"
+          "refId": "H"
         }
       ],
       "title": "App overview",
@@ -2500,8 +2488,7 @@
               "Value #E": "cached_tokens",
               "Value #F": "configured_used_cost_usd",
               "Value #G": "model_cost_usd",
-              "Value #H": "model_used_cost_usd",
-              "Value #I": "model_idle_cost_usd"
+              "Value #H": "model_idle_cost_usd"
             }
           }
         }
@@ -2889,7 +2876,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Latest per-app configured usage, allocated idle, and total cost observed in the selected range.",
+      "description": "Per-app selected-range cost. Used cost comes from request counters; idle cost is allocated by app request-duration share within each model.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2969,10 +2956,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "last_over_time(llm_swap_gateway_billing_app_cost_usd{app_id=~\"$app\"}[$__range])",
-          "refId": "A",
+          "expr": "(sum by (app_id) (increase(llm_swap_gateway_app_model_used_cost_usd_total{app_id=~\"$app\",model=~\"$model\"}[$__range]))) + (sum by (app_id) (((sum by (app_id, model) (increase(llm_swap_gateway_app_request_duration_seconds_sum{app_id=~\"$app\",model=~\"$model\"}[$__range]))) / on(model) group_left clamp_min(sum by (model) (increase(llm_swap_gateway_request_duration_seconds_sum{model=~\"$model\"}[$__range])), 0.001)) * on(model) group_left last_over_time(llm_swap_gateway_billing_model_idle_cost_usd{model=~\"$model\"}[$__range])))",
+          "legendFormat": "{{app_id}} cost",
           "range": true,
-          "legendFormat": "{{app_id}} cost"
+          "refId": "A"
         },
         {
           "datasource": {
@@ -2980,10 +2967,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "last_over_time(llm_swap_gateway_billing_app_used_cost_usd{app_id=~\"$app\"}[$__range])",
-          "refId": "B",
+          "expr": "sum by (app_id) (increase(llm_swap_gateway_app_model_used_cost_usd_total{app_id=~\"$app\",model=~\"$model\"}[$__range]))",
+          "legendFormat": "{{app_id}} used",
           "range": true,
-          "legendFormat": "{{app_id}} used"
+          "refId": "B"
         },
         {
           "datasource": {
@@ -2991,10 +2978,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "last_over_time(llm_swap_gateway_billing_app_idle_cost_usd{app_id=~\"$app\"}[$__range])",
-          "refId": "C",
+          "expr": "sum by (app_id) (((sum by (app_id, model) (increase(llm_swap_gateway_app_request_duration_seconds_sum{app_id=~\"$app\",model=~\"$model\"}[$__range]))) / on(model) group_left clamp_min(sum by (model) (increase(llm_swap_gateway_request_duration_seconds_sum{model=~\"$model\"}[$__range])), 0.001)) * on(model) group_left last_over_time(llm_swap_gateway_billing_model_idle_cost_usd{model=~\"$model\"}[$__range]))",
+          "legendFormat": "{{app_id}} idle",
           "range": true,
-          "legendFormat": "{{app_id}} idle"
+          "refId": "C"
         }
       ],
       "title": "App billing cost",
@@ -3123,7 +3110,7 @@
   "timezone": "",
   "title": "LLM Swap Gateway",
   "uid": "llm-swap-gateway",
-  "version": 5,
+  "version": 7,
   "weekStart": "",
   "__inputs": [
     {
