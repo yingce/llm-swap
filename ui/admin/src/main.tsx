@@ -14,6 +14,7 @@ import {
   getEvents,
   getStatus,
   getRequests,
+  ModelBillingConfig,
   ModelConfig,
   ModelStatus,
   RequestLogEntry,
@@ -182,6 +183,22 @@ function App() {
     });
   }
 
+  function updateModelBillingPrice(modelName: string, field: keyof ModelBillingConfig, value: number | undefined) {
+    updateDraft((draft) => {
+      const model = draft.models[modelName];
+      if (!model) {
+        return;
+      }
+      const billing: ModelBillingConfig = { ...(model.billing ?? {}) };
+      if (value === undefined) {
+        delete billing[field];
+      } else {
+        billing[field] = value;
+      }
+      model.billing = hasBillingValues(billing) ? billing : undefined;
+    });
+  }
+
   function resetDraft() {
     if (!configResponse) {
       return;
@@ -237,6 +254,11 @@ function App() {
     }
   }
 
+  async function applyPricingDraft() {
+    await applyDraft();
+    await loadBilling(billingRangeHours);
+  }
+
   async function copyAdvancedYAML() {
     try {
       await navigator.clipboard.writeText(renderedConfigYaml);
@@ -285,7 +307,18 @@ function App() {
           {tab === "models" && <Models models={status?.models ?? []} onAction={runAction} />}
           {tab === "workers" && <Workers workers={status?.workers ?? []} onAction={runAction} />}
           {tab === "billing" && (
-            <Billing billing={billing} rangeHours={billingRangeHours} error={billingError} onRangeChange={(hours) => void loadBilling(hours)} />
+            <Billing
+              billing={billing}
+              rangeHours={billingRangeHours}
+              error={billingError}
+              pricingDraft={configDraft}
+              pricingDirty={configDirty}
+              pricingMessage={configMessage}
+              pricingError={configError}
+              onRangeChange={(hours) => void loadBilling(hours)}
+              onPriceChange={updateModelBillingPrice}
+              onSavePricing={() => void applyPricingDraft()}
+            />
           )}
           {tab === "events" && (
             <Events events={events} hasMore={hasMoreEvents} onMore={() => void loadEvents(eventOffset)} />
@@ -333,6 +366,29 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
       <strong>{value}</strong>
       <span>{label}</span>
     </div>
+  );
+}
+
+function PriceField({
+  value,
+  disabled = false,
+  onChange
+}: {
+  value: number | undefined;
+  disabled?: boolean;
+  onChange: (value: number | undefined) => void;
+}) {
+  return (
+    <input
+      className="price-input"
+      type="number"
+      min="0"
+      step="0.000001"
+      inputMode="decimal"
+      value={value ?? ""}
+      disabled={disabled}
+      onChange={(event) => onChange(parseOptionalPrice(event.target.value))}
+    />
   );
 }
 
@@ -567,14 +623,37 @@ function Billing({
   billing,
   rangeHours,
   error,
-  onRangeChange
+  pricingDraft,
+  pricingDirty,
+  pricingMessage,
+  pricingError,
+  onRangeChange,
+  onPriceChange,
+  onSavePricing
 }: {
   billing: BillingSummary | null;
   rangeHours: number;
   error: string;
+  pricingDraft: EditableGatewayConfig | null;
+  pricingDirty: boolean;
+  pricingMessage: string;
+  pricingError: string;
   onRangeChange: (hours: number) => void;
+  onPriceChange: (modelName: string, field: keyof ModelBillingConfig, value: number | undefined) => void;
+  onSavePricing: () => void;
 }) {
   const recentRequestCosts = billing?.request_costs?.slice(-20).reverse() ?? [];
+  const billingModelMap = useMemo(() => new Map((billing?.models ?? []).map((model) => [model.model, model])), [billing]);
+  const pricingModelNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const modelName of Object.keys(pricingDraft?.models ?? {})) {
+      names.add(modelName);
+    }
+    for (const model of billing?.models ?? []) {
+      names.add(model.model);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [billing, pricingDraft]);
   return (
     <div className="stack">
       <div className="config-toolbar">
@@ -595,6 +674,8 @@ function Billing({
 
       {error ? <div className="alert">Billing unavailable: {error}</div> : null}
       {billing?.exchange_rate_stale ? <div className="notice">Using stale or fallback CNY/USD exchange rate.</div> : null}
+      {pricingError ? <div className="alert">Pricing config unavailable: {pricingError}</div> : null}
+      {pricingMessage ? <div className="notice">{pricingMessage}</div> : null}
 
       <div className="traffic-summary">
         <Metric label="Model cost" value={formatMoney(billing?.totals.model_cost)} />
@@ -605,6 +686,71 @@ function Billing({
         <Metric label="Total tokens" value={compactNumber(billing?.totals.total_tokens)} />
         <Metric label="Worker day price" value={formatMoney(billing?.worker_day_cost_usd)} />
         <Metric label="CNY/USD" value={formatRate(billing?.exchange_rate_cny_to_usd)} />
+      </div>
+
+      <div className="table-wrap">
+        <div className="table-heading">
+          <h3>Manual model pricing</h3>
+          <div className="config-toolbar-actions">
+            <Badge tone={pricingDirty ? "warn" : "good"}>{pricingDirty ? "draft changed" : "in sync"}</Badge>
+            <button className="primary" disabled={!pricingDirty} onClick={onSavePricing}>Save pricing</button>
+          </div>
+        </div>
+        <table className="pricing-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Requests</th>
+              <th>Used cost</th>
+              <th>Per request</th>
+              <th>Input / 1M</th>
+              <th>Output / 1M</th>
+              <th>Cached / 1M</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pricingModelNames.map((modelName) => {
+              const model = pricingDraft?.models[modelName];
+              const billingRow = billingModelMap.get(modelName);
+              const pricing = model?.billing ?? {};
+              return (
+                <tr key={modelName}>
+                  <td><strong>{modelName}</strong></td>
+                  <td>{compactNumber(billingRow?.requests)}</td>
+                  <td>{formatMoney(billingRow?.model_used_cost)}</td>
+                  <td>
+                    <PriceField
+                      value={pricing.per_request_usd}
+                      onChange={(value) => onPriceChange(modelName, "per_request_usd", value)}
+                      disabled={!model}
+                    />
+                  </td>
+                  <td>
+                    <PriceField
+                      value={pricing.input_per_million_usd}
+                      onChange={(value) => onPriceChange(modelName, "input_per_million_usd", value)}
+                      disabled={!model}
+                    />
+                  </td>
+                  <td>
+                    <PriceField
+                      value={pricing.output_per_million_usd}
+                      onChange={(value) => onPriceChange(modelName, "output_per_million_usd", value)}
+                      disabled={!model}
+                    />
+                  </td>
+                  <td>
+                    <PriceField
+                      value={pricing.cached_input_per_million_usd}
+                      onChange={(value) => onPriceChange(modelName, "cached_input_per_million_usd", value)}
+                      disabled={!model}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
 
       <div className="table-wrap">
@@ -1361,23 +1507,28 @@ function formatMoney(value: number | undefined) {
   return `$${numberValue.toFixed(numberValue >= 100 ? 1 : 2)}`;
 }
 
+function parseOptionalPrice(raw: string) {
+  const value = raw.trim();
+  if (value === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  return Math.max(0, parsed);
+}
+
+function hasBillingValues(billing: ModelBillingConfig) {
+  return Object.values(billing).some((value) => typeof value === "number" && Number.isFinite(value));
+}
+
 function formatRate(value: number | undefined) {
   const numberValue = Number(value ?? 0);
   if (!Number.isFinite(numberValue) || numberValue <= 0) {
     return "-";
   }
   return numberValue.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function formatUnitPrice(value: number | undefined) {
-  const numberValue = Number(value ?? 0);
-  if (!Number.isFinite(numberValue) || numberValue <= 0) {
-    return "¥0/token";
-  }
-  if (numberValue < 0.000001) {
-    return `¥${numberValue.toExponential(2)}/token`;
-  }
-  return `¥${numberValue.toFixed(6)}/token`;
 }
 
 function formatHours(seconds: number | undefined) {

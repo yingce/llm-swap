@@ -204,6 +204,17 @@ small {
   overflow-x: auto;
 }
 
+.table-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.price-input {
+  min-width: 112px;
+}
+
 table {
   border-collapse: collapse;
   min-width: 720px;
