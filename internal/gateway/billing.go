@@ -8,83 +8,80 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"llm-swap/internal/config"
 )
 
 const defaultWorkerDayCostRMB = 55.0
-const capacityUtilizationTarget = 0.90
+const fallbackCNYToUSDRate = 0.14
 
 var billingLocalLocation = time.FixedZone("UTC+8", 8*60*60)
 
 type BillingSummary struct {
-	Start            time.Time               `json:"start"`
-	End              time.Time               `json:"end"`
-	WorkerDayCostRMB float64                 `json:"worker_day_cost_rmb"`
-	Models           []BillingModelSummary   `json:"models"`
-	Apps             []BillingAppSummary     `json:"apps"`
-	Totals           BillingCostTotals       `json:"totals"`
-	RequestCosts     []BillingRequestCostRow `json:"request_costs,omitempty"`
+	Start                time.Time               `json:"start"`
+	End                  time.Time               `json:"end"`
+	Currency             string                  `json:"currency"`
+	ExchangeRateCNYToUSD float64                 `json:"exchange_rate_cny_to_usd"`
+	ExchangeRateTime     time.Time               `json:"exchange_rate_time,omitempty"`
+	ExchangeRateStale    bool                    `json:"exchange_rate_stale"`
+	WorkerDayCostRMB     float64                 `json:"worker_day_cost_rmb"`
+	WorkerDayCostUSD     float64                 `json:"worker_day_cost_usd"`
+	Models               []BillingModelSummary   `json:"models"`
+	Apps                 []BillingAppSummary     `json:"apps"`
+	Totals               BillingCostTotals       `json:"totals"`
+	RequestCosts         []BillingRequestCostRow `json:"request_costs,omitempty"`
 }
 
 type BillingCostTotals struct {
-	ReadySeconds            float64 `json:"ready_seconds"`
-	BillableWorkerSeconds   float64 `json:"billable_worker_seconds"`
-	ModelCostRMB            float64 `json:"model_cost_rmb"`
-	CostByTokenRMB          float64 `json:"cost_by_token_rmb"`
-	RequestCostByRequestRMB float64 `json:"request_cost_by_request_rmb"`
-	Requests                int     `json:"requests"`
-	TotalTokens             int64   `json:"total_tokens"`
+	ReadySeconds          float64 `json:"ready_seconds"`
+	BillableWorkerSeconds float64 `json:"billable_worker_seconds"`
+	ModelCost             float64 `json:"model_cost"`
+	ModelUsedCost         float64 `json:"model_used_cost"`
+	ModelIdleCost         float64 `json:"model_idle_cost"`
+	Requests              int     `json:"requests"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	CachedInputTokens     int64   `json:"cached_input_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
 }
 
 type BillingModelSummary struct {
-	Model                   string               `json:"model"`
-	ReadySeconds            float64              `json:"ready_seconds"`
-	BillableWorkerSeconds   float64              `json:"billable_worker_seconds"`
-	ReadyShare              float64              `json:"ready_share"`
-	CostShare               float64              `json:"cost_share"`
-	ModelCostRMB            float64              `json:"model_cost_rmb"`
-	Requests                int                  `json:"requests"`
-	TotalTokens             int64                `json:"total_tokens"`
-	CostPerRequestRMB       float64              `json:"cost_per_request_rmb"`
-	CostPerMillionTokensRMB float64              `json:"cost_per_million_tokens_rmb"`
-	Capacity90              BillingModelCapacity `json:"capacity_90"`
-}
-
-type BillingModelCapacity struct {
-	UtilizationTarget             float64 `json:"utilization_target"`
-	ObservedDurationSeconds       float64 `json:"observed_duration_seconds"`
-	HourlyInputTokens             float64 `json:"hourly_input_tokens"`
-	DailyInputTokens              float64 `json:"daily_input_tokens"`
-	InputTokenUnitPriceRMB        float64 `json:"input_token_unit_price_rmb"`
-	InputCostPerMillionTokensRMB  float64 `json:"input_cost_per_million_tokens_rmb"`
-	HourlyOutputTokens            float64 `json:"hourly_output_tokens"`
-	DailyOutputTokens             float64 `json:"daily_output_tokens"`
-	OutputTokenUnitPriceRMB       float64 `json:"output_token_unit_price_rmb"`
-	OutputCostPerMillionTokensRMB float64 `json:"output_cost_per_million_tokens_rmb"`
-	HourlyCacheTokens             float64 `json:"hourly_cache_tokens"`
-	DailyCacheTokens              float64 `json:"daily_cache_tokens"`
-	CacheTokenUnitPriceRMB        float64 `json:"cache_token_unit_price_rmb"`
-	CacheCostPerMillionTokensRMB  float64 `json:"cache_cost_per_million_tokens_rmb"`
+	Model                 string  `json:"model"`
+	ReadySeconds          float64 `json:"ready_seconds"`
+	BillableWorkerSeconds float64 `json:"billable_worker_seconds"`
+	ReadyShare            float64 `json:"ready_share"`
+	CostShare             float64 `json:"cost_share"`
+	ModelCost             float64 `json:"model_cost"`
+	ModelUsedCost         float64 `json:"model_used_cost"`
+	ModelIdleCost         float64 `json:"model_idle_cost"`
+	Requests              int     `json:"requests"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	CachedInputTokens     int64   `json:"cached_input_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
 }
 
 type BillingAppSummary struct {
-	AppID                   string  `json:"app_id"`
-	Requests                int     `json:"requests"`
-	TotalTokens             int64   `json:"total_tokens"`
-	CostByTokenRMB          float64 `json:"cost_by_token_rmb"`
-	RequestCostByRequestRMB float64 `json:"request_cost_by_request_rmb"`
+	AppID             string  `json:"app_id"`
+	Requests          int     `json:"requests"`
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	TotalTokens       int64   `json:"total_tokens"`
+	ModelUsedCost     float64 `json:"model_used_cost"`
 }
 
 type BillingRequestCostRow struct {
-	RequestID                string    `json:"request_id"`
-	Time                     time.Time `json:"time"`
-	Model                    string    `json:"model"`
-	AppID                    string    `json:"app_id,omitempty"`
-	WorkerID                 string    `json:"worker_id,omitempty"`
-	TotalTokens              int       `json:"total_tokens"`
-	TokenUnitPriceRMB        float64   `json:"token_unit_price_rmb"`
-	TokenUnitPricePerMTokRMB float64   `json:"token_unit_price_per_million_tokens_rmb"`
-	CostByTokenRMB           float64   `json:"cost_by_token_rmb"`
-	RequestCostByRequestRMB  float64   `json:"request_cost_by_request_rmb"`
+	RequestID         string    `json:"request_id"`
+	Time              time.Time `json:"time"`
+	Model             string    `json:"model"`
+	AppID             string    `json:"app_id,omitempty"`
+	WorkerID          string    `json:"worker_id,omitempty"`
+	InputTokens       int       `json:"input_tokens"`
+	OutputTokens      int       `json:"output_tokens"`
+	CachedInputTokens int       `json:"cached_input_tokens"`
+	TotalTokens       int       `json:"total_tokens"`
+	ModelUsedCost     float64   `json:"model_used_cost"`
 }
 
 type billingReadyInterval struct {
@@ -126,6 +123,8 @@ func (s *Server) handleBilling(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	query.ExchangeRate = s.exchangeRates.CNYToUSD(r.Context())
+	query.ModelPricing = modelBillingPricing(s.currentConfig())
 	resp, err := store.BillingSummary(r.Context(), query)
 	if err != nil {
 		http.Error(w, "failed to query billing", http.StatusInternalServerError)
@@ -134,12 +133,28 @@ func (s *Server) handleBilling(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+func modelBillingPricing(cfg config.GatewayConfig) map[string]config.ModelBilling {
+	out := make(map[string]config.ModelBilling, len(cfg.Models))
+	for name, model := range cfg.Models {
+		out[name] = model.Billing
+	}
+	return out
+}
+
 type BillingQuery struct {
 	Start            time.Time
 	End              time.Time
 	WorkerDayCostRMB float64
 	IncludeRequests  bool
 	Persist          bool
+	ExchangeRate     BillingExchangeRate
+	ModelPricing     map[string]config.ModelBilling
+}
+
+type BillingExchangeRate struct {
+	CNYToUSD float64
+	Time     time.Time
+	Stale    bool
 }
 
 func parseBillingQuery(r *http.Request) (BillingQuery, error) {
@@ -277,6 +292,10 @@ func (s *PostgresRecordsStore) BillingSummary(ctx context.Context, query Billing
 	if query.WorkerDayCostRMB <= 0 {
 		query.WorkerDayCostRMB = defaultWorkerDayCostRMB
 	}
+	if query.ExchangeRate.CNYToUSD <= 0 {
+		query.ExchangeRate.CNYToUSD = fallbackCNYToUSDRate
+		query.ExchangeRate.Stale = true
+	}
 	if err := s.backfillReadyIntervalsFromWorkerEvents(ctx, query.End); err != nil {
 		return BillingSummary{}, err
 	}
@@ -288,7 +307,7 @@ func (s *PostgresRecordsStore) BillingSummary(ctx context.Context, query Billing
 	if err != nil {
 		return BillingSummary{}, err
 	}
-	modelCosts := calculateModelReadyCosts(intervals, query.Start, query.End, query.WorkerDayCostRMB)
+	modelCosts := calculateModelReadyCosts(intervals, query.Start, query.End, query.WorkerDayCostRMB*query.ExchangeRate.CNYToUSD)
 	summary := buildBillingSummary(query, modelCosts, requests)
 	if query.Persist {
 		if err := s.persistBillingRequestCosts(ctx, summary.RequestCosts); err != nil {
@@ -406,12 +425,10 @@ func (s *PostgresRecordsStore) persistBillingRequestCosts(ctx context.Context, r
 		}
 		if _, err := tx.ExecContext(runCtx, `
 UPDATE request_records
-SET cost_by_token_rmb = $1,
-    cost_by_request_rmb = $2,
-    cost_calculated_at = $3
-WHERE request_id = $4 AND event_time = $5 AND model = $6`,
-			row.CostByTokenRMB,
-			row.RequestCostByRequestRMB,
+SET model_used_cost_usd = $1,
+    cost_calculated_at = $2
+WHERE request_id = $3 AND event_time = $4 AND model = $5`,
+			row.ModelUsedCost,
 			now,
 			row.RequestID,
 			row.Time.UTC(),
@@ -423,7 +440,7 @@ WHERE request_id = $4 AND event_time = $5 AND model = $6`,
 	return tx.Commit()
 }
 
-func calculateModelReadyCosts(intervals []billingReadyInterval, start, end time.Time, workerDayCostRMB float64) map[string]*BillingModelSummary {
+func calculateModelReadyCosts(intervals []billingReadyInterval, start, end time.Time, workerDayCostUSD float64) map[string]*BillingModelSummary {
 	byWorker := map[string][]billingReadyInterval{}
 	for _, interval := range intervals {
 		if interval.Start.Before(start) {
@@ -438,7 +455,7 @@ func calculateModelReadyCosts(intervals []billingReadyInterval, start, end time.
 		byWorker[interval.WorkerID] = append(byWorker[interval.WorkerID], interval)
 	}
 	models := map[string]*BillingModelSummary{}
-	ratePerSecond := workerDayCostRMB / 86400.0
+	ratePerSecond := workerDayCostUSD / 86400.0
 	for _, workerIntervals := range byWorker {
 		points := make([]time.Time, 0, len(workerIntervals)*2)
 		for _, interval := range workerIntervals {
@@ -466,7 +483,7 @@ func calculateModelReadyCosts(intervals []billingReadyInterval, start, end time.
 				row := ensureBillingModel(models, model)
 				row.ReadySeconds += seconds
 				row.BillableWorkerSeconds += shareSeconds
-				row.ModelCostRMB += shareSeconds * ratePerSecond
+				row.ModelCost += shareSeconds * ratePerSecond
 			}
 		}
 	}
@@ -481,61 +498,48 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 	for model, row := range models {
 		totalReadySeconds += row.ReadySeconds
 		totalBillableSeconds += row.BillableWorkerSeconds
-		totalModelCost += row.ModelCostRMB
+		totalModelCost += row.ModelCost
 		row.Model = model
 	}
 	for _, request := range requests {
 		requestsByModel[request.Model] = append(requestsByModel[request.Model], request)
 		row := ensureBillingModel(models, request.Model)
 		row.Requests++
+		row.InputTokens += int64(request.PromptTokens)
+		row.OutputTokens += int64(request.CompletionTokens)
+		row.CachedInputTokens += int64(request.CacheTokens)
 		row.TotalTokens += int64(request.TotalTokens)
 	}
-	calculateCapacityTokenPrices(models, requestsByModel, query.WorkerDayCostRMB)
 
 	requestCostRows := make([]BillingRequestCostRow, 0, len(requests))
 	apps := map[string]*BillingAppSummary{}
 	for model, modelRequests := range requestsByModel {
 		row := ensureBillingModel(models, model)
-		if row.Requests > 0 {
-			row.CostPerRequestRMB = row.ModelCostRMB / float64(row.Requests)
-		}
-		if row.TotalTokens > 0 {
-			row.CostPerMillionTokensRMB = row.ModelCostRMB / float64(row.TotalTokens) * 1_000_000
-		}
+		pricing := query.ModelPricing[model]
 		for _, request := range modelRequests {
-			tokenUnitPrice := 0.0
-			tokenUnitPricePerMillion := 0.0
-			if row.TotalTokens > 0 {
-				tokenUnitPrice = row.ModelCostRMB / float64(row.TotalTokens)
-				tokenUnitPricePerMillion = tokenUnitPrice * 1_000_000
-			}
-			tokenCost := 0.0
-			if row.TotalTokens > 0 && request.TotalTokens > 0 {
-				tokenCost = tokenUnitPrice * float64(request.TotalTokens)
-			}
-			countCost := 0.0
-			if row.Requests > 0 {
-				countCost = row.ModelCostRMB / float64(row.Requests)
-			}
+			usedCost := calculateConfiguredUsageCost(pricing, request)
+			row.ModelUsedCost += usedCost
 			requestCost := BillingRequestCostRow{
-				RequestID:                request.RequestID,
-				Time:                     request.Time,
-				Model:                    request.Model,
-				AppID:                    request.AppID,
-				WorkerID:                 request.WorkerID,
-				TotalTokens:              request.TotalTokens,
-				TokenUnitPriceRMB:        roundUnitPrice(tokenUnitPrice),
-				TokenUnitPricePerMTokRMB: roundMoney(tokenUnitPricePerMillion),
-				CostByTokenRMB:           roundMoney(tokenCost),
-				RequestCostByRequestRMB:  roundMoney(countCost),
+				RequestID:         request.RequestID,
+				Time:              request.Time,
+				Model:             request.Model,
+				AppID:             request.AppID,
+				WorkerID:          request.WorkerID,
+				InputTokens:       request.PromptTokens,
+				OutputTokens:      request.CompletionTokens,
+				CachedInputTokens: request.CacheTokens,
+				TotalTokens:       request.TotalTokens,
+				ModelUsedCost:     roundMoney(usedCost),
 			}
 			requestCostRows = append(requestCostRows, requestCost)
 			if strings.TrimSpace(request.AppID) != "" {
 				app := ensureBillingApp(apps, request.AppID)
 				app.Requests++
+				app.InputTokens += int64(request.PromptTokens)
+				app.OutputTokens += int64(request.CompletionTokens)
+				app.CachedInputTokens += int64(request.CacheTokens)
 				app.TotalTokens += int64(request.TotalTokens)
-				app.CostByTokenRMB += tokenCost
-				app.RequestCostByRequestRMB += countCost
+				app.ModelUsedCost += usedCost
 			}
 		}
 	}
@@ -546,124 +550,82 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			row.ReadyShare = row.ReadySeconds / totalReadySeconds
 		}
 		if totalModelCost > 0 {
-			row.CostShare = row.ModelCostRMB / totalModelCost
+			row.CostShare = row.ModelCost / totalModelCost
 		}
 		row.ReadySeconds = roundSeconds(row.ReadySeconds)
 		row.BillableWorkerSeconds = roundSeconds(row.BillableWorkerSeconds)
-		row.ModelCostRMB = roundMoney(row.ModelCostRMB)
-		row.CostPerRequestRMB = roundMoney(row.CostPerRequestRMB)
-		row.CostPerMillionTokensRMB = roundMoney(row.CostPerMillionTokensRMB)
+		row.ModelCost = roundMoney(row.ModelCost)
+		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
+		row.ModelIdleCost = roundMoney(row.ModelCost - row.ModelUsedCost)
 		modelRows = append(modelRows, *row)
 	}
 	sort.Slice(modelRows, func(i, j int) bool {
-		if modelRows[i].ModelCostRMB == modelRows[j].ModelCostRMB {
+		if modelRows[i].ModelCost == modelRows[j].ModelCost {
 			return modelRows[i].Model < modelRows[j].Model
 		}
-		return modelRows[i].ModelCostRMB > modelRows[j].ModelCostRMB
+		return modelRows[i].ModelCost > modelRows[j].ModelCost
 	})
 
 	var appRows []BillingAppSummary
 	for _, row := range apps {
-		row.CostByTokenRMB = roundMoney(row.CostByTokenRMB)
-		row.RequestCostByRequestRMB = roundMoney(row.RequestCostByRequestRMB)
+		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
 		appRows = append(appRows, *row)
 	}
 	sort.Slice(appRows, func(i, j int) bool {
-		if appRows[i].CostByTokenRMB == appRows[j].CostByTokenRMB {
+		if appRows[i].ModelUsedCost == appRows[j].ModelUsedCost {
 			return appRows[i].AppID < appRows[j].AppID
 		}
-		return appRows[i].CostByTokenRMB > appRows[j].CostByTokenRMB
+		return appRows[i].ModelUsedCost > appRows[j].ModelUsedCost
 	})
 	sort.Slice(requestCostRows, func(i, j int) bool { return requestCostRows[i].Time.Before(requestCostRows[j].Time) })
 
 	totalRequests := 0
+	totalInputTokens := int64(0)
+	totalOutputTokens := int64(0)
+	totalCachedInputTokens := int64(0)
 	totalTokens := int64(0)
-	totalTokenCost := 0.0
-	totalRequestCost := 0.0
+	totalUsedCost := 0.0
 	for _, row := range modelRows {
 		totalRequests += row.Requests
+		totalInputTokens += row.InputTokens
+		totalOutputTokens += row.OutputTokens
+		totalCachedInputTokens += row.CachedInputTokens
 		totalTokens += row.TotalTokens
-	}
-	for _, row := range requestCostRows {
-		totalTokenCost += row.CostByTokenRMB
-		totalRequestCost += row.RequestCostByRequestRMB
+		totalUsedCost += row.ModelUsedCost
 	}
 
 	return BillingSummary{
-		Start:            query.Start.UTC(),
-		End:              query.End.UTC(),
-		WorkerDayCostRMB: query.WorkerDayCostRMB,
-		Models:           modelRows,
-		Apps:             appRows,
+		Start:                query.Start.UTC(),
+		End:                  query.End.UTC(),
+		Currency:             "USD",
+		ExchangeRateCNYToUSD: roundUnitPrice(query.ExchangeRate.CNYToUSD),
+		ExchangeRateTime:     query.ExchangeRate.Time.UTC(),
+		ExchangeRateStale:    query.ExchangeRate.Stale,
+		WorkerDayCostRMB:     query.WorkerDayCostRMB,
+		WorkerDayCostUSD:     roundMoney(query.WorkerDayCostRMB * query.ExchangeRate.CNYToUSD),
+		Models:               modelRows,
+		Apps:                 appRows,
 		Totals: BillingCostTotals{
-			ReadySeconds:            roundSeconds(totalReadySeconds),
-			BillableWorkerSeconds:   roundSeconds(totalBillableSeconds),
-			ModelCostRMB:            roundMoney(totalModelCost),
-			CostByTokenRMB:          roundMoney(totalTokenCost),
-			RequestCostByRequestRMB: roundMoney(totalRequestCost),
-			Requests:                totalRequests,
-			TotalTokens:             totalTokens,
+			ReadySeconds:          roundSeconds(totalReadySeconds),
+			BillableWorkerSeconds: roundSeconds(totalBillableSeconds),
+			ModelCost:             roundMoney(totalModelCost),
+			ModelUsedCost:         roundMoney(totalUsedCost),
+			ModelIdleCost:         roundMoney(totalModelCost - totalUsedCost),
+			Requests:              totalRequests,
+			InputTokens:           totalInputTokens,
+			OutputTokens:          totalOutputTokens,
+			CachedInputTokens:     totalCachedInputTokens,
+			TotalTokens:           totalTokens,
 		},
 		RequestCosts: requestCostRows,
 	}
 }
 
-func calculateCapacityTokenPrices(models map[string]*BillingModelSummary, requestsByModel map[string][]billingRequestRecord, workerDayCostRMB float64) {
-	for model, modelRequests := range requestsByModel {
-		row := ensureBillingModel(models, model)
-		var durationSeconds float64
-		var inputTokens, outputTokens, cacheTokens int64
-		for _, request := range modelRequests {
-			if request.DurationMS <= 0 || !successfulBillingRequest(request.StatusCode) {
-				continue
-			}
-			durationSeconds += float64(request.DurationMS) / 1000.0
-			inputTokens += int64(request.PromptTokens)
-			outputTokens += int64(request.CompletionTokens)
-			cacheTokens += int64(request.CacheTokens)
-		}
-		if durationSeconds <= 0 {
-			continue
-		}
-		row.Capacity90 = BillingModelCapacity{
-			UtilizationTarget:       capacityUtilizationTarget,
-			ObservedDurationSeconds: roundSeconds(durationSeconds),
-		}
-		applyCapacityTokenPrice(&row.Capacity90, "input", float64(inputTokens), durationSeconds, workerDayCostRMB)
-		applyCapacityTokenPrice(&row.Capacity90, "output", float64(outputTokens), durationSeconds, workerDayCostRMB)
-		applyCapacityTokenPrice(&row.Capacity90, "cache", float64(cacheTokens), durationSeconds, workerDayCostRMB)
-	}
-}
-
-func successfulBillingRequest(statusCode int) bool {
-	return statusCode >= 200 && statusCode < 300
-}
-
-func applyCapacityTokenPrice(capacity *BillingModelCapacity, kind string, tokens float64, durationSeconds float64, workerDayCostRMB float64) {
-	if tokens <= 0 || durationSeconds <= 0 || workerDayCostRMB <= 0 {
-		return
-	}
-	hourlyTokens := tokens / durationSeconds * 3600 * capacityUtilizationTarget
-	dailyTokens := hourlyTokens * 24
-	unitPrice := workerDayCostRMB / dailyTokens
-	perMillion := unitPrice * 1_000_000
-	switch kind {
-	case "input":
-		capacity.HourlyInputTokens = roundSeconds(hourlyTokens)
-		capacity.DailyInputTokens = roundSeconds(dailyTokens)
-		capacity.InputTokenUnitPriceRMB = roundUnitPrice(unitPrice)
-		capacity.InputCostPerMillionTokensRMB = roundMoney(perMillion)
-	case "output":
-		capacity.HourlyOutputTokens = roundSeconds(hourlyTokens)
-		capacity.DailyOutputTokens = roundSeconds(dailyTokens)
-		capacity.OutputTokenUnitPriceRMB = roundUnitPrice(unitPrice)
-		capacity.OutputCostPerMillionTokensRMB = roundMoney(perMillion)
-	case "cache":
-		capacity.HourlyCacheTokens = roundSeconds(hourlyTokens)
-		capacity.DailyCacheTokens = roundSeconds(dailyTokens)
-		capacity.CacheTokenUnitPriceRMB = roundUnitPrice(unitPrice)
-		capacity.CacheCostPerMillionTokensRMB = roundMoney(perMillion)
-	}
+func calculateConfiguredUsageCost(pricing config.ModelBilling, request billingRequestRecord) float64 {
+	return pricing.PerRequestUSD +
+		float64(request.PromptTokens)*pricing.InputPerMillionUSD/1_000_000 +
+		float64(request.CompletionTokens)*pricing.OutputPerMillionUSD/1_000_000 +
+		float64(request.CacheTokens)*pricing.CachedInputPerMillionUSD/1_000_000
 }
 
 func ensureBillingModel(rows map[string]*BillingModelSummary, model string) *BillingModelSummary {

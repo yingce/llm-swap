@@ -43,6 +43,7 @@ type RequestLogEntry struct {
 	RequestHeaders   httpHeader `json:"request_headers,omitempty"`
 	CostByTokenRMB   float64    `json:"cost_by_token_rmb,omitempty"`
 	CostByRequestRMB float64    `json:"cost_by_request_rmb,omitempty"`
+	ModelUsedCostUSD float64    `json:"model_used_cost_usd,omitempty"`
 	CostCalculatedAt *time.Time `json:"cost_calculated_at,omitempty"`
 }
 

@@ -134,6 +134,7 @@ export type RequestLogEntry = {
   upstream_url?: string;
   cost_by_token_rmb?: number;
   cost_by_request_rmb?: number;
+  model_used_cost_usd?: number;
   cost_calculated_at?: string;
 };
 
@@ -195,6 +196,14 @@ export type ModelConfig = {
   runtime_args?: string[];
   cmd_stop?: string;
   check_endpoint?: string;
+  billing?: ModelBillingConfig;
+};
+
+export type ModelBillingConfig = {
+  per_request_usd?: number;
+  input_per_million_usd?: number;
+  output_per_million_usd?: number;
+  cached_input_per_million_usd?: number;
 };
 
 export type WorkerDefaultsConfig = {
@@ -251,14 +260,22 @@ export type MetricsResponse = {
 export type BillingSummary = {
   start: string;
   end: string;
+  currency: "USD";
+  exchange_rate_cny_to_usd: number;
+  exchange_rate_time?: string;
+  exchange_rate_stale: boolean;
   worker_day_cost_rmb: number;
+  worker_day_cost_usd: number;
   totals: {
     ready_seconds: number;
     billable_worker_seconds: number;
-    model_cost_rmb: number;
-    cost_by_token_rmb: number;
-    request_cost_by_request_rmb: number;
+    model_cost: number;
+    model_used_cost: number;
+    model_idle_cost: number;
     requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    cached_input_tokens: number;
     total_tokens: number;
   };
   models: BillingModelSummary[];
@@ -272,37 +289,24 @@ export type BillingModelSummary = {
   billable_worker_seconds: number;
   ready_share: number;
   cost_share: number;
-  model_cost_rmb: number;
+  model_cost: number;
+  model_used_cost: number;
+  model_idle_cost: number;
   requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
   total_tokens: number;
-  cost_per_request_rmb: number;
-  cost_per_million_tokens_rmb: number;
-  capacity_90: BillingModelCapacity;
-};
-
-export type BillingModelCapacity = {
-  utilization_target: number;
-  observed_duration_seconds: number;
-  hourly_input_tokens: number;
-  daily_input_tokens: number;
-  input_token_unit_price_rmb: number;
-  input_cost_per_million_tokens_rmb: number;
-  hourly_output_tokens: number;
-  daily_output_tokens: number;
-  output_token_unit_price_rmb: number;
-  output_cost_per_million_tokens_rmb: number;
-  hourly_cache_tokens: number;
-  daily_cache_tokens: number;
-  cache_token_unit_price_rmb: number;
-  cache_cost_per_million_tokens_rmb: number;
 };
 
 export type BillingAppSummary = {
   app_id: string;
   requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
   total_tokens: number;
-  cost_by_token_rmb: number;
-  request_cost_by_request_rmb: number;
+  model_used_cost: number;
 };
 
 export type BillingRequestCost = {
@@ -311,11 +315,11 @@ export type BillingRequestCost = {
   model: string;
   app_id?: string;
   worker_id?: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
   total_tokens: number;
-  token_unit_price_rmb: number;
-  token_unit_price_per_million_tokens_rmb: number;
-  cost_by_token_rmb: number;
-  request_cost_by_request_rmb: number;
+  model_used_cost: number;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

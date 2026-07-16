@@ -46,20 +46,28 @@ type RecordsStoreConfig struct {
 }
 
 type Model struct {
-	Priority       int      `yaml:"priority" json:"priority"`
-	MinLoaded      int      `yaml:"min_loaded" json:"min_loaded"`
-	MaxLoaded      int      `yaml:"max_loaded" json:"max_loaded"`
-	MaxLoadedSet   bool     `yaml:"-" json:"-"`
-	MaxConcurrency int      `yaml:"max_concurrency" json:"max_concurrency"`
-	MaxQueue       int      `yaml:"max_queue" json:"max_queue"`
-	QueueTimeoutMS int      `yaml:"queue_timeout_ms" json:"queue_timeout_ms"`
-	TTL            int      `yaml:"ttl" json:"ttl"`
-	Artifact       Artifact `yaml:"artifact" json:"artifact"`
-	Run            string   `yaml:"run" json:"run"`
-	Runtime        string   `yaml:"runtime" json:"runtime,omitempty"`
-	RuntimeArgs    []string `yaml:"runtime_args" json:"runtime_args,omitempty"`
-	CmdStop        string   `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
-	CheckEndpoint  string   `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
+	Priority       int          `yaml:"priority" json:"priority"`
+	MinLoaded      int          `yaml:"min_loaded" json:"min_loaded"`
+	MaxLoaded      int          `yaml:"max_loaded" json:"max_loaded"`
+	MaxLoadedSet   bool         `yaml:"-" json:"-"`
+	MaxConcurrency int          `yaml:"max_concurrency" json:"max_concurrency"`
+	MaxQueue       int          `yaml:"max_queue" json:"max_queue"`
+	QueueTimeoutMS int          `yaml:"queue_timeout_ms" json:"queue_timeout_ms"`
+	TTL            int          `yaml:"ttl" json:"ttl"`
+	Artifact       Artifact     `yaml:"artifact" json:"artifact"`
+	Run            string       `yaml:"run" json:"run"`
+	Runtime        string       `yaml:"runtime" json:"runtime,omitempty"`
+	RuntimeArgs    []string     `yaml:"runtime_args" json:"runtime_args,omitempty"`
+	CmdStop        string       `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
+	CheckEndpoint  string       `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
+	Billing        ModelBilling `yaml:"billing" json:"billing,omitempty"`
+}
+
+type ModelBilling struct {
+	PerRequestUSD            float64 `yaml:"per_request_usd" json:"per_request_usd,omitempty"`
+	InputPerMillionUSD       float64 `yaml:"input_per_million_usd" json:"input_per_million_usd,omitempty"`
+	OutputPerMillionUSD      float64 `yaml:"output_per_million_usd" json:"output_per_million_usd,omitempty"`
+	CachedInputPerMillionUSD float64 `yaml:"cached_input_per_million_usd" json:"cached_input_per_million_usd,omitempty"`
 }
 
 func (m *Model) UnmarshalYAML(value *yaml.Node) error {

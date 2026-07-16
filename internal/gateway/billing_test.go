@@ -13,48 +13,67 @@ import (
 	"testing"
 	"time"
 
+	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
 
-func TestBillingSummaryAllocatesModelCostByTokenAndRequest(t *testing.T) {
+func TestBillingSummaryReportsUSDUsageCostsAndTokenBreakdown(t *testing.T) {
 	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 
 	models := calculateModelReadyCosts([]billingReadyInterval{
 		{WorkerID: "worker-a", Model: "qwen", Start: start, End: end},
-	}, start, end, 24)
+	}, start, end, 24*0.14)
 	summary := buildBillingSummary(BillingQuery{
 		Start:            start,
 		End:              end,
 		WorkerDayCostRMB: 24,
 		IncludeRequests:  true,
+		ExchangeRate: BillingExchangeRate{
+			CNYToUSD: 0.14,
+			Stale:    true,
+		},
+		ModelPricing: map[string]config.ModelBilling{
+			"qwen": {
+				PerRequestUSD:            0.01,
+				InputPerMillionUSD:       0.20,
+				OutputPerMillionUSD:      0.80,
+				CachedInputPerMillionUSD: 0.05,
+			},
+		},
 	}, models, []billingRequestRecord{
-		{RequestID: "req-a", Time: start.Add(10 * time.Minute), Model: "qwen", AppID: "app-a", TotalTokens: 100},
-		{RequestID: "req-b", Time: start.Add(20 * time.Minute), Model: "qwen", AppID: "app-b", TotalTokens: 300},
+		{RequestID: "req-a", Time: start.Add(10 * time.Minute), Model: "qwen", AppID: "app-a", PromptTokens: 100, CompletionTokens: 50, CacheTokens: 25, TotalTokens: 175},
+		{RequestID: "req-b", Time: start.Add(20 * time.Minute), Model: "qwen", AppID: "app-b", PromptTokens: 300, CompletionTokens: 100, CacheTokens: 50, TotalTokens: 450},
 	})
 
+	if summary.Currency != "USD" || summary.ExchangeRateCNYToUSD != 0.14 || !summary.ExchangeRateStale {
+		t.Fatalf("exchange fields = currency %q rate %v stale %v, want USD/0.14/true", summary.Currency, summary.ExchangeRateCNYToUSD, summary.ExchangeRateStale)
+	}
 	if len(summary.Models) != 1 {
 		t.Fatalf("models = %+v, want one qwen row", summary.Models)
 	}
 	model := summary.Models[0]
-	if model.ModelCostRMB != 1 || model.CostPerRequestRMB != 0.5 || model.CostPerMillionTokensRMB != 2500 {
-		t.Fatalf("model billing = %+v, want cost=1 per_request=0.5 per_million=2500", model)
+	if model.ModelCost != 0.14 || model.ModelUsedCost != 0.020204 || model.ModelIdleCost != 0.119796 {
+		t.Fatalf("model billing = %+v, want model_cost=0.14 used=0.020204 idle=0.119796", model)
+	}
+	if model.InputTokens != 400 || model.OutputTokens != 150 || model.CachedInputTokens != 75 || model.TotalTokens != 625 {
+		t.Fatalf("model tokens = %+v, want input=400 output=150 cached=75 total=625", model)
 	}
 	if len(summary.Apps) != 2 {
 		t.Fatalf("apps = %+v, want app-a/app-b", summary.Apps)
 	}
 	apps := billingAppsByID(summary.Apps)
-	if apps["app-a"].CostByTokenRMB != 0.25 || apps["app-a"].RequestCostByRequestRMB != 0.5 {
-		t.Fatalf("app-a = %+v, want token=0.25 request=0.5", apps["app-a"])
+	if apps["app-a"].InputTokens != 100 || apps["app-a"].OutputTokens != 50 || apps["app-a"].CachedInputTokens != 25 {
+		t.Fatalf("app-a tokens = %+v, want input/output/cached token breakdown", apps["app-a"])
 	}
-	if apps["app-b"].CostByTokenRMB != 0.75 || apps["app-b"].RequestCostByRequestRMB != 0.5 {
-		t.Fatalf("app-b = %+v, want token=0.75 request=0.5", apps["app-b"])
+	if apps["app-a"].ModelUsedCost != 0.010061 || apps["app-b"].ModelUsedCost != 0.010143 {
+		t.Fatalf("app costs = app-a %+v app-b %+v, want configured usage costs", apps["app-a"], apps["app-b"])
 	}
 	if len(summary.RequestCosts) != 2 {
 		t.Fatalf("request costs = %+v, want two rows", summary.RequestCosts)
 	}
-	if summary.RequestCosts[0].TokenUnitPriceRMB != 0.0025 || summary.RequestCosts[0].CostByTokenRMB != 0.25 {
-		t.Fatalf("request token pricing = %+v, want unit=0.0025 cost=0.25", summary.RequestCosts[0])
+	if summary.RequestCosts[0].InputTokens != 100 || summary.RequestCosts[0].OutputTokens != 50 || summary.RequestCosts[0].CachedInputTokens != 25 || summary.RequestCosts[0].ModelUsedCost != 0.010061 {
+		t.Fatalf("request cost row = %+v, want token breakdown and configured usage cost", summary.RequestCosts[0])
 	}
 }
 
@@ -67,54 +86,12 @@ func TestBillingReadyCostSplitsConcurrentModelsOnSameWorker(t *testing.T) {
 		{WorkerID: "worker-a", Model: "vision", Start: start, End: end},
 	}, start, end, 24)
 
-	if got := roundMoney(models["qwen"].ModelCostRMB); got != 0.5 {
+	if got := roundMoney(models["qwen"].ModelCost); got != 0.5 {
 		t.Fatalf("qwen cost = %v, want 0.5", got)
 	}
-	if got := roundMoney(models["vision"].ModelCostRMB); got != 0.5 {
+	if got := roundMoney(models["vision"].ModelCost); got != 0.5 {
 		t.Fatalf("vision cost = %v, want 0.5", got)
 	}
-}
-
-func TestBillingSummaryCalculatesCapacityTokenUnitPrices(t *testing.T) {
-	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := start.Add(time.Hour)
-
-	models := calculateModelReadyCosts([]billingReadyInterval{
-		{WorkerID: "worker-a", Model: "qwen", Start: start, End: end},
-	}, start, end, 55)
-	summary := buildBillingSummary(BillingQuery{
-		Start:            start,
-		End:              end,
-		WorkerDayCostRMB: 55,
-	}, models, []billingRequestRecord{
-		{
-			RequestID:        "req-a",
-			Time:             start.Add(10 * time.Minute),
-			Model:            "qwen",
-			TotalTokens:      1500,
-			PromptTokens:     1000,
-			CompletionTokens: 500,
-			CacheTokens:      250,
-			DurationMS:       10_000,
-			StatusCode:       http.StatusOK,
-		},
-	})
-
-	if len(summary.Models) != 1 {
-		t.Fatalf("models = %+v, want one qwen row", summary.Models)
-	}
-	capacity := summary.Models[0].Capacity90
-	assertClose(t, capacity.UtilizationTarget, 0.9, "utilization")
-	assertClose(t, capacity.ObservedDurationSeconds, 10, "observed duration")
-	assertClose(t, capacity.HourlyInputTokens, 324_000, "hourly input")
-	assertClose(t, capacity.DailyInputTokens, 7_776_000, "daily input")
-	assertClose(t, capacity.InputCostPerMillionTokensRMB, 7.073045, "input per million")
-	assertClose(t, capacity.HourlyOutputTokens, 162_000, "hourly output")
-	assertClose(t, capacity.DailyOutputTokens, 3_888_000, "daily output")
-	assertClose(t, capacity.OutputCostPerMillionTokensRMB, 14.146091, "output per million")
-	assertClose(t, capacity.HourlyCacheTokens, 81_000, "hourly cache")
-	assertClose(t, capacity.DailyCacheTokens, 1_944_000, "daily cache")
-	assertClose(t, capacity.CacheCostPerMillionTokensRMB, 28.292181, "cache per million")
 }
 
 func TestParseBillingQuerySupportsShanghaiLocalNaturalRanges(t *testing.T) {
@@ -237,24 +214,28 @@ func TestPostgresBillingSummaryPersistsRequestCosts(t *testing.T) {
 		WorkerDayCostRMB: 24,
 		IncludeRequests:  true,
 		Persist:          true,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+		ModelPricing: map[string]config.ModelBilling{
+			"qwen": {PerRequestUSD: 0.01, InputPerMillionUSD: 1},
+		},
 	})
 	if err != nil {
 		t.Fatalf("billing summary: %v", err)
 	}
-	if len(summary.Models) != 1 || summary.Models[0].ModelCostRMB != 1 {
+	if len(summary.Models) != 1 || summary.Models[0].ModelCost != 1 {
 		data, _ := json.MarshalIndent(summary, "", "  ")
 		t.Fatalf("summary = %s, want one qwen row with cost 1", data)
 	}
-	var tokenCost, requestCost float64
+	var modelUsedCost float64
 	err = store.db.QueryRowContext(ctx, `
-SELECT cost_by_token_rmb::float8, cost_by_request_rmb::float8
+SELECT model_used_cost_usd::float8
 FROM request_records
-WHERE request_id = $1`, prefix+"-req-a").Scan(&tokenCost, &requestCost)
+WHERE request_id = $1`, prefix+"-req-a").Scan(&modelUsedCost)
 	if err != nil {
 		t.Fatalf("read persisted request costs: %v", err)
 	}
-	if tokenCost != 0.25 || requestCost != 0.5 {
-		t.Fatalf("persisted req-a costs token=%v request=%v, want 0.25/0.5", tokenCost, requestCost)
+	if modelUsedCost != 0.01 {
+		t.Fatalf("persisted req-a model_used_cost_usd=%v, want 0.01", modelUsedCost)
 	}
 }
 
@@ -290,6 +271,7 @@ VALUES ($1, $2, $3, $4, 1, $5)`,
 		Start:            start,
 		End:              end,
 		WorkerDayCostRMB: 55,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
 	})
 	if err != nil {
 		t.Fatalf("billing summary: %v", err)

@@ -94,6 +94,12 @@ func validateGateway(cfg GatewayConfig) error {
 		if model.QueueTimeoutMS < 0 {
 			return fmt.Errorf("model %s queue_timeout_ms must be non-negative", name)
 		}
+		if model.Billing.PerRequestUSD < 0 ||
+			model.Billing.InputPerMillionUSD < 0 ||
+			model.Billing.OutputPerMillionUSD < 0 ||
+			model.Billing.CachedInputPerMillionUSD < 0 {
+			return fmt.Errorf("model %s billing prices must be non-negative", name)
+		}
 	}
 	for tag, policy := range cfg.TagPolicies {
 		if policy.MaxConcurrency < 0 || policy.MaxQueue < 0 || policy.WorkerDefaults.MaxConcurrency < 0 || policy.WorkerDefaults.MaxQueue < 0 {

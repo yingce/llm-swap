@@ -55,10 +55,10 @@ type Metrics struct {
 	modelLoadedReplicas          *prometheus.GaugeVec
 	modelUnderprovisioned        *prometheus.GaugeVec
 	modelQueueDepth              *prometheus.GaugeVec
-	billingModelCostRMB          *prometheus.GaugeVec
+	billingModelCostUSD          *prometheus.GaugeVec
 	billingModelBillableSeconds  *prometheus.GaugeVec
-	billingModelCostPerMTokRMB   *prometheus.GaugeVec
-	billingModelCapacityPerMTok  *prometheus.GaugeVec
+	billingModelUsedCostUSD      *prometheus.GaugeVec
+	billingModelIdleCostUSD      *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -226,25 +226,25 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_model_queue_depth",
 		Help: "Current number of queued requests at the gateway model gate.",
 	}, []string{"model"})
-	billingModelCostRMB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "llm_swap_gateway_billing_model_cost_rmb",
-		Help: "Estimated model ready occupancy cost in RMB for the billing scrape window.",
+	billingModelCostUSD := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_cost_usd",
+		Help: "Estimated model ready occupancy cost in USD for the billing scrape window.",
 	}, []string{"model"})
 	billingModelBillableSeconds := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_swap_gateway_billing_model_billable_worker_seconds",
 		Help: "Model billable worker seconds for the billing scrape window after same-worker multi-model sharing.",
 	}, []string{"model"})
-	billingModelCostPerMTokRMB := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "llm_swap_gateway_billing_model_cost_per_million_tokens_rmb",
-		Help: "Estimated model cost per million tokens in RMB for the billing scrape window.",
+	billingModelUsedCostUSD := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_used_cost_usd",
+		Help: "Configured model usage cost in USD for the billing scrape window.",
 	}, []string{"model"})
-	billingModelCapacityPerMTok := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "llm_swap_gateway_billing_model_capacity_90_cost_per_million_tokens_rmb",
-		Help: "Estimated model token price per million tokens in RMB at 90 percent observed throughput capacity.",
-	}, []string{"model", "type"})
+	billingModelIdleCostUSD := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_model_idle_cost_usd",
+		Help: "Model occupancy cost minus configured usage cost in USD for the billing scrape window.",
+	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostRMB, billingModelBillableSeconds, billingModelCostPerMTokRMB, billingModelCapacityPerMTok)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostUSD, billingModelBillableSeconds, billingModelUsedCostUSD, billingModelIdleCostUSD)
 
 	return &Metrics{
 		registry:                     registry,
@@ -288,10 +288,10 @@ func NewMetrics() *Metrics {
 		modelLoadedReplicas:          modelLoadedReplicas,
 		modelUnderprovisioned:        modelUnderprovisioned,
 		modelQueueDepth:              modelQueueDepth,
-		billingModelCostRMB:          billingModelCostRMB,
+		billingModelCostUSD:          billingModelCostUSD,
 		billingModelBillableSeconds:  billingModelBillableSeconds,
-		billingModelCostPerMTokRMB:   billingModelCostPerMTokRMB,
-		billingModelCapacityPerMTok:  billingModelCapacityPerMTok,
+		billingModelUsedCostUSD:      billingModelUsedCostUSD,
+		billingModelIdleCostUSD:      billingModelIdleCostUSD,
 	}
 }
 
@@ -353,17 +353,15 @@ func (m *Metrics) ObserveBillingSummary(summary BillingSummary) {
 	if m == nil {
 		return
 	}
-	m.billingModelCostRMB.Reset()
+	m.billingModelCostUSD.Reset()
 	m.billingModelBillableSeconds.Reset()
-	m.billingModelCostPerMTokRMB.Reset()
-	m.billingModelCapacityPerMTok.Reset()
+	m.billingModelUsedCostUSD.Reset()
+	m.billingModelIdleCostUSD.Reset()
 	for _, model := range summary.Models {
-		m.billingModelCostRMB.WithLabelValues(model.Model).Set(model.ModelCostRMB)
+		m.billingModelCostUSD.WithLabelValues(model.Model).Set(model.ModelCost)
 		m.billingModelBillableSeconds.WithLabelValues(model.Model).Set(model.BillableWorkerSeconds)
-		m.billingModelCostPerMTokRMB.WithLabelValues(model.Model).Set(model.CostPerMillionTokensRMB)
-		m.billingModelCapacityPerMTok.WithLabelValues(model.Model, "input").Set(model.Capacity90.InputCostPerMillionTokensRMB)
-		m.billingModelCapacityPerMTok.WithLabelValues(model.Model, "output").Set(model.Capacity90.OutputCostPerMillionTokensRMB)
-		m.billingModelCapacityPerMTok.WithLabelValues(model.Model, "cache").Set(model.Capacity90.CacheCostPerMillionTokensRMB)
+		m.billingModelUsedCostUSD.WithLabelValues(model.Model).Set(model.ModelUsedCost)
+		m.billingModelIdleCostUSD.WithLabelValues(model.Model).Set(model.ModelIdleCost)
 	}
 }
 

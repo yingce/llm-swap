@@ -185,8 +185,9 @@ disabled the gateway still runs with no external database.
   - The schema includes `request_records`, `worker_events`, and
     `worker_model_ready_intervals`; cost/billing queries should build on these
     PG tables instead of local JSONL.
-  - Billing API parameters, time parsing, ready interval semantics, and
-    capacity token price fields are documented in `docs/billing-api.md`.
+  - Billing API parameters, time parsing, ready interval semantics, USD
+    conversion, and configured usage-cost fields are documented in
+    `docs/billing-api.md`.
   - Imported historical JSONL rows use `source_hash` unique indexes so
     interrupted imports can be rerun without duplicating rows.
 

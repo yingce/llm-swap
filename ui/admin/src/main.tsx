@@ -594,13 +594,17 @@ function Billing({
       </div>
 
       {error ? <div className="alert">Billing unavailable: {error}</div> : null}
+      {billing?.exchange_rate_stale ? <div className="notice">Using stale or fallback CNY/USD exchange rate.</div> : null}
 
       <div className="traffic-summary">
-        <Metric label="Model cost" value={formatMoney(billing?.totals.model_cost_rmb)} />
+        <Metric label="Model cost" value={formatMoney(billing?.totals.model_cost)} />
+        <Metric label="Used cost" value={formatMoney(billing?.totals.model_used_cost)} />
+        <Metric label="Idle cost" value={formatMoney(billing?.totals.model_idle_cost)} />
         <Metric label="Billable hours" value={formatHours(billing?.totals.billable_worker_seconds)} />
         <Metric label="Requests" value={compactNumber(billing?.totals.requests)} />
         <Metric label="Total tokens" value={compactNumber(billing?.totals.total_tokens)} />
-        <Metric label="Worker day price" value={formatMoney(billing?.worker_day_cost_rmb)} />
+        <Metric label="Worker day price" value={formatMoney(billing?.worker_day_cost_usd)} />
+        <Metric label="CNY/USD" value={formatRate(billing?.exchange_rate_cny_to_usd)} />
       </div>
 
       <div className="table-wrap">
@@ -610,31 +614,29 @@ function Billing({
             <tr>
               <th>Model</th>
               <th>Cost</th>
+              <th>Used</th>
+              <th>Idle</th>
               <th>Billable time</th>
               <th>Requests</th>
-              <th>Tokens</th>
-              <th>Per request</th>
-              <th>Allocated / 1M</th>
-              <th>90% input / 1M</th>
-              <th>90% output / 1M</th>
-              <th>90% cache / 1M</th>
-              <th>90% output / day</th>
+              <th>Input</th>
+              <th>Output</th>
+              <th>Cached</th>
+              <th>Total tokens</th>
             </tr>
           </thead>
           <tbody>
             {(billing?.models ?? []).map((model) => (
               <tr key={model.model}>
                 <td><strong>{model.model}</strong></td>
-                <td>{formatMoney(model.model_cost_rmb)}</td>
+                <td>{formatMoney(model.model_cost)}</td>
+                <td>{formatMoney(model.model_used_cost)}</td>
+                <td>{formatMoney(model.model_idle_cost)}</td>
                 <td>{formatHours(model.billable_worker_seconds)}</td>
                 <td>{compactNumber(model.requests)}</td>
+                <td>{compactNumber(model.input_tokens)}</td>
+                <td>{compactNumber(model.output_tokens)}</td>
+                <td>{compactNumber(model.cached_input_tokens)}</td>
                 <td>{compactNumber(model.total_tokens)}</td>
-                <td>{formatMoney(model.cost_per_request_rmb)}</td>
-                <td>{formatMoney(model.cost_per_million_tokens_rmb)}</td>
-                <td>{formatMoney(model.capacity_90?.input_cost_per_million_tokens_rmb)}</td>
-                <td>{formatMoney(model.capacity_90?.output_cost_per_million_tokens_rmb)}</td>
-                <td>{formatMoney(model.capacity_90?.cache_cost_per_million_tokens_rmb)}</td>
-                <td>{compactNumber(model.capacity_90?.daily_output_tokens)}</td>
               </tr>
             ))}
           </tbody>
@@ -648,9 +650,11 @@ function Billing({
             <tr>
               <th>App ID</th>
               <th>Requests</th>
-              <th>Tokens</th>
-              <th>Token cost</th>
-              <th>Request allocation</th>
+              <th>Input</th>
+              <th>Output</th>
+              <th>Cached</th>
+              <th>Total tokens</th>
+              <th>Used cost</th>
             </tr>
           </thead>
           <tbody>
@@ -658,9 +662,11 @@ function Billing({
               <tr key={app.app_id}>
                 <td><strong>{app.app_id}</strong></td>
                 <td>{compactNumber(app.requests)}</td>
+                <td>{compactNumber(app.input_tokens)}</td>
+                <td>{compactNumber(app.output_tokens)}</td>
+                <td>{compactNumber(app.cached_input_tokens)}</td>
                 <td>{compactNumber(app.total_tokens)}</td>
-                <td>{formatMoney(app.cost_by_token_rmb)}</td>
-                <td>{formatMoney(app.request_cost_by_request_rmb)}</td>
+                <td>{formatMoney(app.model_used_cost)}</td>
               </tr>
             ))}
           </tbody>
@@ -675,10 +681,11 @@ function Billing({
               <th>Time</th>
               <th>Model</th>
               <th>App</th>
-              <th>Tokens</th>
-              <th>Token unit</th>
-              <th>Token cost</th>
-              <th>Request cost</th>
+              <th>Input</th>
+              <th>Output</th>
+              <th>Cached</th>
+              <th>Total tokens</th>
+              <th>Used cost</th>
             </tr>
           </thead>
           <tbody>
@@ -687,10 +694,11 @@ function Billing({
                 <td>{new Date(request.time).toLocaleTimeString()}</td>
                 <td>{request.model}</td>
                 <td>{request.app_id || "-"}</td>
+                <td>{compactNumber(request.input_tokens)}</td>
+                <td>{compactNumber(request.output_tokens)}</td>
+                <td>{compactNumber(request.cached_input_tokens)}</td>
                 <td>{compactNumber(request.total_tokens)}</td>
-                <td>{formatUnitPrice(request.token_unit_price_rmb)}</td>
-                <td>{formatMoney(request.cost_by_token_rmb)}</td>
-                <td>{formatMoney(request.request_cost_by_request_rmb)}</td>
+                <td>{formatMoney(request.model_used_cost)}</td>
               </tr>
             ))}
           </tbody>
@@ -1348,9 +1356,17 @@ function compactNumber(value: number | bigint | undefined) {
 function formatMoney(value: number | undefined) {
   const numberValue = Number(value ?? 0);
   if (!Number.isFinite(numberValue)) {
-    return "¥0.00";
+    return "$0.00";
   }
-  return `¥${numberValue.toFixed(numberValue >= 100 ? 1 : 2)}`;
+  return `$${numberValue.toFixed(numberValue >= 100 ? 1 : 2)}`;
+}
+
+function formatRate(value: number | undefined) {
+  const numberValue = Number(value ?? 0);
+  if (!Number.isFinite(numberValue) || numberValue <= 0) {
+    return "-";
+  }
+  return numberValue.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function formatUnitPrice(value: number | undefined) {
@@ -1420,6 +1436,10 @@ function requestTokens(request: RequestLogEntry) {
 }
 
 function requestCost(request: RequestLogEntry) {
+  const modelUsedCost = request.model_used_cost_usd ?? 0;
+  if (modelUsedCost > 0) {
+    return `used ${formatMoney(modelUsedCost)}`;
+  }
   const tokenCost = request.cost_by_token_rmb ?? 0;
   const requestCostValue = request.cost_by_request_rmb ?? 0;
   if (!tokenCost && !requestCostValue) {
@@ -1517,7 +1537,8 @@ function cloneEditableConfig(config: EditableGatewayConfig): EditableGatewayConf
         {
           ...model,
           artifact: { ...model.artifact },
-          runtime_args: [...model.runtime_args]
+          runtime_args: [...model.runtime_args],
+          billing: model.billing ? { ...model.billing } : undefined
         }
       ])
     ),
@@ -1543,6 +1564,7 @@ function toEditableConfig(configResponse: ConfigResponse): EditableGatewayConfig
         ...model,
         artifact: { ...model.artifact },
         runtime_args: [...(model.runtime_args ?? [])],
+        billing: model.billing ? { ...model.billing } : undefined,
         max_loaded_auto: !yamlModelHasKey(parsed, name, "max_loaded") && model.max_loaded === 0
       }
     ])
@@ -1579,7 +1601,8 @@ function toGatewayConfigView(draft: EditableGatewayConfig): GatewayConfigView {
           runtime: model.runtime,
           runtime_args: [...model.runtime_args],
           cmd_stop: model.cmd_stop,
-          check_endpoint: model.check_endpoint
+          check_endpoint: model.check_endpoint,
+          billing: model.billing ? { ...model.billing } : undefined
         };
         return [name, nextModel];
       })
@@ -1638,6 +1661,9 @@ function createYamlModelsMap(
       }
       if (model.check_endpoint) {
         nextModel.check_endpoint = model.check_endpoint;
+      }
+      if (model.billing && Object.keys(model.billing).length > 0) {
+        nextModel.billing = { ...model.billing };
       }
       return [name, nextModel];
     })

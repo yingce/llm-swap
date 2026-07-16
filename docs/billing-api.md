@@ -1,7 +1,7 @@
 # Billing API
 
-`GET /api/billing` returns model occupancy cost, app/request allocation, and
-model capacity-based token prices from Postgres records.
+`GET /api/billing` returns model occupancy cost, configured usage cost, idle
+cost, app usage, and per-request usage cost from Postgres records.
 
 Authentication uses the gateway agent/UI token.
 
@@ -16,7 +16,7 @@ Authentication uses the gateway agent/UI token.
 - `include_requests`: optional boolean. `1`, `true`, `yes`, and `on` include
   per-request cost rows.
 - `persist`: optional boolean. When true, writes calculated request costs back
-  to `request_records`.
+  to `request_records.model_used_cost_usd` and updates `cost_calculated_at`.
 
 `start` and `end` override `day`/`date`/`hour` when they are provided.
 `hour` overrides `day`/`date`.
@@ -62,6 +62,23 @@ The response `start` and `end` are serialized in UTC. For example,
 
 ## Cost Semantics
 
+All returned cost fields use USD unless the field name explicitly says `rmb`.
+The response includes:
+
+- `currency`: currently always `USD`.
+- `exchange_rate_cny_to_usd`: CNY to USD rate used for this response.
+- `exchange_rate_time`: rate date/time when available.
+- `exchange_rate_stale`: true when the gateway used a stale cached rate or the
+  fallback rate.
+- `worker_day_cost_rmb`: the configured machine cost input.
+- `worker_day_cost_usd`: `worker_day_cost_rmb * exchange_rate_cny_to_usd`.
+
+The gateway refreshes CNY/USD from
+`https://api.frankfurter.dev/v2/rates?base=CNY&quotes=USD` at most once every
+10 minutes. If the refresh fails, it uses the last successful rate. If there is
+no successful rate yet, it falls back to `1 CNY = 0.14 USD` and marks
+`exchange_rate_stale=true`.
+
 `ready_seconds` is based on `worker_model_ready_intervals`.
 
 The gateway updates intervals incrementally from each worker heartbeat:
@@ -74,31 +91,50 @@ The gateway updates intervals incrementally from each worker heartbeat:
 `billable_worker_seconds` splits time evenly when the same worker reports
 multiple ready models.
 
-`model_cost_rmb` is actual ready occupancy cost:
+`model_cost` is actual ready occupancy cost:
 
 ```text
-model_cost_rmb = billable_worker_seconds / 86400 * worker_day_cost_rmb
+model_cost = billable_worker_seconds / 86400 * worker_day_cost_usd
 ```
 
-`cost_per_request_rmb` and `cost_per_million_tokens_rmb` allocate that actual
-occupancy cost across requests observed in the selected time range.
+`model_used_cost` is calculated from the configured per-model customer pricing,
+not from machine idle cost. Configure it under each model:
 
-`capacity_90` is a separate capacity price estimate. It does not allocate actual
-usage. For successful requests with positive `duration_ms`, the gateway computes
-observed throughput per model:
+```yaml
+models:
+  Qwen:
+    billing:
+      per_request_usd: 0.001
+      input_per_million_usd: 0.2
+      output_per_million_usd: 0.8
+      cached_input_per_million_usd: 0.05
+```
+
+Per-request configured usage cost:
 
 ```text
-observed_tps = tokens / sum(duration_ms / 1000)
-daily_capacity = observed_tps * 86400 * 0.90
-token_unit_price_rmb = worker_day_cost_rmb / daily_capacity
-cost_per_million_tokens_rmb = token_unit_price_rmb * 1000000
+model_used_cost =
+  per_request_usd
+  + input_tokens / 1000000 * input_per_million_usd
+  + output_tokens / 1000000 * output_per_million_usd
+  + cached_input_tokens / 1000000 * cached_input_per_million_usd
 ```
 
-Input, output, and cache tokens are calculated separately:
+`model_idle_cost` is the unbilled/over-covered part of occupancy cost:
 
-- `input_cost_per_million_tokens_rmb`
-- `output_cost_per_million_tokens_rmb`
-- `cache_cost_per_million_tokens_rmb`
+```text
+model_idle_cost = model_cost - model_used_cost
+```
+
+This value can be negative when configured customer usage cost exceeds machine
+occupancy cost.
+
+`models[]`, `apps[]`, and `request_costs[]` report token counts separately:
+
+- `input_tokens`
+- `output_tokens`
+- `cached_input_tokens`
+- `total_tokens`
 
 ## Examples
 

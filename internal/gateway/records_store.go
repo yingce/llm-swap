@@ -350,7 +350,8 @@ SELECT request_id, event_time, model, worker_id, tag, status_code, duration_ms,
   stream, request_bytes, response_bytes, message_count, image_count, video_count, audio_count,
   max_tokens, temperature, top_p, top_k, prompt_tokens, completion_tokens, total_tokens,
   cache_tokens, reasoning_tokens, finish_reason, error_type, error_code, error_message,
-  retry_count, upstream_url, request_headers, cost_by_token_rmb::float8, cost_by_request_rmb::float8, cost_calculated_at
+  retry_count, upstream_url, request_headers, cost_by_token_rmb::float8, cost_by_request_rmb::float8,
+  model_used_cost_usd::float8, cost_calculated_at
 FROM request_records
 ORDER BY id DESC
 OFFSET $1 LIMIT $2`, offset, limit+1)
@@ -422,7 +423,7 @@ OFFSET $1 LIMIT $2`, offset, limit+1)
 func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	var entry RequestLogEntry
 	var temperature, topP, topK sql.NullFloat64
-	var costByToken, costByRequest sql.NullFloat64
+	var costByToken, costByRequest, modelUsedCostUSD sql.NullFloat64
 	var costCalculatedAt sql.NullTime
 	var headers []byte
 	err := rows.Scan(
@@ -430,7 +431,7 @@ func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 		&entry.Stream, &entry.RequestBytes, &entry.ResponseBytes, &entry.MessageCount, &entry.ImageCount, &entry.VideoCount, &entry.AudioCount,
 		&entry.MaxTokens, &temperature, &topP, &topK, &entry.PromptTokens, &entry.CompletionTokens, &entry.TotalTokens,
 		&entry.CacheTokens, &entry.ReasoningTokens, &entry.FinishReason, &entry.ErrorType, &entry.ErrorCode, &entry.ErrorMessage,
-		&entry.RetryCount, &entry.UpstreamURL, &headers, &costByToken, &costByRequest, &costCalculatedAt,
+		&entry.RetryCount, &entry.UpstreamURL, &headers, &costByToken, &costByRequest, &modelUsedCostUSD, &costCalculatedAt,
 	)
 	if err != nil {
 		return RequestLogEntry{}, err
@@ -452,6 +453,9 @@ func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	}
 	if costByRequest.Valid {
 		entry.CostByRequestRMB = costByRequest.Float64
+	}
+	if modelUsedCostUSD.Valid {
+		entry.ModelUsedCostUSD = modelUsedCostUSD.Float64
 	}
 	if costCalculatedAt.Valid {
 		calculatedAt := costCalculatedAt.Time

@@ -30,6 +30,7 @@ type Server struct {
 	pressure           *PressureTracker
 	replicaCooldowns   *ReplicaCooldowns
 	tunnels            *AgentTunnelRegistry
+	exchangeRates      *ExchangeRateProvider
 	recordsStore       RecordsStore
 	requestLogPath     string
 	workerEventLogPath string
@@ -124,6 +125,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 		pressure:           NewPressureTracker(defaultPressureWindow),
 		replicaCooldowns:   NewReplicaCooldowns(defaultReplicaCooldownTTL),
 		tunnels:            NewAgentTunnelRegistry(),
+		exchangeRates:      NewExchangeRateProvider(),
 		recordsStore:       recordsStore,
 		requestLogPath:     requestLogPath,
 		workerEventLogPath: workerEventLogPath,
@@ -223,6 +225,8 @@ func (s *Server) observeBillingMetrics(ctx context.Context, now time.Time) {
 		Start:            now.Add(-time.Hour),
 		End:              now,
 		WorkerDayCostRMB: defaultWorkerDayCostRMB,
+		ExchangeRate:     s.exchangeRates.CNYToUSD(ctx),
+		ModelPricing:     modelBillingPricing(s.currentConfig()),
 	})
 	if err != nil {
 		s.logEvent("billing_metrics_error", map[string]any{"error": err.Error()})
