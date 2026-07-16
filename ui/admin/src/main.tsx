@@ -849,7 +849,9 @@ function Billing({
               <th>Output</th>
               <th>Cached</th>
               <th>Total tokens</th>
+              <th>Cost</th>
               <th>Used cost</th>
+              <th>Idle cost</th>
             </tr>
           </thead>
           <tbody>
@@ -861,7 +863,9 @@ function Billing({
                 <td>{compactNumber(app.output_tokens)}</td>
                 <td>{compactNumber(app.cached_input_tokens)}</td>
                 <td>{compactNumber(app.total_tokens)}</td>
+                <td>{formatMoney(app.model_cost)}</td>
                 <td>{formatMoney(app.model_used_cost)}</td>
+                <td>{formatMoney(app.model_idle_cost)}</td>
               </tr>
             ))}
           </tbody>

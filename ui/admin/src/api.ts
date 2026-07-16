@@ -314,7 +314,9 @@ export type BillingAppSummary = {
   output_tokens: number;
   cached_input_tokens: number;
   total_tokens: number;
+  model_cost: number;
   model_used_cost: number;
+  model_idle_cost: number;
 };
 
 export type BillingRequestCost = {

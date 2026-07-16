@@ -63,6 +63,9 @@ type Metrics struct {
 	billingModelBillableSeconds  *prometheus.GaugeVec
 	billingModelUsedCostUSD      *prometheus.GaugeVec
 	billingModelIdleCostUSD      *prometheus.GaugeVec
+	billingAppCostUSD            *prometheus.GaugeVec
+	billingAppUsedCostUSD        *prometheus.GaugeVec
+	billingAppIdleCostUSD        *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -263,9 +266,21 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_billing_model_idle_cost_usd",
 		Help: "Model occupancy cost minus configured usage cost in USD for the billing scrape window.",
 	}, []string{"model"})
+	billingAppCostUSD := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_app_cost_usd",
+		Help: "Configured usage cost plus allocated idle cost in USD by app id for the billing scrape window.",
+	}, []string{"app_id"})
+	billingAppUsedCostUSD := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_app_used_cost_usd",
+		Help: "Configured model usage cost in USD by app id for the billing scrape window.",
+	}, []string{"app_id"})
+	billingAppIdleCostUSD := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_swap_gateway_billing_app_idle_cost_usd",
+		Help: "Allocated model idle cost in USD by app id for the billing scrape window.",
+	}, []string{"app_id"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, appRequests, appTokens, appModelUsedCostUSD, appRequestDuration, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostUSD, billingModelBillableSeconds, billingModelUsedCostUSD, billingModelIdleCostUSD)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, appRequests, appTokens, appModelUsedCostUSD, appRequestDuration, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostUSD, billingModelBillableSeconds, billingModelUsedCostUSD, billingModelIdleCostUSD, billingAppCostUSD, billingAppUsedCostUSD, billingAppIdleCostUSD)
 
 	return &Metrics{
 		registry:                     registry,
@@ -317,6 +332,9 @@ func NewMetrics() *Metrics {
 		billingModelBillableSeconds:  billingModelBillableSeconds,
 		billingModelUsedCostUSD:      billingModelUsedCostUSD,
 		billingModelIdleCostUSD:      billingModelIdleCostUSD,
+		billingAppCostUSD:            billingAppCostUSD,
+		billingAppUsedCostUSD:        billingAppUsedCostUSD,
+		billingAppIdleCostUSD:        billingAppIdleCostUSD,
 	}
 }
 
@@ -418,11 +436,19 @@ func (m *Metrics) ObserveBillingSummary(summary BillingSummary) {
 	m.billingModelBillableSeconds.Reset()
 	m.billingModelUsedCostUSD.Reset()
 	m.billingModelIdleCostUSD.Reset()
+	m.billingAppCostUSD.Reset()
+	m.billingAppUsedCostUSD.Reset()
+	m.billingAppIdleCostUSD.Reset()
 	for _, model := range summary.Models {
 		m.billingModelCostUSD.WithLabelValues(model.Model).Set(model.ModelCost)
 		m.billingModelBillableSeconds.WithLabelValues(model.Model).Set(model.BillableWorkerSeconds)
 		m.billingModelUsedCostUSD.WithLabelValues(model.Model).Set(model.ModelUsedCost)
 		m.billingModelIdleCostUSD.WithLabelValues(model.Model).Set(model.ModelIdleCost)
+	}
+	for _, app := range summary.Apps {
+		m.billingAppCostUSD.WithLabelValues(app.AppID).Set(app.ModelCost)
+		m.billingAppUsedCostUSD.WithLabelValues(app.AppID).Set(app.ModelUsedCost)
+		m.billingAppIdleCostUSD.WithLabelValues(app.AppID).Set(app.ModelIdleCost)
 	}
 }
 

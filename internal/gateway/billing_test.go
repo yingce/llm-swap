@@ -181,6 +181,41 @@ func TestBillingSummaryReportsRequestDurationForCapacityPricing(t *testing.T) {
 	}
 }
 
+func TestBillingSummaryAllocatesModelIdleCostToAppsByModelCallShare(t *testing.T) {
+	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	models := calculateModelReadyCosts([]billingReadyInterval{
+		{WorkerID: "worker-a", Model: "qwen", Start: start, End: end},
+	}, start, end, 24)
+
+	summary := buildBillingSummary(BillingQuery{
+		Start:            start,
+		End:              end,
+		WorkerDayCostRMB: 24,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+		ModelPricing: map[string]config.ModelBilling{
+			"qwen": {PerRequestUSD: 0.1},
+		},
+	}, models, []billingRequestRecord{
+		{RequestID: "req-a", Time: start, Model: "qwen", AppID: "app-a", DurationMS: 10_000},
+		{RequestID: "req-b", Time: start.Add(time.Second), Model: "qwen", AppID: "app-b", DurationMS: 30_000},
+	})
+
+	if len(summary.Models) != 1 {
+		t.Fatalf("models = %+v, want one qwen row", summary.Models)
+	}
+	if summary.Models[0].ModelCost != 1 || summary.Models[0].ModelUsedCost != 0.2 || summary.Models[0].ModelIdleCost != 0.8 {
+		t.Fatalf("model costs = %+v, want cost=1 used=0.2 idle=0.8", summary.Models[0])
+	}
+	apps := billingAppsByID(summary.Apps)
+	if apps["app-a"].ModelUsedCost != 0.1 || apps["app-a"].ModelIdleCost != 0.2 || apps["app-a"].ModelCost != 0.3 {
+		t.Fatalf("app-a costs = %+v, want used=0.1 idle=0.2 cost=0.3", apps["app-a"])
+	}
+	if apps["app-b"].ModelUsedCost != 0.1 || apps["app-b"].ModelIdleCost != 0.6 || apps["app-b"].ModelCost != 0.7 {
+		t.Fatalf("app-b costs = %+v, want used=0.1 idle=0.6 cost=0.7", apps["app-b"])
+	}
+}
+
 func TestParseBillingQuerySupportsShanghaiLocalNaturalRanges(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/billing?day=2035-01-02", nil)
 	query, err := parseBillingQuery(req)

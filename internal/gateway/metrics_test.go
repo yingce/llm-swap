@@ -448,6 +448,22 @@ func TestProxyRecordsAppUsageMetrics(t *testing.T) {
 	assertMetricLine(t, body, `llm_swap_gateway_app_request_duration_seconds_count{app_id="app-a",model="qwen"} 1`)
 }
 
+func TestMetricsRouteReportsBillingAppCosts(t *testing.T) {
+	metrics := NewMetrics()
+	metrics.ObserveBillingSummary(BillingSummary{
+		Apps: []BillingAppSummary{
+			{AppID: "app-a", ModelCost: 0.7, ModelUsedCost: 0.1, ModelIdleCost: 0.6},
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rr.Body.String()
+	assertMetricLine(t, body, `llm_swap_gateway_billing_app_cost_usd{app_id="app-a"} 0.7`)
+	assertMetricLine(t, body, `llm_swap_gateway_billing_app_used_cost_usd{app_id="app-a"} 0.1`)
+	assertMetricLine(t, body, `llm_swap_gateway_billing_app_idle_cost_usd{app_id="app-a"} 0.6`)
+}
+
 func TestMetricsRouteMergesWorkerStateAndLlamaSwapActivity(t *testing.T) {
 	var sawAuth bool
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

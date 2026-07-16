@@ -72,7 +72,9 @@ type BillingAppSummary struct {
 	OutputTokens           int64   `json:"output_tokens"`
 	CachedInputTokens      int64   `json:"cached_input_tokens"`
 	TotalTokens            int64   `json:"total_tokens"`
+	ModelCost              float64 `json:"model_cost"`
 	ModelUsedCost          float64 `json:"model_used_cost"`
+	ModelIdleCost          float64 `json:"model_idle_cost"`
 }
 
 type BillingRequestCostRow struct {
@@ -119,6 +121,11 @@ type billingRequestRecord struct {
 	BillingCachedInputPerMillionUSD float64
 	ModelUsedCostUSD                float64
 	CostCalculatedAt                *time.Time
+}
+
+type billingAppModelUsage struct {
+	Requests        int
+	DurationSeconds float64
 }
 
 func (s *Server) handleBilling(w http.ResponseWriter, r *http.Request) {
@@ -547,10 +554,16 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 
 	requestCostRows := make([]BillingRequestCostRow, 0, len(requests))
 	apps := map[string]*BillingAppSummary{}
+	appUsageByModel := map[string]map[string]*billingAppModelUsage{}
+	modelUsageByModel := map[string]*billingAppModelUsage{}
 	for model, modelRequests := range requestsByModel {
 		row := ensureBillingModel(models, model)
 		pricing := query.ModelPricing[model]
 		for _, request := range modelRequests {
+			durationSeconds := requestDurationSeconds(request)
+			modelUsage := ensureBillingAppModelUsage(modelUsageByModel, model)
+			modelUsage.Requests++
+			modelUsage.DurationSeconds += durationSeconds
 			effectivePricing := billingRequestPricing(pricing, request)
 			usedCost := billingRequestUsedCost(effectivePricing, request)
 			row.ModelUsedCost += usedCost
@@ -574,8 +587,11 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			requestCostRows = append(requestCostRows, requestCost)
 			if strings.TrimSpace(request.AppID) != "" {
 				app := ensureBillingApp(apps, request.AppID)
+				appUsage := ensureBillingAppUsage(appUsageByModel, request.Model, request.AppID)
+				appUsage.Requests++
+				appUsage.DurationSeconds += durationSeconds
 				app.Requests++
-				app.RequestDurationSeconds += requestDurationSeconds(request)
+				app.RequestDurationSeconds += durationSeconds
 				app.InputTokens += int64(request.PromptTokens)
 				app.OutputTokens += int64(request.CompletionTokens)
 				app.CachedInputTokens += int64(request.CacheTokens)
@@ -584,6 +600,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			}
 		}
 	}
+	allocateAppIdleCosts(models, apps, appUsageByModel, modelUsageByModel)
 
 	modelRows := make([]BillingModelSummary, 0, len(models))
 	for _, row := range models {
@@ -611,14 +628,16 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 	appRows := make([]BillingAppSummary, 0, len(apps))
 	for _, row := range apps {
 		row.RequestDurationSeconds = roundSeconds(row.RequestDurationSeconds)
+		row.ModelCost = roundMoney(row.ModelUsedCost + row.ModelIdleCost)
 		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
+		row.ModelIdleCost = roundMoney(row.ModelIdleCost)
 		appRows = append(appRows, *row)
 	}
 	sort.Slice(appRows, func(i, j int) bool {
-		if appRows[i].ModelUsedCost == appRows[j].ModelUsedCost {
+		if appRows[i].ModelCost == appRows[j].ModelCost {
 			return appRows[i].AppID < appRows[j].AppID
 		}
-		return appRows[i].ModelUsedCost > appRows[j].ModelUsedCost
+		return appRows[i].ModelCost > appRows[j].ModelCost
 	})
 	sort.Slice(requestCostRows, func(i, j int) bool { return requestCostRows[i].Time.Before(requestCostRows[j].Time) })
 
@@ -720,6 +739,65 @@ func ensureBillingApp(rows map[string]*BillingAppSummary, appID string) *Billing
 		rows[appID] = row
 	}
 	return row
+}
+
+func ensureBillingAppModelUsage(rows map[string]*billingAppModelUsage, model string) *billingAppModelUsage {
+	row := rows[model]
+	if row == nil {
+		row = &billingAppModelUsage{}
+		rows[model] = row
+	}
+	return row
+}
+
+func ensureBillingAppUsage(rows map[string]map[string]*billingAppModelUsage, model, appID string) *billingAppModelUsage {
+	byApp := rows[model]
+	if byApp == nil {
+		byApp = map[string]*billingAppModelUsage{}
+		rows[model] = byApp
+	}
+	row := byApp[appID]
+	if row == nil {
+		row = &billingAppModelUsage{}
+		byApp[appID] = row
+	}
+	return row
+}
+
+func allocateAppIdleCosts(models map[string]*BillingModelSummary, apps map[string]*BillingAppSummary, appUsageByModel map[string]map[string]*billingAppModelUsage, modelUsageByModel map[string]*billingAppModelUsage) {
+	for model, byApp := range appUsageByModel {
+		modelRow := models[model]
+		totalUsage := modelUsageByModel[model]
+		if modelRow == nil || totalUsage == nil {
+			continue
+		}
+		idleCost := modelRow.ModelCost - modelRow.ModelUsedCost
+		if idleCost <= 0 {
+			continue
+		}
+		totalBasis := totalUsage.DurationSeconds
+		useDuration := totalBasis > 0
+		if !useDuration {
+			totalBasis = float64(totalUsage.Requests)
+		}
+		if totalBasis <= 0 {
+			continue
+		}
+		for appID, usage := range byApp {
+			app := apps[appID]
+			if app == nil || usage == nil {
+				continue
+			}
+			basis := usage.DurationSeconds
+			if !useDuration {
+				basis = float64(usage.Requests)
+			}
+			if basis <= 0 {
+				continue
+			}
+			app.ModelIdleCost += idleCost * basis / totalBasis
+		}
+	}
 }
 
 func uniqueTimes(points []time.Time) []time.Time {

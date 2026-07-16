@@ -97,12 +97,19 @@ func TestGrafanaDashboardIncludesBillingAndAppUsage(t *testing.T) {
 	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_requests_total{app_id=~"$app",model=~"$model"}`)
 	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_tokens_total{app_id=~"$app",model=~"$model",type="total"}`)
 	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_app_model_used_cost_usd_total{app_id=~"$app",model=~"$model"}`)
+	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_billing_app_cost_usd{app_id=~"$app"}`)
+	assertExprContains(t, appOverviewExprs, `llm_swap_gateway_billing_app_idle_cost_usd{app_id=~"$app"}`)
 
 	appOccupancy := dashboard.panel(t, "App occupancy")
 	assertExprContains(t, appOccupancy.exprs(), `llm_swap_gateway_app_request_duration_seconds_sum{app_id=~"$app",model=~"$model"}`)
 
 	appTokenRate := dashboard.panel(t, "App token rate")
 	assertExprContains(t, appTokenRate.exprs(), `llm_swap_gateway_app_tokens_total{app_id=~"$app",model=~"$model"}`)
+
+	appBillingCost := dashboard.panel(t, "App billing cost")
+	assertExprContains(t, appBillingCost.exprs(), `llm_swap_gateway_billing_app_cost_usd{app_id=~"$app"}`)
+	assertExprContains(t, appBillingCost.exprs(), `llm_swap_gateway_billing_app_used_cost_usd{app_id=~"$app"}`)
+	assertExprContains(t, appBillingCost.exprs(), `llm_swap_gateway_billing_app_idle_cost_usd{app_id=~"$app"}`)
 }
 
 func readGrafanaDashboard(t *testing.T) grafanaDashboard {

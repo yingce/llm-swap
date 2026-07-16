@@ -2438,6 +2438,42 @@
           "instant": true,
           "range": false,
           "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(llm_swap_gateway_billing_app_cost_usd{app_id=~\"$app\"}[$__range])",
+          "refId": "G",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(llm_swap_gateway_billing_app_used_cost_usd{app_id=~\"$app\"}[$__range])",
+          "refId": "H",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(llm_swap_gateway_billing_app_idle_cost_usd{app_id=~\"$app\"}[$__range])",
+          "refId": "I",
+          "instant": true,
+          "range": false,
+          "format": "table"
         }
       ],
       "title": "App overview",
@@ -2462,7 +2498,10 @@
               "Value #C": "input_tokens",
               "Value #D": "output_tokens",
               "Value #E": "cached_tokens",
-              "Value #F": "configured_used_cost_usd"
+              "Value #F": "configured_used_cost_usd",
+              "Value #G": "model_cost_usd",
+              "Value #H": "model_used_cost_usd",
+              "Value #I": "model_idle_cost_usd"
             }
           }
         }
@@ -2844,6 +2883,122 @@
       ],
       "title": "App used cost",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Latest per-app configured usage, allocated idle, and total cost observed in the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 6,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 84
+      },
+      "id": 55,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(llm_swap_gateway_billing_app_cost_usd{app_id=~\"$app\"}[$__range])",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "{{app_id}} cost"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(llm_swap_gateway_billing_app_used_cost_usd{app_id=~\"$app\"}[$__range])",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "{{app_id}} used"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "last_over_time(llm_swap_gateway_billing_app_idle_cost_usd{app_id=~\"$app\"}[$__range])",
+          "refId": "C",
+          "range": true,
+          "legendFormat": "{{app_id}} idle"
+        }
+      ],
+      "title": "App billing cost",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",
@@ -2968,7 +3123,7 @@
   "timezone": "",
   "title": "LLM Swap Gateway",
   "uid": "llm-swap-gateway",
-  "version": 4,
+  "version": 5,
   "weekStart": "",
   "__inputs": [
     {
