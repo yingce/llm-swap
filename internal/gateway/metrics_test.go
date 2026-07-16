@@ -409,6 +409,45 @@ func TestMetricsRouteReportsActiveProxiedRequestByWorkerAndModel(t *testing.T) {
 	waitForActiveRequestMetric(t, srv, "metrics-worker", "qwen", 0)
 }
 
+func TestProxyRecordsAppUsageMetrics(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"usage": map[string]any{
+				"prompt_tokens":     12,
+				"completion_tokens": 8,
+				"total_tokens":      20,
+				"cache_tokens":      3,
+			},
+			"choices": []map[string]any{{"finish_reason": "stop"}},
+		})
+	}))
+	defer upstream.Close()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.Billing.PerRequestUSD = 0.25
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
+
+	req := proxyRequest(`{"model":"qwen","messages":[]}`)
+	req.Header.Set("X-App-Id", "app-a")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	body := scrapeMetrics(t, srv)
+	assertMetricLine(t, body, `llm_swap_gateway_app_requests_total{app_id="app-a",model="qwen",status_code="200"} 1`)
+	assertMetricLine(t, body, `llm_swap_gateway_app_tokens_total{app_id="app-a",model="qwen",type="prompt"} 12`)
+	assertMetricLine(t, body, `llm_swap_gateway_app_tokens_total{app_id="app-a",model="qwen",type="completion"} 8`)
+	assertMetricLine(t, body, `llm_swap_gateway_app_tokens_total{app_id="app-a",model="qwen",type="total"} 20`)
+	assertMetricLine(t, body, `llm_swap_gateway_app_tokens_total{app_id="app-a",model="qwen",type="cache"} 3`)
+	assertMetricLine(t, body, `llm_swap_gateway_app_model_used_cost_usd_total{app_id="app-a",model="qwen"} 0.25`)
+	assertMetricLine(t, body, `llm_swap_gateway_app_request_duration_seconds_count{app_id="app-a",model="qwen"} 1`)
+}
+
 func TestMetricsRouteMergesWorkerStateAndLlamaSwapActivity(t *testing.T) {
 	var sawAuth bool
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

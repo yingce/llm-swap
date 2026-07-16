@@ -258,6 +258,7 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 	s.recordRecentRequest(entry)
 	if s.metrics != nil {
 		s.metrics.ObserveRequestTokens(entry)
+		s.metrics.ObserveAppUsage(entry)
 	}
 	if s.pressure != nil {
 		s.pressure.RecordRequest(PressureRequestObservation{

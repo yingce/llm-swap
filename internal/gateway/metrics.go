@@ -43,6 +43,10 @@ type Metrics struct {
 	workerScrapeErrors           *prometheus.CounterVec
 	requests                     *prometheus.CounterVec
 	modelTokens                  *prometheus.CounterVec
+	appRequests                  *prometheus.CounterVec
+	appTokens                    *prometheus.CounterVec
+	appModelUsedCostUSD          *prometheus.CounterVec
+	appRequestDuration           *prometheus.HistogramVec
 	requestDuration              *prometheus.HistogramVec
 	queueEvents                  *prometheus.CounterVec
 	queueWaitDuration            *prometheus.HistogramVec
@@ -176,6 +180,23 @@ func NewMetrics() *Metrics {
 		Name: "llm_swap_gateway_model_tokens_total",
 		Help: "Tokens reported in gateway proxied OpenAI-compatible responses.",
 	}, []string{"model", "type"})
+	appRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_app_requests_total",
+		Help: "Requests handled by the gateway by low-cardinality app id.",
+	}, []string{"app_id", "model", "status_code"})
+	appTokens := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_app_tokens_total",
+		Help: "Tokens reported in gateway responses by low-cardinality app id.",
+	}, []string{"app_id", "model", "type"})
+	appModelUsedCostUSD := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_swap_gateway_app_model_used_cost_usd_total",
+		Help: "Configured model usage cost in USD by low-cardinality app id.",
+	}, []string{"app_id", "model"})
+	appRequestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_swap_gateway_app_request_duration_seconds",
+		Help:    "End-to-end gateway request duration by low-cardinality app id.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"app_id", "model"})
 	requestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "llm_swap_gateway_request_duration_seconds",
 		Help:    "End-to-end gateway request duration.",
@@ -244,7 +265,7 @@ func NewMetrics() *Metrics {
 	}, []string{"model"})
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostUSD, billingModelBillableSeconds, billingModelUsedCostUSD, billingModelIdleCostUSD)
+	registry.MustRegister(activeRequests, modelActiveRequests, workerUp, workerActive, workerLastHeartbeat, workerState, workerNeedsRestart, workerLastErrorPresent, workerCapacityMaxConcurrency, workerCapacityMaxQueue, workerRunningModels, workerGPUMemoryTotalMiB, workerGPUMemoryUsedMiB, workerGPUMemoryFreeMiB, workerGPUUtilizationPercent, workerGPUTemperatureCelsius, workerModelReady, workerModelRunning, workerModelState, workerActivityRows, workerRequests, workerRequestTokens, workerRequestDuration, workerTokensPerSecond, workerPerformanceSamples, workerScrapeErrors, requests, modelTokens, appRequests, appTokens, appModelUsedCostUSD, appRequestDuration, requestDuration, queueEvents, queueWaitDuration, dispatchFailures, replicaUnhealthy, replicaCooldownMarks, replicaCooldownClears, proxyRetries, controlActions, modelLoadedReplicas, modelUnderprovisioned, modelQueueDepth, billingModelCostUSD, billingModelBillableSeconds, billingModelUsedCostUSD, billingModelIdleCostUSD)
 
 	return &Metrics{
 		registry:                     registry,
@@ -276,6 +297,10 @@ func NewMetrics() *Metrics {
 		workerScrapeErrors:           workerScrapeErrors,
 		requests:                     requests,
 		modelTokens:                  modelTokens,
+		appRequests:                  appRequests,
+		appTokens:                    appTokens,
+		appModelUsedCostUSD:          appModelUsedCostUSD,
+		appRequestDuration:           appRequestDuration,
 		requestDuration:              requestDuration,
 		queueEvents:                  queueEvents,
 		queueWaitDuration:            queueWaitDuration,
@@ -333,6 +358,42 @@ func (m *Metrics) ObserveRequestTokens(entry RequestLogEntry) {
 	}
 	if entry.ReasoningTokens > 0 {
 		m.modelTokens.WithLabelValues(entry.Model, "reasoning").Add(float64(entry.ReasoningTokens))
+	}
+}
+
+func (m *Metrics) ObserveAppUsage(entry RequestLogEntry) {
+	if m == nil {
+		return
+	}
+	appID := strings.TrimSpace(entry.RequestHeaders["x-app-id"])
+	if appID == "" {
+		return
+	}
+	statusCode := entry.StatusCode
+	if statusCode <= 0 {
+		statusCode = 0
+	}
+	m.appRequests.WithLabelValues(appID, entry.Model, strconv.Itoa(statusCode)).Inc()
+	if entry.PromptTokens > 0 {
+		m.appTokens.WithLabelValues(appID, entry.Model, "prompt").Add(float64(entry.PromptTokens))
+	}
+	if entry.CompletionTokens > 0 {
+		m.appTokens.WithLabelValues(appID, entry.Model, "completion").Add(float64(entry.CompletionTokens))
+	}
+	if entry.TotalTokens > 0 {
+		m.appTokens.WithLabelValues(appID, entry.Model, "total").Add(float64(entry.TotalTokens))
+	}
+	if entry.CacheTokens > 0 {
+		m.appTokens.WithLabelValues(appID, entry.Model, "cache").Add(float64(entry.CacheTokens))
+	}
+	if entry.ReasoningTokens > 0 {
+		m.appTokens.WithLabelValues(appID, entry.Model, "reasoning").Add(float64(entry.ReasoningTokens))
+	}
+	if entry.ModelUsedCostUSD > 0 {
+		m.appModelUsedCostUSD.WithLabelValues(appID, entry.Model).Add(entry.ModelUsedCostUSD)
+	}
+	if entry.DurationMS >= 0 {
+		m.appRequestDuration.WithLabelValues(appID, entry.Model).Observe(float64(entry.DurationMS) / 1000)
 	}
 }
 
