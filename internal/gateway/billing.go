@@ -26,7 +26,7 @@ type BillingCostTotals struct {
 	ReadySeconds            float64 `json:"ready_seconds"`
 	BillableWorkerSeconds   float64 `json:"billable_worker_seconds"`
 	ModelCostRMB            float64 `json:"model_cost_rmb"`
-	RequestCostByTokenRMB   float64 `json:"request_cost_by_token_rmb"`
+	CostByTokenRMB          float64 `json:"cost_by_token_rmb"`
 	RequestCostByRequestRMB float64 `json:"request_cost_by_request_rmb"`
 	Requests                int     `json:"requests"`
 	TotalTokens             int64   `json:"total_tokens"`
@@ -49,19 +49,21 @@ type BillingAppSummary struct {
 	AppID                   string  `json:"app_id"`
 	Requests                int     `json:"requests"`
 	TotalTokens             int64   `json:"total_tokens"`
-	RequestCostByTokenRMB   float64 `json:"request_cost_by_token_rmb"`
+	CostByTokenRMB          float64 `json:"cost_by_token_rmb"`
 	RequestCostByRequestRMB float64 `json:"request_cost_by_request_rmb"`
 }
 
 type BillingRequestCostRow struct {
-	RequestID               string    `json:"request_id"`
-	Time                    time.Time `json:"time"`
-	Model                   string    `json:"model"`
-	AppID                   string    `json:"app_id,omitempty"`
-	WorkerID                string    `json:"worker_id,omitempty"`
-	TotalTokens             int       `json:"total_tokens"`
-	RequestCostByTokenRMB   float64   `json:"request_cost_by_token_rmb"`
-	RequestCostByRequestRMB float64   `json:"request_cost_by_request_rmb"`
+	RequestID                string    `json:"request_id"`
+	Time                     time.Time `json:"time"`
+	Model                    string    `json:"model"`
+	AppID                    string    `json:"app_id,omitempty"`
+	WorkerID                 string    `json:"worker_id,omitempty"`
+	TotalTokens              int       `json:"total_tokens"`
+	TokenUnitPriceRMB        float64   `json:"token_unit_price_rmb"`
+	TokenUnitPricePerMTokRMB float64   `json:"token_unit_price_per_million_tokens_rmb"`
+	CostByTokenRMB           float64   `json:"cost_by_token_rmb"`
+	RequestCostByRequestRMB  float64   `json:"request_cost_by_request_rmb"`
 }
 
 type billingReadyInterval struct {
@@ -296,7 +298,7 @@ SET cost_by_token_rmb = $1,
     cost_by_request_rmb = $2,
     cost_calculated_at = $3
 WHERE request_id = $4 AND event_time = $5 AND model = $6`,
-			row.RequestCostByTokenRMB,
+			row.CostByTokenRMB,
 			row.RequestCostByRequestRMB,
 			now,
 			row.RequestID,
@@ -388,30 +390,38 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			row.CostPerMillionTokensRMB = row.ModelCostRMB / float64(row.TotalTokens) * 1_000_000
 		}
 		for _, request := range modelRequests {
+			tokenUnitPrice := 0.0
+			tokenUnitPricePerMillion := 0.0
+			if row.TotalTokens > 0 {
+				tokenUnitPrice = row.ModelCostRMB / float64(row.TotalTokens)
+				tokenUnitPricePerMillion = tokenUnitPrice * 1_000_000
+			}
 			tokenCost := 0.0
 			if row.TotalTokens > 0 && request.TotalTokens > 0 {
-				tokenCost = row.ModelCostRMB * float64(request.TotalTokens) / float64(row.TotalTokens)
+				tokenCost = tokenUnitPrice * float64(request.TotalTokens)
 			}
 			countCost := 0.0
 			if row.Requests > 0 {
 				countCost = row.ModelCostRMB / float64(row.Requests)
 			}
 			requestCost := BillingRequestCostRow{
-				RequestID:               request.RequestID,
-				Time:                    request.Time,
-				Model:                   request.Model,
-				AppID:                   request.AppID,
-				WorkerID:                request.WorkerID,
-				TotalTokens:             request.TotalTokens,
-				RequestCostByTokenRMB:   roundMoney(tokenCost),
-				RequestCostByRequestRMB: roundMoney(countCost),
+				RequestID:                request.RequestID,
+				Time:                     request.Time,
+				Model:                    request.Model,
+				AppID:                    request.AppID,
+				WorkerID:                 request.WorkerID,
+				TotalTokens:              request.TotalTokens,
+				TokenUnitPriceRMB:        roundUnitPrice(tokenUnitPrice),
+				TokenUnitPricePerMTokRMB: roundMoney(tokenUnitPricePerMillion),
+				CostByTokenRMB:           roundMoney(tokenCost),
+				RequestCostByRequestRMB:  roundMoney(countCost),
 			}
 			requestCostRows = append(requestCostRows, requestCost)
 			if strings.TrimSpace(request.AppID) != "" {
 				app := ensureBillingApp(apps, request.AppID)
 				app.Requests++
 				app.TotalTokens += int64(request.TotalTokens)
-				app.RequestCostByTokenRMB += tokenCost
+				app.CostByTokenRMB += tokenCost
 				app.RequestCostByRequestRMB += countCost
 			}
 		}
@@ -441,15 +451,15 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 
 	var appRows []BillingAppSummary
 	for _, row := range apps {
-		row.RequestCostByTokenRMB = roundMoney(row.RequestCostByTokenRMB)
+		row.CostByTokenRMB = roundMoney(row.CostByTokenRMB)
 		row.RequestCostByRequestRMB = roundMoney(row.RequestCostByRequestRMB)
 		appRows = append(appRows, *row)
 	}
 	sort.Slice(appRows, func(i, j int) bool {
-		if appRows[i].RequestCostByTokenRMB == appRows[j].RequestCostByTokenRMB {
+		if appRows[i].CostByTokenRMB == appRows[j].CostByTokenRMB {
 			return appRows[i].AppID < appRows[j].AppID
 		}
-		return appRows[i].RequestCostByTokenRMB > appRows[j].RequestCostByTokenRMB
+		return appRows[i].CostByTokenRMB > appRows[j].CostByTokenRMB
 	})
 	sort.Slice(requestCostRows, func(i, j int) bool { return requestCostRows[i].Time.Before(requestCostRows[j].Time) })
 
@@ -462,7 +472,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		totalTokens += row.TotalTokens
 	}
 	for _, row := range requestCostRows {
-		totalTokenCost += row.RequestCostByTokenRMB
+		totalTokenCost += row.CostByTokenRMB
 		totalRequestCost += row.RequestCostByRequestRMB
 	}
 
@@ -476,7 +486,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			ReadySeconds:            roundSeconds(totalReadySeconds),
 			BillableWorkerSeconds:   roundSeconds(totalBillableSeconds),
 			ModelCostRMB:            roundMoney(totalModelCost),
-			RequestCostByTokenRMB:   roundMoney(totalTokenCost),
+			CostByTokenRMB:          roundMoney(totalTokenCost),
 			RequestCostByRequestRMB: roundMoney(totalRequestCost),
 			Requests:                totalRequests,
 			TotalTokens:             totalTokens,
@@ -518,6 +528,10 @@ func uniqueTimes(points []time.Time) []time.Time {
 
 func roundMoney(value float64) float64 {
 	return math.Round(value*1_000_000) / 1_000_000
+}
+
+func roundUnitPrice(value float64) float64 {
+	return math.Round(value*1_000_000_000_000) / 1_000_000_000_000
 }
 
 func roundSeconds(value float64) float64 {

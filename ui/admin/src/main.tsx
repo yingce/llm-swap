@@ -641,7 +641,7 @@ function Billing({
               <th>App ID</th>
               <th>Requests</th>
               <th>Tokens</th>
-              <th>Token allocation</th>
+              <th>Token cost</th>
               <th>Request allocation</th>
             </tr>
           </thead>
@@ -651,7 +651,7 @@ function Billing({
                 <td><strong>{app.app_id}</strong></td>
                 <td>{compactNumber(app.requests)}</td>
                 <td>{compactNumber(app.total_tokens)}</td>
-                <td>{formatMoney(app.request_cost_by_token_rmb)}</td>
+                <td>{formatMoney(app.cost_by_token_rmb)}</td>
                 <td>{formatMoney(app.request_cost_by_request_rmb)}</td>
               </tr>
             ))}
@@ -668,6 +668,7 @@ function Billing({
               <th>Model</th>
               <th>App</th>
               <th>Tokens</th>
+              <th>Token unit</th>
               <th>Token cost</th>
               <th>Request cost</th>
             </tr>
@@ -679,7 +680,8 @@ function Billing({
                 <td>{request.model}</td>
                 <td>{request.app_id || "-"}</td>
                 <td>{compactNumber(request.total_tokens)}</td>
-                <td>{formatMoney(request.request_cost_by_token_rmb)}</td>
+                <td>{formatUnitPrice(request.token_unit_price_rmb)}</td>
+                <td>{formatMoney(request.cost_by_token_rmb)}</td>
                 <td>{formatMoney(request.request_cost_by_request_rmb)}</td>
               </tr>
             ))}
@@ -1341,6 +1343,17 @@ function formatMoney(value: number | undefined) {
     return "¥0.00";
   }
   return `¥${numberValue.toFixed(numberValue >= 100 ? 1 : 2)}`;
+}
+
+function formatUnitPrice(value: number | undefined) {
+  const numberValue = Number(value ?? 0);
+  if (!Number.isFinite(numberValue) || numberValue <= 0) {
+    return "¥0/token";
+  }
+  if (numberValue < 0.000001) {
+    return `¥${numberValue.toExponential(2)}/token`;
+  }
+  return `¥${numberValue.toFixed(6)}/token`;
 }
 
 function formatHours(seconds: number | undefined) {

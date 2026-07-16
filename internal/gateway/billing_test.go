@@ -41,11 +41,17 @@ func TestBillingSummaryAllocatesModelCostByTokenAndRequest(t *testing.T) {
 		t.Fatalf("apps = %+v, want app-a/app-b", summary.Apps)
 	}
 	apps := billingAppsByID(summary.Apps)
-	if apps["app-a"].RequestCostByTokenRMB != 0.25 || apps["app-a"].RequestCostByRequestRMB != 0.5 {
+	if apps["app-a"].CostByTokenRMB != 0.25 || apps["app-a"].RequestCostByRequestRMB != 0.5 {
 		t.Fatalf("app-a = %+v, want token=0.25 request=0.5", apps["app-a"])
 	}
-	if apps["app-b"].RequestCostByTokenRMB != 0.75 || apps["app-b"].RequestCostByRequestRMB != 0.5 {
+	if apps["app-b"].CostByTokenRMB != 0.75 || apps["app-b"].RequestCostByRequestRMB != 0.5 {
 		t.Fatalf("app-b = %+v, want token=0.75 request=0.5", apps["app-b"])
+	}
+	if len(summary.RequestCosts) != 2 {
+		t.Fatalf("request costs = %+v, want two rows", summary.RequestCosts)
+	}
+	if summary.RequestCosts[0].TokenUnitPriceRMB != 0.0025 || summary.RequestCosts[0].CostByTokenRMB != 0.25 {
+		t.Fatalf("request token pricing = %+v, want unit=0.0025 cost=0.25", summary.RequestCosts[0])
 	}
 }
 

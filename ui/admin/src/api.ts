@@ -256,7 +256,7 @@ export type BillingSummary = {
     ready_seconds: number;
     billable_worker_seconds: number;
     model_cost_rmb: number;
-    request_cost_by_token_rmb: number;
+    cost_by_token_rmb: number;
     request_cost_by_request_rmb: number;
     requests: number;
     total_tokens: number;
@@ -283,7 +283,7 @@ export type BillingAppSummary = {
   app_id: string;
   requests: number;
   total_tokens: number;
-  request_cost_by_token_rmb: number;
+  cost_by_token_rmb: number;
   request_cost_by_request_rmb: number;
 };
 
@@ -294,7 +294,9 @@ export type BillingRequestCost = {
   app_id?: string;
   worker_id?: string;
   total_tokens: number;
-  request_cost_by_token_rmb: number;
+  token_unit_price_rmb: number;
+  token_unit_price_per_million_tokens_rmb: number;
+  cost_by_token_rmb: number;
   request_cost_by_request_rmb: number;
 };
 
