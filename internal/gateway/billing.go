@@ -544,7 +544,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		}
 	}
 
-	var modelRows []BillingModelSummary
+	modelRows := make([]BillingModelSummary, 0, len(models))
 	for _, row := range models {
 		if totalReadySeconds > 0 {
 			row.ReadyShare = row.ReadySeconds / totalReadySeconds
@@ -566,7 +566,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		return modelRows[i].ModelCost > modelRows[j].ModelCost
 	})
 
-	var appRows []BillingAppSummary
+	appRows := make([]BillingAppSummary, 0, len(apps))
 	for _, row := range apps {
 		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
 		appRows = append(appRows, *row)
