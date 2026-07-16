@@ -117,66 +117,6 @@ metrics_store:
 	}
 }
 
-func TestLoadGatewayConfigAcceptsBillingMode(t *testing.T) {
-	raw := `
-oss:
-  base_url: https://oss.example.com
-tokens:
-  client: client-token
-  agent: agent-token
-  llama_swap: worker-token
-models:
-  qwen:
-    artifact:
-      object: qwen.tar.gz
-      kind: tar_gz
-      crc64ecma: "123"
-    run: "vllm serve {{model_path}} --port ${PORT}"
-    billing:
-      mode: per_token
-tag_policies:
-  gpu-4090:
-    allowed_models: [qwen]
-`
-	cfg, err := LoadGateway(strings.NewReader(raw))
-	if err != nil {
-		t.Fatalf("LoadGateway returned error: %v", err)
-	}
-	if got := cfg.Models["qwen"].Billing.Mode; got != "per_token" {
-		t.Fatalf("billing.mode = %q, want per_token", got)
-	}
-}
-
-func TestLoadGatewayConfigRejectsInvalidBillingMode(t *testing.T) {
-	raw := `
-oss:
-  base_url: https://oss.example.com
-tokens:
-  client: client-token
-  agent: agent-token
-  llama_swap: worker-token
-models:
-  qwen:
-    artifact:
-      object: qwen.tar.gz
-      kind: tar_gz
-      crc64ecma: "123"
-    run: "vllm serve {{model_path}} --port ${PORT}"
-    billing:
-      mode: hourly
-tag_policies:
-  gpu-4090:
-    allowed_models: [qwen]
-`
-	_, err := LoadGateway(strings.NewReader(raw))
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-	if !strings.Contains(err.Error(), "billing.mode") {
-		t.Fatalf("error = %v, want billing.mode", err)
-	}
-}
-
 func TestLoadGatewayConfigDefaultsMetricsStore(t *testing.T) {
 	cfg, err := LoadGateway(strings.NewReader(validGatewayYAML("")))
 	if err != nil {

@@ -53,8 +53,8 @@ func TestBillingSummaryReportsUSDUsageCostsAndTokenBreakdown(t *testing.T) {
 		t.Fatalf("models = %+v, want one qwen row", summary.Models)
 	}
 	model := summary.Models[0]
-	if model.ModelCost != 0.14 || model.ModelUsedCost != 0.020204 || model.ModelIdleCost != 0.119796 {
-		t.Fatalf("model billing = %+v, want model_cost=0.14 used=0.020204 idle=0.119796", model)
+	if model.ModelCost != 0.14 || model.ModelUsedCost != 0.02 || model.ModelIdleCost != 0.12 {
+		t.Fatalf("model billing = %+v, want model_cost=0.14 used=0.02 idle=0.12", model)
 	}
 	if model.InputTokens != 400 || model.OutputTokens != 150 || model.CachedInputTokens != 75 || model.TotalTokens != 625 {
 		t.Fatalf("model tokens = %+v, want input=400 output=150 cached=75 total=625", model)
@@ -66,13 +66,13 @@ func TestBillingSummaryReportsUSDUsageCostsAndTokenBreakdown(t *testing.T) {
 	if apps["app-a"].InputTokens != 100 || apps["app-a"].OutputTokens != 50 || apps["app-a"].CachedInputTokens != 25 {
 		t.Fatalf("app-a tokens = %+v, want input/output/cached token breakdown", apps["app-a"])
 	}
-	if apps["app-a"].ModelUsedCost != 0.010061 || apps["app-b"].ModelUsedCost != 0.010143 {
+	if apps["app-a"].ModelUsedCost != 0.01 || apps["app-b"].ModelUsedCost != 0.01 {
 		t.Fatalf("app costs = app-a %+v app-b %+v, want configured usage costs", apps["app-a"], apps["app-b"])
 	}
 	if len(summary.RequestCosts) != 2 {
 		t.Fatalf("request costs = %+v, want two rows", summary.RequestCosts)
 	}
-	if summary.RequestCosts[0].InputTokens != 100 || summary.RequestCosts[0].OutputTokens != 50 || summary.RequestCosts[0].CachedInputTokens != 25 || summary.RequestCosts[0].ModelUsedCost != 0.010061 {
+	if summary.RequestCosts[0].InputTokens != 100 || summary.RequestCosts[0].OutputTokens != 50 || summary.RequestCosts[0].CachedInputTokens != 25 || summary.RequestCosts[0].ModelUsedCost != 0.01 {
 		t.Fatalf("request cost row = %+v, want token breakdown and configured usage cost", summary.RequestCosts[0])
 	}
 }
@@ -94,27 +94,21 @@ func TestBillingReadyCostSplitsConcurrentModelsOnSameWorker(t *testing.T) {
 	}
 }
 
-func TestCalculateConfiguredUsageCostHonorsBillingMode(t *testing.T) {
+func TestCalculateConfiguredUsageCostPrefersPerRequestWhenConfigured(t *testing.T) {
 	request := billingRequestRecord{PromptTokens: 1_000_000, CompletionTokens: 1_000_000, CacheTokens: 1_000_000}
 	pricing := config.ModelBilling{
-		Mode:                     "per_request",
 		PerRequestUSD:            0.5,
 		InputPerMillionUSD:       1,
 		OutputPerMillionUSD:      2,
 		CachedInputPerMillionUSD: 3,
 	}
 	if got := calculateConfiguredUsageCost(pricing, request); got != 0.5 {
-		t.Fatalf("per_request cost = %v, want only per-request price", got)
+		t.Fatalf("cost = %v, want per-request price to take priority", got)
 	}
 
-	pricing.Mode = "per_token"
-	if got := calculateConfiguredUsageCost(pricing, request); got != 6 {
-		t.Fatalf("per_token cost = %v, want only token prices", got)
-	}
-
-	pricing.Mode = ""
-	if got := calculateConfiguredUsageCost(pricing, request); got != 6.5 {
-		t.Fatalf("legacy cost = %v, want per-request plus token prices", got)
+	pricing.PerRequestUSD = 0
+	if got := calculateConfiguredUsageCost(pricing, request); got != 5 {
+		t.Fatalf("token cost = %v, want cached input excluded from input price when per-request is unset", got)
 	}
 }
 

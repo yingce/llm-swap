@@ -65,7 +65,6 @@ type Model struct {
 }
 
 type ModelBilling struct {
-	Mode                     string  `yaml:"mode" json:"mode,omitempty"`
 	PerRequestUSD            float64 `yaml:"per_request_usd" json:"per_request_usd,omitempty"`
 	InputPerMillionUSD       float64 `yaml:"input_per_million_usd" json:"input_per_million_usd,omitempty"`
 	OutputPerMillionUSD      float64 `yaml:"output_per_million_usd" json:"output_per_million_usd,omitempty"`

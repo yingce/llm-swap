@@ -201,7 +201,6 @@ export type ModelConfig = {
 };
 
 export type ModelBillingConfig = {
-  mode?: "per_request" | "per_token";
   per_request_usd?: number;
   input_per_million_usd?: number;
   output_per_million_usd?: number;

@@ -632,17 +632,14 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 }
 
 func calculateConfiguredUsageCost(pricing config.ModelBilling, request billingRequestRecord) float64 {
-	tokenCost := float64(request.PromptTokens)*pricing.InputPerMillionUSD/1_000_000 +
+	uncachedInputTokens := max(request.PromptTokens-request.CacheTokens, 0)
+	tokenCost := float64(uncachedInputTokens)*pricing.InputPerMillionUSD/1_000_000 +
 		float64(request.CompletionTokens)*pricing.OutputPerMillionUSD/1_000_000 +
 		float64(request.CacheTokens)*pricing.CachedInputPerMillionUSD/1_000_000
-	switch pricing.Mode {
-	case "per_request":
+	if pricing.PerRequestUSD > 0 {
 		return pricing.PerRequestUSD
-	case "per_token":
-		return tokenCost
-	default:
-		return pricing.PerRequestUSD + tokenCost
 	}
+	return tokenCost
 }
 
 func requestDurationSeconds(request billingRequestRecord) float64 {

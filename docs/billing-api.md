@@ -113,12 +113,18 @@ models:
 Per-request configured usage cost:
 
 ```text
-model_used_cost =
+if per_request_usd > 0:
   per_request_usd
-  + input_tokens / 1000000 * input_per_million_usd
-  + output_tokens / 1000000 * output_per_million_usd
-  + cached_input_tokens / 1000000 * cached_input_per_million_usd
+else:
+  uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)
+  model_used_cost =
+    uncached_input_tokens / 1000000 * input_per_million_usd
+    + output_tokens / 1000000 * output_per_million_usd
+    + cached_input_tokens / 1000000 * cached_input_per_million_usd
 ```
+
+`input_tokens` usually includes cached input tokens in upstream usage reports,
+so cached tokens are subtracted before applying the normal input price.
 
 `model_idle_cost` is the unbilled/over-covered part of occupancy cost:
 
