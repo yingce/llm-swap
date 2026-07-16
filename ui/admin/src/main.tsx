@@ -42,6 +42,7 @@ type EditableGatewayConfig = {
 };
 
 type ModelBillingPriceField = keyof ModelBillingConfig;
+type BillingInputTokenMode = "total" | "billable";
 const secondsPerDay = 86400;
 
 const tabs: Array<{ id: Tab; label: string }> = [
@@ -671,8 +672,10 @@ function Billing({
   onSavePricing: () => void;
 }) {
   const [showDisabledPricing, setShowDisabledPricing] = useState(false);
+  const [inputTokenMode, setInputTokenMode] = useState<BillingInputTokenMode>("total");
   const recentRequestCosts = billing?.request_costs?.slice(-20).reverse() ?? [];
   const billingModelMap = useMemo(() => new Map((billing?.models ?? []).map((model) => [model.model, model])), [billing]);
+  const inputTokenHeading = inputTokenMode === "billable" ? "Billable input" : "Input total";
   const pricingModelNames = useMemo(() => {
     const names = new Set<string>();
     for (const modelName of Object.keys(pricingDraft?.models ?? {})) {
@@ -694,12 +697,30 @@ function Billing({
             {billing ? `${new Date(billing.start).toLocaleString()} - ${new Date(billing.end).toLocaleString()}` : "Loading cost records"}
           </p>
         </div>
-        <div className="segmented">
-          {[6, 24, 72, 168].map((hours) => (
-            <button key={hours} className={rangeHours === hours ? "active" : ""} onClick={() => onRangeChange(hours)}>
-              {hours < 24 ? `${hours}h` : `${hours / 24}d`}
+        <div className="config-toolbar-actions">
+          <div className="segmented" aria-label="Input token display">
+            <button
+              className={inputTokenMode === "total" ? "active" : ""}
+              title="Prompt tokens, including cached input."
+              onClick={() => setInputTokenMode("total")}
+            >
+              Input total
             </button>
-          ))}
+            <button
+              className={inputTokenMode === "billable" ? "active" : ""}
+              title="Prompt tokens minus cached input."
+              onClick={() => setInputTokenMode("billable")}
+            >
+              Billable input
+            </button>
+          </div>
+          <div className="segmented" aria-label="Billing time range">
+            {[6, 24, 72, 168].map((hours) => (
+              <button key={hours} className={rangeHours === hours ? "active" : ""} onClick={() => onRangeChange(hours)}>
+                {hours < 24 ? `${hours}h` : `${hours / 24}d`}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -813,7 +834,7 @@ function Billing({
               <th>Idle</th>
               <th>Billable time</th>
               <th>Requests</th>
-              <th>Input</th>
+              <th>{inputTokenHeading}</th>
               <th>Output</th>
               <th>Cached</th>
               <th>Total tokens</th>
@@ -828,7 +849,7 @@ function Billing({
                 <td>{formatMoney(model.model_idle_cost)}</td>
                 <td>{formatHours(model.billable_worker_seconds)}</td>
                 <td>{compactNumber(model.requests)}</td>
-                <td>{compactNumber(model.input_tokens)}</td>
+                <td>{compactNumber(displayInputTokens(model, inputTokenMode))}</td>
                 <td>{compactNumber(model.output_tokens)}</td>
                 <td>{compactNumber(model.cached_input_tokens)}</td>
                 <td>{compactNumber(model.total_tokens)}</td>
@@ -845,7 +866,7 @@ function Billing({
             <tr>
               <th>App ID</th>
               <th>Requests</th>
-              <th>Input</th>
+              <th>{inputTokenHeading}</th>
               <th>Output</th>
               <th>Cached</th>
               <th>Total tokens</th>
@@ -859,7 +880,7 @@ function Billing({
               <tr key={app.app_id}>
                 <td><strong>{app.app_id}</strong></td>
                 <td>{compactNumber(app.requests)}</td>
-                <td>{compactNumber(app.input_tokens)}</td>
+                <td>{compactNumber(displayInputTokens(app, inputTokenMode))}</td>
                 <td>{compactNumber(app.output_tokens)}</td>
                 <td>{compactNumber(app.cached_input_tokens)}</td>
                 <td>{compactNumber(app.total_tokens)}</td>
@@ -880,7 +901,7 @@ function Billing({
               <th>Time</th>
               <th>Model</th>
               <th>App</th>
-              <th>Input</th>
+              <th>{inputTokenHeading}</th>
               <th>Output</th>
               <th>Cached</th>
               <th>Total tokens</th>
@@ -893,7 +914,7 @@ function Billing({
                 <td>{new Date(request.time).toLocaleTimeString()}</td>
                 <td>{request.model}</td>
                 <td>{request.app_id || "-"}</td>
-                <td>{compactNumber(request.input_tokens)}</td>
+                <td>{compactNumber(displayInputTokens(request, inputTokenMode))}</td>
                 <td>{compactNumber(request.output_tokens)}</td>
                 <td>{compactNumber(request.cached_input_tokens)}</td>
                 <td>{compactNumber(request.total_tokens)}</td>
@@ -1612,6 +1633,13 @@ function recommendedBillingPricing(model: BillingSummary["models"][number] | und
 
 function billableInputTokens(inputTokens: number | undefined, cachedInputTokens: number | undefined) {
   return Math.max(Number(inputTokens ?? 0) - Number(cachedInputTokens ?? 0), 0);
+}
+
+function displayInputTokens(
+  row: { input_tokens: number | undefined; cached_input_tokens: number | undefined },
+  mode: BillingInputTokenMode
+) {
+  return mode === "billable" ? billableInputTokens(row.input_tokens, row.cached_input_tokens) : row.input_tokens;
 }
 
 function capacityUnitPrice(workerDayCostUSD: number, durationSeconds: number, units: number, multiplier: number) {
