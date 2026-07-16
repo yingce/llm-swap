@@ -33,42 +33,45 @@ type BillingSummary struct {
 }
 
 type BillingCostTotals struct {
-	ReadySeconds          float64 `json:"ready_seconds"`
-	BillableWorkerSeconds float64 `json:"billable_worker_seconds"`
-	ModelCost             float64 `json:"model_cost"`
-	ModelUsedCost         float64 `json:"model_used_cost"`
-	ModelIdleCost         float64 `json:"model_idle_cost"`
-	Requests              int     `json:"requests"`
-	InputTokens           int64   `json:"input_tokens"`
-	OutputTokens          int64   `json:"output_tokens"`
-	CachedInputTokens     int64   `json:"cached_input_tokens"`
-	TotalTokens           int64   `json:"total_tokens"`
+	ReadySeconds           float64 `json:"ready_seconds"`
+	BillableWorkerSeconds  float64 `json:"billable_worker_seconds"`
+	RequestDurationSeconds float64 `json:"request_duration_seconds"`
+	ModelCost              float64 `json:"model_cost"`
+	ModelUsedCost          float64 `json:"model_used_cost"`
+	ModelIdleCost          float64 `json:"model_idle_cost"`
+	Requests               int     `json:"requests"`
+	InputTokens            int64   `json:"input_tokens"`
+	OutputTokens           int64   `json:"output_tokens"`
+	CachedInputTokens      int64   `json:"cached_input_tokens"`
+	TotalTokens            int64   `json:"total_tokens"`
 }
 
 type BillingModelSummary struct {
-	Model                 string  `json:"model"`
-	ReadySeconds          float64 `json:"ready_seconds"`
-	BillableWorkerSeconds float64 `json:"billable_worker_seconds"`
-	ReadyShare            float64 `json:"ready_share"`
-	CostShare             float64 `json:"cost_share"`
-	ModelCost             float64 `json:"model_cost"`
-	ModelUsedCost         float64 `json:"model_used_cost"`
-	ModelIdleCost         float64 `json:"model_idle_cost"`
-	Requests              int     `json:"requests"`
-	InputTokens           int64   `json:"input_tokens"`
-	OutputTokens          int64   `json:"output_tokens"`
-	CachedInputTokens     int64   `json:"cached_input_tokens"`
-	TotalTokens           int64   `json:"total_tokens"`
+	Model                  string  `json:"model"`
+	ReadySeconds           float64 `json:"ready_seconds"`
+	BillableWorkerSeconds  float64 `json:"billable_worker_seconds"`
+	RequestDurationSeconds float64 `json:"request_duration_seconds"`
+	ReadyShare             float64 `json:"ready_share"`
+	CostShare              float64 `json:"cost_share"`
+	ModelCost              float64 `json:"model_cost"`
+	ModelUsedCost          float64 `json:"model_used_cost"`
+	ModelIdleCost          float64 `json:"model_idle_cost"`
+	Requests               int     `json:"requests"`
+	InputTokens            int64   `json:"input_tokens"`
+	OutputTokens           int64   `json:"output_tokens"`
+	CachedInputTokens      int64   `json:"cached_input_tokens"`
+	TotalTokens            int64   `json:"total_tokens"`
 }
 
 type BillingAppSummary struct {
-	AppID             string  `json:"app_id"`
-	Requests          int     `json:"requests"`
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	CachedInputTokens int64   `json:"cached_input_tokens"`
-	TotalTokens       int64   `json:"total_tokens"`
-	ModelUsedCost     float64 `json:"model_used_cost"`
+	AppID                  string  `json:"app_id"`
+	Requests               int     `json:"requests"`
+	RequestDurationSeconds float64 `json:"request_duration_seconds"`
+	InputTokens            int64   `json:"input_tokens"`
+	OutputTokens           int64   `json:"output_tokens"`
+	CachedInputTokens      int64   `json:"cached_input_tokens"`
+	TotalTokens            int64   `json:"total_tokens"`
+	ModelUsedCost          float64 `json:"model_used_cost"`
 }
 
 type BillingRequestCostRow struct {
@@ -505,6 +508,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		requestsByModel[request.Model] = append(requestsByModel[request.Model], request)
 		row := ensureBillingModel(models, request.Model)
 		row.Requests++
+		row.RequestDurationSeconds += requestDurationSeconds(request)
 		row.InputTokens += int64(request.PromptTokens)
 		row.OutputTokens += int64(request.CompletionTokens)
 		row.CachedInputTokens += int64(request.CacheTokens)
@@ -535,6 +539,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 			if strings.TrimSpace(request.AppID) != "" {
 				app := ensureBillingApp(apps, request.AppID)
 				app.Requests++
+				app.RequestDurationSeconds += requestDurationSeconds(request)
 				app.InputTokens += int64(request.PromptTokens)
 				app.OutputTokens += int64(request.CompletionTokens)
 				app.CachedInputTokens += int64(request.CacheTokens)
@@ -554,6 +559,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		}
 		row.ReadySeconds = roundSeconds(row.ReadySeconds)
 		row.BillableWorkerSeconds = roundSeconds(row.BillableWorkerSeconds)
+		row.RequestDurationSeconds = roundSeconds(row.RequestDurationSeconds)
 		row.ModelCost = roundMoney(row.ModelCost)
 		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
 		row.ModelIdleCost = roundMoney(row.ModelCost - row.ModelUsedCost)
@@ -568,6 +574,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 
 	appRows := make([]BillingAppSummary, 0, len(apps))
 	for _, row := range apps {
+		row.RequestDurationSeconds = roundSeconds(row.RequestDurationSeconds)
 		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
 		appRows = append(appRows, *row)
 	}
@@ -584,9 +591,11 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 	totalOutputTokens := int64(0)
 	totalCachedInputTokens := int64(0)
 	totalTokens := int64(0)
+	totalRequestDurationSeconds := 0.0
 	totalUsedCost := 0.0
 	for _, row := range modelRows {
 		totalRequests += row.Requests
+		totalRequestDurationSeconds += row.RequestDurationSeconds
 		totalInputTokens += row.InputTokens
 		totalOutputTokens += row.OutputTokens
 		totalCachedInputTokens += row.CachedInputTokens
@@ -606,26 +615,41 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		Models:               modelRows,
 		Apps:                 appRows,
 		Totals: BillingCostTotals{
-			ReadySeconds:          roundSeconds(totalReadySeconds),
-			BillableWorkerSeconds: roundSeconds(totalBillableSeconds),
-			ModelCost:             roundMoney(totalModelCost),
-			ModelUsedCost:         roundMoney(totalUsedCost),
-			ModelIdleCost:         roundMoney(totalModelCost - totalUsedCost),
-			Requests:              totalRequests,
-			InputTokens:           totalInputTokens,
-			OutputTokens:          totalOutputTokens,
-			CachedInputTokens:     totalCachedInputTokens,
-			TotalTokens:           totalTokens,
+			ReadySeconds:           roundSeconds(totalReadySeconds),
+			BillableWorkerSeconds:  roundSeconds(totalBillableSeconds),
+			RequestDurationSeconds: roundSeconds(totalRequestDurationSeconds),
+			ModelCost:              roundMoney(totalModelCost),
+			ModelUsedCost:          roundMoney(totalUsedCost),
+			ModelIdleCost:          roundMoney(totalModelCost - totalUsedCost),
+			Requests:               totalRequests,
+			InputTokens:            totalInputTokens,
+			OutputTokens:           totalOutputTokens,
+			CachedInputTokens:      totalCachedInputTokens,
+			TotalTokens:            totalTokens,
 		},
 		RequestCosts: requestCostRows,
 	}
 }
 
 func calculateConfiguredUsageCost(pricing config.ModelBilling, request billingRequestRecord) float64 {
-	return pricing.PerRequestUSD +
-		float64(request.PromptTokens)*pricing.InputPerMillionUSD/1_000_000 +
+	tokenCost := float64(request.PromptTokens)*pricing.InputPerMillionUSD/1_000_000 +
 		float64(request.CompletionTokens)*pricing.OutputPerMillionUSD/1_000_000 +
 		float64(request.CacheTokens)*pricing.CachedInputPerMillionUSD/1_000_000
+	switch pricing.Mode {
+	case "per_request":
+		return pricing.PerRequestUSD
+	case "per_token":
+		return tokenCost
+	default:
+		return pricing.PerRequestUSD + tokenCost
+	}
+}
+
+func requestDurationSeconds(request billingRequestRecord) float64 {
+	if request.DurationMS <= 0 {
+		return 0
+	}
+	return float64(request.DurationMS) / 1000.0
 }
 
 func ensureBillingModel(rows map[string]*BillingModelSummary, model string) *BillingModelSummary {

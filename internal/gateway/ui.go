@@ -394,7 +394,7 @@ func (s *Server) buildUIStatus(now time.Time) uiStatusResponse {
 }
 
 func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapshot, now time.Time) []uiModelStatus {
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	models := make([]uiModelStatus, 0, len(cfg.Models))
 	for name, model := range cfg.Models {
 		item := uiModelStatus{
@@ -465,7 +465,7 @@ func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapsh
 
 func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldowns ReplicaCooldownSnapshot, now time.Time) []uiWorker {
 	out := make([]uiWorker, 0, len(workers))
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	for _, worker := range workers {
 		backoffSeconds := int64(0)
 		if now.Before(worker.ScrapeBackoffUntil) {

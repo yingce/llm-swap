@@ -100,6 +100,9 @@ func validateGateway(cfg GatewayConfig) error {
 			model.Billing.CachedInputPerMillionUSD < 0 {
 			return fmt.Errorf("model %s billing prices must be non-negative", name)
 		}
+		if model.Billing.Mode != "" && model.Billing.Mode != "per_request" && model.Billing.Mode != "per_token" {
+			return fmt.Errorf("model %s billing.mode must be per_request or per_token", name)
+		}
 	}
 	for tag, policy := range cfg.TagPolicies {
 		if policy.MaxConcurrency < 0 || policy.MaxQueue < 0 || policy.WorkerDefaults.MaxConcurrency < 0 || policy.WorkerDefaults.MaxQueue < 0 {

@@ -331,7 +331,7 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 	defer ticker.Stop()
 
 	for {
-		cfg := s.currentConfig()
+		cfg := activeGatewayConfig(s.currentConfig())
 		reconciler := LoadedReconciler{
 			Config:  cfg,
 			Workers: s.workers,

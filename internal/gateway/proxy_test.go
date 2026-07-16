@@ -130,6 +130,23 @@ func TestProxyUnknownModelReturnsOpenAIError(t *testing.T) {
 	assertOpenAIErrorCode(t, rr.Body.Bytes(), "model_not_available")
 }
 
+func TestProxyDisabledModelReturnsOpenAIError(t *testing.T) {
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.Disabled = true
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	req := proxyRequest(`{"model":"qwen","messages":[]}`)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "model_not_available")
+}
+
 func TestProxyGeneratesRequestIDForwardsGatewayHeadersAndLogs(t *testing.T) {
 	var gotRequestID string
 	var gotGatewayModel string

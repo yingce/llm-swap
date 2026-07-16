@@ -94,6 +94,56 @@ func TestBillingReadyCostSplitsConcurrentModelsOnSameWorker(t *testing.T) {
 	}
 }
 
+func TestCalculateConfiguredUsageCostHonorsBillingMode(t *testing.T) {
+	request := billingRequestRecord{PromptTokens: 1_000_000, CompletionTokens: 1_000_000, CacheTokens: 1_000_000}
+	pricing := config.ModelBilling{
+		Mode:                     "per_request",
+		PerRequestUSD:            0.5,
+		InputPerMillionUSD:       1,
+		OutputPerMillionUSD:      2,
+		CachedInputPerMillionUSD: 3,
+	}
+	if got := calculateConfiguredUsageCost(pricing, request); got != 0.5 {
+		t.Fatalf("per_request cost = %v, want only per-request price", got)
+	}
+
+	pricing.Mode = "per_token"
+	if got := calculateConfiguredUsageCost(pricing, request); got != 6 {
+		t.Fatalf("per_token cost = %v, want only token prices", got)
+	}
+
+	pricing.Mode = ""
+	if got := calculateConfiguredUsageCost(pricing, request); got != 6.5 {
+		t.Fatalf("legacy cost = %v, want per-request plus token prices", got)
+	}
+}
+
+func TestBillingSummaryReportsRequestDurationForCapacityPricing(t *testing.T) {
+	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	summary := buildBillingSummary(BillingQuery{
+		Start:            start,
+		End:              start.Add(time.Hour),
+		WorkerDayCostRMB: 24,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+	}, map[string]*BillingModelSummary{}, []billingRequestRecord{
+		{RequestID: "req-a", Time: start, Model: "qwen", AppID: "app-a", PromptTokens: 100, CompletionTokens: 50, CacheTokens: 25, TotalTokens: 175, DurationMS: 10_000},
+		{RequestID: "req-b", Time: start.Add(time.Second), Model: "qwen", AppID: "app-a", PromptTokens: 200, CompletionTokens: 100, CacheTokens: 50, TotalTokens: 350, DurationMS: 20_000},
+	})
+
+	if len(summary.Models) != 1 {
+		t.Fatalf("models = %+v, want one qwen row", summary.Models)
+	}
+	if summary.Models[0].RequestDurationSeconds != 30 {
+		t.Fatalf("model request duration = %v, want 30", summary.Models[0].RequestDurationSeconds)
+	}
+	if len(summary.Apps) != 1 || summary.Apps[0].RequestDurationSeconds != 30 {
+		t.Fatalf("apps = %+v, want app duration 30", summary.Apps)
+	}
+	if summary.Totals.RequestDurationSeconds != 30 {
+		t.Fatalf("total request duration = %v, want 30", summary.Totals.RequestDurationSeconds)
+	}
+}
+
 func TestParseBillingQuerySupportsShanghaiLocalNaturalRanges(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/billing?day=2035-01-02", nil)
 	query, err := parseBillingQuery(req)

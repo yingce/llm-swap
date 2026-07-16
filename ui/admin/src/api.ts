@@ -183,6 +183,7 @@ export type ArtifactConfig = {
 };
 
 export type ModelConfig = {
+  disabled?: boolean;
   priority: number;
   min_loaded: number;
   max_loaded: number;
@@ -200,6 +201,7 @@ export type ModelConfig = {
 };
 
 export type ModelBillingConfig = {
+  mode?: "per_request" | "per_token";
   per_request_usd?: number;
   input_per_million_usd?: number;
   output_per_million_usd?: number;
@@ -269,6 +271,7 @@ export type BillingSummary = {
   totals: {
     ready_seconds: number;
     billable_worker_seconds: number;
+    request_duration_seconds: number;
     model_cost: number;
     model_used_cost: number;
     model_idle_cost: number;
@@ -287,6 +290,7 @@ export type BillingModelSummary = {
   model: string;
   ready_seconds: number;
   billable_worker_seconds: number;
+  request_duration_seconds: number;
   ready_share: number;
   cost_share: number;
   model_cost: number;
@@ -302,6 +306,7 @@ export type BillingModelSummary = {
 export type BillingAppSummary = {
   app_id: string;
   requests: number;
+  request_duration_seconds: number;
   input_tokens: number;
   output_tokens: number;
   cached_input_tokens: number;

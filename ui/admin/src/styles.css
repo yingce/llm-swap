@@ -248,6 +248,10 @@ small {
   text-decoration: none;
 }
 
+.price-mode-switch button {
+  min-width: 94px;
+}
+
 table {
   border-collapse: collapse;
   min-width: 720px;
@@ -827,6 +831,11 @@ textarea {
 
 .checkbox-item input {
   margin: 0;
+}
+
+.compact-checkbox {
+  background: #fff;
+  padding: 8px 10px;
 }
 
 .advanced-readonly textarea {

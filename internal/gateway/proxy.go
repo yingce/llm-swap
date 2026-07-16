@@ -23,7 +23,7 @@ var requestIDSequence uint64
 
 func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	requestID := ensureRequestID(r)
 	w.Header().Set("X-Request-Id", requestID)
 
@@ -334,7 +334,7 @@ func replicaStatsFromDecision(decision ScheduleDecision) queueReplicaStats {
 
 func (s *Server) replicaStats(model string, now time.Time) queueReplicaStats {
 	out := queueReplicaStats{}
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	modelCfg, ok := cfg.Models[model]
 	if ok {
 		out.maxLoaded = modelCfg.EffectiveMaxLoaded()

@@ -186,7 +186,7 @@ func configuredProxyAttempts(cfg config.GatewayConfig) int {
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	workers := s.workers.Snapshot(now)
 	active := s.workers.ActiveSnapshot()
 	s.metrics.ObserveWorkers(workers, active, now, func(worker Worker) (ActivityStats, error) {
@@ -313,7 +313,7 @@ type modelEntry struct {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	models := make([]modelEntry, 0, len(cfg.Models))
 	scheduler := Scheduler{Config: cfg, Workers: s.workers}
 	for name := range cfg.Models {
@@ -337,7 +337,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	tag, policy, ok := s.matchedTagPolicy(cfg, r.URL.Query().Get("tags"))
 	if !ok {
 		http.Error(w, "exactly one configured tag must match", http.StatusBadRequest)

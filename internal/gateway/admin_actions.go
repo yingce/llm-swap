@@ -55,7 +55,7 @@ func (s *Server) handleUIModelWarm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cfg := s.currentConfig()
+	cfg := activeGatewayConfig(s.currentConfig())
 	if _, ok := cfg.Models[model]; !ok {
 		writeAdminActionError(w, http.StatusNotFound, "model_warm", req.WorkerID, model, "model not found")
 		return

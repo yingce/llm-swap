@@ -46,6 +46,7 @@ type RecordsStoreConfig struct {
 }
 
 type Model struct {
+	Disabled       bool         `yaml:"disabled" json:"disabled,omitempty"`
 	Priority       int          `yaml:"priority" json:"priority"`
 	MinLoaded      int          `yaml:"min_loaded" json:"min_loaded"`
 	MaxLoaded      int          `yaml:"max_loaded" json:"max_loaded"`
@@ -64,6 +65,7 @@ type Model struct {
 }
 
 type ModelBilling struct {
+	Mode                     string  `yaml:"mode" json:"mode,omitempty"`
 	PerRequestUSD            float64 `yaml:"per_request_usd" json:"per_request_usd,omitempty"`
 	InputPerMillionUSD       float64 `yaml:"input_per_million_usd" json:"input_per_million_usd,omitempty"`
 	OutputPerMillionUSD      float64 `yaml:"output_per_million_usd" json:"output_per_million_usd,omitempty"`

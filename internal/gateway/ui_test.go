@@ -106,6 +106,45 @@ func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	}
 }
 
+func TestUIStatusEndpointOmitsDisabledModels(t *testing.T) {
+	cfg := testGatewayConfig()
+	model := cfg.Models["qwen"]
+	model.Disabled = true
+	cfg.Models["qwen"] = model
+	other := cfg.Models["other"]
+	other.Disabled = true
+	cfg.Models["other"] = other
+	srv := NewServer(cfg)
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "gpu-01",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "ready"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var status uiStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if _, ok := findUIModel(status.Models, "qwen"); ok {
+		t.Fatalf("models = %+v, did not want disabled qwen", status.Models)
+	}
+	if status.Summary.ConfiguredModels != 0 || status.Summary.AvailableModels != 0 {
+		t.Fatalf("summary = %+v, want disabled model omitted from configured/available counts", status.Summary)
+	}
+}
+
 func TestUIEventsEndpointPaginatesPersistedWorkerEvents(t *testing.T) {
 	eventLogPath := filepath.Join(t.TempDir(), "worker-events.jsonl")
 	srv := NewServerWithGatewayPersistencePaths(testGatewayConfig(), "", eventLogPath)

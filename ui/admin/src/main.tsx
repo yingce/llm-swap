@@ -42,6 +42,9 @@ type EditableGatewayConfig = {
 };
 
 type BillingPricingMode = "per_request" | "per_token";
+type ModelBillingPriceField = Exclude<keyof ModelBillingConfig, "mode">;
+const recommendationUtilization = 0.9;
+const secondsPerDay = 86400;
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -185,7 +188,7 @@ function App() {
     });
   }
 
-  function updateModelBillingPrice(modelName: string, field: keyof ModelBillingConfig, value: number | undefined) {
+  function updateModelBillingPrice(modelName: string, field: ModelBillingPriceField, value: number | undefined) {
     updateDraft((draft) => {
       const model = draft.models[modelName];
       if (!model) {
@@ -196,6 +199,9 @@ function App() {
         delete billing[field];
       } else {
         billing[field] = value;
+      }
+      if (!billing.mode) {
+        billing.mode = billingPricingMode(billing);
       }
       model.billing = hasBillingValues(billing) ? billing : undefined;
     });
@@ -215,6 +221,7 @@ function App() {
       } else {
         delete billing.per_request_usd;
       }
+      billing.mode = mode;
       model.billing = hasBillingValues(billing) ? billing : undefined;
     });
   }
@@ -687,9 +694,10 @@ function Billing({
   pricingError: string;
   onRangeChange: (hours: number) => void;
   onModeChange: (modelName: string, mode: BillingPricingMode) => void;
-  onPriceChange: (modelName: string, field: keyof ModelBillingConfig, value: number | undefined) => void;
+  onPriceChange: (modelName: string, field: ModelBillingPriceField, value: number | undefined) => void;
   onSavePricing: () => void;
 }) {
+  const [showDisabledPricing, setShowDisabledPricing] = useState(false);
   const recentRequestCosts = billing?.request_costs?.slice(-20).reverse() ?? [];
   const billingModelMap = useMemo(() => new Map((billing?.models ?? []).map((model) => [model.model, model])), [billing]);
   const pricingModelNames = useMemo(() => {
@@ -700,8 +708,10 @@ function Billing({
     for (const model of billing?.models ?? []) {
       names.add(model.model);
     }
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [billing, pricingDraft]);
+    return Array.from(names)
+      .filter((modelName) => showDisabledPricing || !pricingDraft?.models[modelName]?.disabled)
+      .sort((a, b) => a.localeCompare(b));
+  }, [billing, pricingDraft, showDisabledPricing]);
   return (
     <div className="stack">
       <div className="config-toolbar">
@@ -740,6 +750,14 @@ function Billing({
         <div className="table-heading">
           <h3>Manual model pricing</h3>
           <div className="config-toolbar-actions">
+            <label className="checkbox-item compact-checkbox">
+              <input
+                type="checkbox"
+                checked={showDisabledPricing}
+                onChange={(event) => setShowDisabledPricing(event.target.checked)}
+              />
+              <span>Show disabled</span>
+            </label>
             <Badge tone={pricingDirty ? "warn" : "good"}>{pricingDirty ? "draft changed" : "in sync"}</Badge>
             <button className="primary" disabled={!pricingDirty} onClick={onSavePricing}>Save pricing</button>
           </div>
@@ -764,22 +782,35 @@ function Billing({
               const billingRow = billingModelMap.get(modelName);
               const pricing = model?.billing ?? {};
               const mode = billingPricingMode(pricing);
-              const recommended = recommendedBillingPricing(billingRow);
+              const recommended = recommendedBillingPricing(billingRow, billing?.worker_day_cost_usd);
               return (
                 <tr key={modelName}>
-                  <td><strong>{modelName}</strong></td>
+                  <td>
+                    <strong>{modelName}</strong>
+                    {model?.disabled ? <Badge tone="warn">disabled</Badge> : null}
+                  </td>
                   <td>{compactNumber(billingRow?.requests)}</td>
                   <td>{formatMoney(billingRow?.model_cost)}</td>
                   <td>{formatMoney(billingRow?.model_used_cost)}</td>
                   <td>
-                    <select
-                      value={mode}
-                      disabled={!model}
-                      onChange={(event) => onModeChange(modelName, event.target.value as BillingPricingMode)}
-                    >
-                      <option value="per_request">Per request</option>
-                      <option value="per_token">Per token</option>
-                    </select>
+                    <div className="segmented price-mode-switch">
+                      <button
+                        type="button"
+                        className={mode === "per_request" ? "active" : ""}
+                        disabled={!model}
+                        onClick={() => onModeChange(modelName, "per_request")}
+                      >
+                        Per request
+                      </button>
+                      <button
+                        type="button"
+                        className={mode === "per_token" ? "active" : ""}
+                        disabled={!model}
+                        onClick={() => onModeChange(modelName, "per_token")}
+                      >
+                        Per token
+                      </button>
+                    </div>
                   </td>
                   <td>
                     {mode === "per_request" ? (
@@ -1080,15 +1111,20 @@ function ConfigOps({
   onTagChange: (tagName: string, nextPolicy: TagPolicyConfig) => void;
 }) {
   const modelNames = useMemo(() => sortedKeys(draft?.models), [draft]);
+  const [showDisabledModels, setShowDisabledModels] = useState(false);
+  const visibleModelNames = useMemo(
+    () => modelNames.filter((modelName) => showDisabledModels || !draft?.models[modelName]?.disabled),
+    [draft, modelNames, showDisabledModels]
+  );
   const tagNames = useMemo(() => sortedKeys(draft?.tag_policies), [draft]);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedTag, setSelectedTag] = useState("");
 
   useEffect(() => {
-    if (!selectedModel || !draft?.models[selectedModel]) {
-      setSelectedModel(modelNames[0] ?? "");
+    if (!selectedModel || !visibleModelNames.includes(selectedModel)) {
+      setSelectedModel(visibleModelNames[0] ?? "");
     }
-  }, [draft, modelNames, selectedModel]);
+  }, [selectedModel, visibleModelNames]);
 
   useEffect(() => {
     if (!selectedTag || !draft?.tag_policies[selectedTag]) {
@@ -1125,7 +1161,15 @@ function ConfigOps({
       <div className="config-grid">
         <div className="config-stack">
           <ConfigListCard title="Models" subtitle="Select a model to edit push and replica policy.">
-            {modelNames.map((modelName) => {
+            <label className="checkbox-item compact-checkbox">
+              <input
+                type="checkbox"
+                checked={showDisabledModels}
+                onChange={(event) => setShowDisabledModels(event.target.checked)}
+              />
+              <span>Show disabled</span>
+            </label>
+            {visibleModelNames.map((modelName) => {
               const model = draft.models[modelName];
               const live = liveModelMap.get(modelName);
               return (
@@ -1139,7 +1183,11 @@ function ConfigOps({
                     <small>{model.runtime || (model.run ? "raw run" : "runtime unset")}</small>
                   </div>
                   <div className="picker-meta">
-                    <Badge tone={live?.available ? "good" : "warn"}>{live?.available ? "ready" : "draft"}</Badge>
+                    {model.disabled ? (
+                      <Badge tone="warn">disabled</Badge>
+                    ) : (
+                      <Badge tone={live?.available ? "good" : "warn"}>{live?.available ? "ready" : "draft"}</Badge>
+                    )}
                     <span>{model.min_loaded}/{model.max_loaded_auto ? "auto" : model.max_loaded}</span>
                   </div>
                 </button>
@@ -1295,6 +1343,14 @@ function ModelEditor({
       {isRawRunModel ? <div className="notice">This model uses a raw `run` command. Runtime command text stays read-only in Ops.</div> : null}
 
       <div className="detail-grid">
+        <label className="checkbox-item field-span">
+          <input
+            type="checkbox"
+            checked={Boolean(model.disabled)}
+            onChange={(event) => onChange({ ...model, disabled: event.target.checked || undefined })}
+          />
+          <span>Disabled</span>
+        </label>
         <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
         <NumberField label="Min loaded" value={model.min_loaded} onChange={(value) => onChange({ ...model, min_loaded: value })} />
         <NumberField label="Max concurrency" value={model.max_concurrency} onChange={(value) => onChange({ ...model, max_concurrency: value })} />
@@ -1590,24 +1646,31 @@ function formatPricingValue(value: number | undefined) {
   return `$${numberValue.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
-function recommendedBillingPricing(model: BillingSummary["models"][number] | undefined): ModelBillingConfig {
-  if (!model || model.model_cost <= 0) {
+function recommendedBillingPricing(model: BillingSummary["models"][number] | undefined, workerDayCostUSD: number | undefined): ModelBillingConfig {
+  const dayCost = Number(workerDayCostUSD ?? 0);
+  const durationSeconds = Number(model?.request_duration_seconds ?? 0);
+  if (!model || dayCost <= 0 || durationSeconds <= 0) {
     return {};
   }
-  const tokenDimensions = [model.input_tokens > 0, model.output_tokens > 0, model.cached_input_tokens > 0].filter(Boolean).length;
-  const tokenCostPerDimension = tokenDimensions > 0 ? model.model_cost / tokenDimensions : 0;
   return {
-    per_request_usd: model.requests > 0 ? roundPricingValue(model.model_cost / model.requests) : undefined,
-    input_per_million_usd: model.input_tokens > 0 ? roundPricingValue(tokenCostPerDimension / model.input_tokens * 1_000_000) : undefined,
-    output_per_million_usd: model.output_tokens > 0 ? roundPricingValue(tokenCostPerDimension / model.output_tokens * 1_000_000) : undefined,
+    per_request_usd: model.requests > 0 ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.requests, 1)) : undefined,
+    input_per_million_usd: model.input_tokens > 0 ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.input_tokens, 1_000_000)) : undefined,
+    output_per_million_usd: model.output_tokens > 0 ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.output_tokens, 1_000_000)) : undefined,
     cached_input_per_million_usd: model.cached_input_tokens > 0
-      ? roundPricingValue(tokenCostPerDimension / model.cached_input_tokens * 1_000_000)
+      ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.cached_input_tokens, 1_000_000))
       : undefined
   };
 }
 
-function roundPricingValue(value: number) {
-  if (!Number.isFinite(value) || value <= 0) {
+function capacityUnitPrice(workerDayCostUSD: number, durationSeconds: number, units: number, multiplier: number) {
+  if (!Number.isFinite(workerDayCostUSD) || !Number.isFinite(durationSeconds) || !Number.isFinite(units) || units <= 0) {
+    return undefined;
+  }
+  return workerDayCostUSD * durationSeconds * multiplier / (units * secondsPerDay * recommendationUtilization);
+}
+
+function roundPricingValue(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return undefined;
   }
   return Math.round(value * 1_000_000) / 1_000_000;
@@ -1626,10 +1689,16 @@ function parseOptionalPrice(raw: string) {
 }
 
 function hasBillingValues(billing: ModelBillingConfig) {
+  if (billing.mode === "per_request" || billing.mode === "per_token") {
+    return true;
+  }
   return Object.values(billing).some((value) => typeof value === "number" && Number.isFinite(value));
 }
 
 function billingPricingMode(billing: ModelBillingConfig): BillingPricingMode {
+  if (billing.mode === "per_request" || billing.mode === "per_token") {
+    return billing.mode;
+  }
   if (
     billing.input_per_million_usd !== undefined ||
     billing.output_per_million_usd !== undefined ||
@@ -1806,6 +1875,7 @@ function cloneEditableConfig(config: EditableGatewayConfig): EditableGatewayConf
           ...model,
           artifact: { ...model.artifact },
           runtime_args: [...model.runtime_args],
+          disabled: model.disabled || undefined,
           billing: model.billing ? { ...model.billing } : undefined
         }
       ])
@@ -1832,6 +1902,7 @@ function toEditableConfig(configResponse: ConfigResponse): EditableGatewayConfig
         ...model,
         artifact: { ...model.artifact },
         runtime_args: [...(model.runtime_args ?? [])],
+        disabled: model.disabled || undefined,
         billing: model.billing ? { ...model.billing } : undefined,
         max_loaded_auto: !yamlModelHasKey(parsed, name, "max_loaded") && model.max_loaded === 0
       }
@@ -1857,6 +1928,7 @@ function toGatewayConfigView(draft: EditableGatewayConfig): GatewayConfigView {
     models: Object.fromEntries(
       Object.entries(draft.models).map(([name, model]) => {
         const nextModel: ModelConfig = {
+          disabled: model.disabled || undefined,
           priority: model.priority,
           min_loaded: model.min_loaded,
           max_loaded: model.max_loaded_auto ? 0 : model.max_loaded,
@@ -1912,6 +1984,9 @@ function createYamlModelsMap(
         ttl: model.ttl,
         artifact: { ...model.artifact }
       };
+      if (model.disabled) {
+        nextModel.disabled = true;
+      }
       if (!editable.max_loaded_auto) {
         nextModel.max_loaded = model.max_loaded;
       }

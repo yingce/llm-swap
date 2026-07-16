@@ -54,6 +54,40 @@ func TestModelsEndpointListsOnlySchedulableModels(t *testing.T) {
 	}
 }
 
+func TestModelsEndpointOmitsDisabledModels(t *testing.T) {
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.Disabled = true
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{
+			{Model: "qwen", State: "ready"},
+		},
+	}, time.Now())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer client-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp modelsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("models = %+v, want disabled model omitted", resp.Data)
+	}
+}
+
 func TestModelsEndpointRequiresClientToken(t *testing.T) {
 	srv := NewServer(testProxyConfig())
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)

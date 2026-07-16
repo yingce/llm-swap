@@ -102,6 +102,36 @@ func TestAgentConfigEndpointReturnsTagScopedModels(t *testing.T) {
 	}
 }
 
+func TestAgentConfigEndpointOmitsDisabledModels(t *testing.T) {
+	cfg := testGatewayConfig()
+	model := cfg.Models["qwen"]
+	model.Disabled = true
+	cfg.Models["qwen"] = model
+	srv := NewServer(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/internal/agent/config?tags=gpu-4090", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp protocol.AgentConfigResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resp.Models["qwen"]; ok {
+		t.Fatalf("models = %#v, did not want disabled qwen", resp.Models)
+	}
+	if len(resp.TagPolicy.AllowedModels) != 0 {
+		t.Fatalf("allowed_models = %#v, want empty", resp.TagPolicy.AllowedModels)
+	}
+	if resp.TagPolicy.WarmWhenIdle != "" {
+		t.Fatalf("warm_when_idle = %q, want empty for disabled model", resp.TagPolicy.WarmWhenIdle)
+	}
+}
+
 func TestAgentConfigEndpointRejectsWrongOrMissingToken(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 
