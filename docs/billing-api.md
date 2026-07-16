@@ -15,8 +15,8 @@ Authentication uses the gateway agent/UI token.
 - `worker_day_cost_rmb`: optional worker cost per 24 hours. Defaults to `55`.
 - `include_requests`: optional boolean. `1`, `true`, `yes`, and `on` include
   per-request cost rows.
-- `persist`: optional boolean. When true, writes calculated request costs back
-  to `request_records.model_used_cost_usd` and updates `cost_calculated_at`.
+- `persist`: optional boolean. When true, backfills calculated request costs
+  only for old request rows that do not already have `cost_calculated_at`.
 
 `start` and `end` override `day`/`date`/`hour` when they are provided.
 `hour` overrides `day`/`date`.
@@ -97,8 +97,17 @@ multiple ready models.
 model_cost = billable_worker_seconds / 86400 * worker_day_cost_usd
 ```
 
-`model_used_cost` is calculated from the configured per-model customer pricing,
-not from machine idle cost. Configure it under each model:
+`model_used_cost` is calculated from the per-request billing snapshot when a
+request row has `cost_calculated_at`. New gateway requests store that snapshot
+at request completion, including the calculated cost and the model pricing used
+at that time. This makes historical billing stable after later price changes.
+
+Rows imported from older JSONL files may not have a billing snapshot. For those
+rows, billing queries temporarily calculate cost from the current per-model
+customer pricing. `persist=true` can backfill those missing snapshots, but it
+does not overwrite rows that already have `cost_calculated_at`.
+
+Configure customer pricing under each model:
 
 ```yaml
 models:
@@ -141,6 +150,14 @@ occupancy cost.
 - `output_tokens`
 - `cached_input_tokens`
 - `total_tokens`
+
+`request_costs[]` also includes the billing price snapshot used for each row:
+
+- `billing_per_request_usd`
+- `billing_input_per_million_usd`
+- `billing_output_per_million_usd`
+- `billing_cached_input_per_million_usd`
+- `cost_calculated_at`
 
 ## Examples
 

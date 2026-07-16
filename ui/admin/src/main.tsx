@@ -1706,8 +1706,9 @@ function requestTokens(request: RequestLogEntry) {
 
 function requestCost(request: RequestLogEntry) {
   const modelUsedCost = request.model_used_cost_usd ?? 0;
-  if (modelUsedCost > 0) {
-    return `used ${formatMoney(modelUsedCost)}`;
+  if (modelUsedCost > 0 || request.cost_calculated_at) {
+    const pricing = requestPricingSnapshot(request);
+    return [`used ${formatMoney(modelUsedCost)}`, pricing].filter(Boolean).join(" · ");
   }
   const tokenCost = request.cost_by_token_rmb ?? 0;
   const requestCostValue = request.cost_by_request_rmb ?? 0;
@@ -1715,6 +1716,19 @@ function requestCost(request: RequestLogEntry) {
     return "";
   }
   return `tok ${formatMoney(tokenCost)} · req ${formatMoney(requestCostValue)}`;
+}
+
+function requestPricingSnapshot(request: RequestLogEntry) {
+  const perRequest = request.billing_per_request_usd ?? 0;
+  if (perRequest > 0) {
+    return `req ${formatPricingValue(perRequest)}`;
+  }
+  const pieces = [
+    request.billing_input_per_million_usd ? `in ${formatPricingValue(request.billing_input_per_million_usd)}/M` : "",
+    request.billing_output_per_million_usd ? `out ${formatPricingValue(request.billing_output_per_million_usd)}/M` : "",
+    request.billing_cached_input_per_million_usd ? `cache ${formatPricingValue(request.billing_cached_input_per_million_usd)}/M` : ""
+  ].filter(Boolean);
+  return pieces.join(" ");
 }
 
 function requestDetail(request: RequestLogEntry) {

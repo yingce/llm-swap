@@ -121,19 +121,23 @@ INSERT INTO request_records (
   stream, request_bytes, response_bytes, message_count, image_count, video_count, audio_count,
   max_tokens, temperature, top_p, top_k, prompt_tokens, completion_tokens, total_tokens,
   cache_tokens, reasoning_tokens, finish_reason, error_type, error_code, error_message,
-  retry_count, upstream_url, request_headers, app_id, source_hash
+  retry_count, upstream_url, request_headers, app_id, source_hash, model_used_cost_usd,
+  billing_per_request_usd, billing_input_per_million_usd, billing_output_per_million_usd,
+  billing_cached_input_per_million_usd, cost_calculated_at
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
   $9, $10, $11, $12, $13, $14, $15,
   $16, $17, $18, $19, $20, $21, $22,
   $23, $24, $25, $26, $27, $28,
-  $29, $30, $31::jsonb, $32, $33
+  $29, $30, $31::jsonb, $32, $33, $34,
+  $35, $36, $37, $38, $39
 ) ON CONFLICT DO NOTHING`,
 		entry.RequestID, s.gatewayID, entry.Time.UTC(), entry.Model, entry.WorkerID, entry.Tag, entry.StatusCode, entry.DurationMS,
 		entry.Stream, entry.RequestBytes, entry.ResponseBytes, entry.MessageCount, entry.ImageCount, entry.VideoCount, entry.AudioCount,
 		entry.MaxTokens, entry.Temperature, entry.TopP, entry.TopK, entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens,
 		entry.CacheTokens, entry.ReasoningTokens, entry.FinishReason, entry.ErrorType, entry.ErrorCode, entry.ErrorMessage,
-		entry.RetryCount, entry.UpstreamURL, string(headers), entry.RequestHeaders["x-app-id"], strings.TrimSpace(sourceHash),
+		entry.RetryCount, entry.UpstreamURL, string(headers), entry.RequestHeaders["x-app-id"], strings.TrimSpace(sourceHash), entry.ModelUsedCostUSD,
+		entry.BillingPerRequestUSD, entry.BillingInputPerMillionUSD, entry.BillingOutputPerMillionUSD, entry.BillingCachedInputPerMillionUSD, entry.CostCalculatedAt,
 	)
 	if err != nil {
 		return false, err
@@ -351,6 +355,8 @@ SELECT request_id, event_time, model, worker_id, tag, status_code, duration_ms,
   max_tokens, temperature, top_p, top_k, prompt_tokens, completion_tokens, total_tokens,
   cache_tokens, reasoning_tokens, finish_reason, error_type, error_code, error_message,
   retry_count, upstream_url, request_headers, cost_by_token_rmb::float8, cost_by_request_rmb::float8,
+  billing_per_request_usd::float8, billing_input_per_million_usd::float8,
+  billing_output_per_million_usd::float8, billing_cached_input_per_million_usd::float8,
   model_used_cost_usd::float8, cost_calculated_at
 FROM request_records
 ORDER BY id DESC
@@ -423,7 +429,7 @@ OFFSET $1 LIMIT $2`, offset, limit+1)
 func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	var entry RequestLogEntry
 	var temperature, topP, topK sql.NullFloat64
-	var costByToken, costByRequest, modelUsedCostUSD sql.NullFloat64
+	var costByToken, costByRequest, billingPerRequestUSD, billingInputPerMillionUSD, billingOutputPerMillionUSD, billingCachedInputPerMillionUSD, modelUsedCostUSD sql.NullFloat64
 	var costCalculatedAt sql.NullTime
 	var headers []byte
 	err := rows.Scan(
@@ -431,7 +437,9 @@ func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 		&entry.Stream, &entry.RequestBytes, &entry.ResponseBytes, &entry.MessageCount, &entry.ImageCount, &entry.VideoCount, &entry.AudioCount,
 		&entry.MaxTokens, &temperature, &topP, &topK, &entry.PromptTokens, &entry.CompletionTokens, &entry.TotalTokens,
 		&entry.CacheTokens, &entry.ReasoningTokens, &entry.FinishReason, &entry.ErrorType, &entry.ErrorCode, &entry.ErrorMessage,
-		&entry.RetryCount, &entry.UpstreamURL, &headers, &costByToken, &costByRequest, &modelUsedCostUSD, &costCalculatedAt,
+		&entry.RetryCount, &entry.UpstreamURL, &headers, &costByToken, &costByRequest,
+		&billingPerRequestUSD, &billingInputPerMillionUSD, &billingOutputPerMillionUSD, &billingCachedInputPerMillionUSD,
+		&modelUsedCostUSD, &costCalculatedAt,
 	)
 	if err != nil {
 		return RequestLogEntry{}, err
@@ -453,6 +461,18 @@ func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	}
 	if costByRequest.Valid {
 		entry.CostByRequestRMB = costByRequest.Float64
+	}
+	if billingPerRequestUSD.Valid {
+		entry.BillingPerRequestUSD = billingPerRequestUSD.Float64
+	}
+	if billingInputPerMillionUSD.Valid {
+		entry.BillingInputPerMillionUSD = billingInputPerMillionUSD.Float64
+	}
+	if billingOutputPerMillionUSD.Valid {
+		entry.BillingOutputPerMillionUSD = billingOutputPerMillionUSD.Float64
+	}
+	if billingCachedInputPerMillionUSD.Valid {
+		entry.BillingCachedInputPerMillionUSD = billingCachedInputPerMillionUSD.Float64
 	}
 	if modelUsedCostUSD.Valid {
 		entry.ModelUsedCostUSD = modelUsedCostUSD.Float64

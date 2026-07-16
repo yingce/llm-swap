@@ -112,6 +112,49 @@ func TestCalculateConfiguredUsageCostPrefersPerRequestWhenConfigured(t *testing.
 	}
 }
 
+func TestBillingSummaryUsesPersistedRequestCostSnapshot(t *testing.T) {
+	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	calculatedAt := start.Add(time.Minute)
+	summary := buildBillingSummary(BillingQuery{
+		Start:            start,
+		End:              start.Add(time.Hour),
+		WorkerDayCostRMB: 24,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+		ModelPricing: map[string]config.ModelBilling{
+			"qwen": {PerRequestUSD: 9},
+		},
+	}, map[string]*BillingModelSummary{}, []billingRequestRecord{
+		{
+			RequestID:                       "req-a",
+			Time:                            start,
+			Model:                           "qwen",
+			AppID:                           "app-a",
+			PromptTokens:                    1_000_000,
+			CompletionTokens:                1_000_000,
+			TotalTokens:                     2_000_000,
+			BillingInputPerMillionUSD:       0.1,
+			BillingOutputPerMillionUSD:      0.2,
+			BillingCachedInputPerMillionUSD: 0.01,
+			ModelUsedCostUSD:                0.3,
+			CostCalculatedAt:                &calculatedAt,
+		},
+	})
+
+	if len(summary.Models) != 1 || summary.Models[0].ModelUsedCost != 0.3 {
+		t.Fatalf("models = %+v, want persisted cost 0.3 instead of current pricing", summary.Models)
+	}
+	if len(summary.Apps) != 1 || summary.Apps[0].ModelUsedCost != 0.3 {
+		t.Fatalf("apps = %+v, want persisted cost 0.3", summary.Apps)
+	}
+	if len(summary.RequestCosts) != 1 {
+		t.Fatalf("request costs = %+v, want one row", summary.RequestCosts)
+	}
+	row := summary.RequestCosts[0]
+	if row.ModelUsedCost != 0.3 || row.BillingInputPerMillionUSD != 0.1 || row.BillingOutputPerMillionUSD != 0.2 || row.CostCalculatedAt == nil {
+		t.Fatalf("request cost row = %+v, want persisted cost and pricing snapshot", row)
+	}
+}
+
 func TestBillingSummaryReportsRequestDurationForCapacityPricing(t *testing.T) {
 	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 	summary := buildBillingSummary(BillingQuery{

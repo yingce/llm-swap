@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS request_records (
   request_headers JSONB NOT NULL DEFAULT '{}'::jsonb,
   app_id TEXT NOT NULL DEFAULT '',
   source_hash TEXT NOT NULL DEFAULT '',
+  billing_per_request_usd NUMERIC(18, 6) NOT NULL DEFAULT 0,
+  billing_input_per_million_usd NUMERIC(18, 6) NOT NULL DEFAULT 0,
+  billing_output_per_million_usd NUMERIC(18, 6) NOT NULL DEFAULT 0,
+  billing_cached_input_per_million_usd NUMERIC(18, 6) NOT NULL DEFAULT 0,
   model_used_cost_usd NUMERIC(18, 6) NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -44,6 +48,14 @@ ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_by_token_rmb NUMERIC(1
 ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_by_request_rmb NUMERIC(18, 6) NOT NULL DEFAULT 0;
 -- statement-breakpoint
 ALTER TABLE request_records ADD COLUMN IF NOT EXISTS model_used_cost_usd NUMERIC(18, 6) NOT NULL DEFAULT 0;
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS billing_per_request_usd NUMERIC(18, 6) NOT NULL DEFAULT 0;
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS billing_input_per_million_usd NUMERIC(18, 6) NOT NULL DEFAULT 0;
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS billing_output_per_million_usd NUMERIC(18, 6) NOT NULL DEFAULT 0;
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS billing_cached_input_per_million_usd NUMERIC(18, 6) NOT NULL DEFAULT 0;
 -- statement-breakpoint
 ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_calculated_at TIMESTAMPTZ;
 -- statement-breakpoint

@@ -251,6 +251,7 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 	if s == nil {
 		return
 	}
+	entry = s.withRequestBillingSnapshot(entry)
 	if s.access != nil {
 		s.access.RecordRequest(entry)
 	}
@@ -278,6 +279,25 @@ func (s *Server) recordRequestStats(entry RequestLogEntry) {
 			s.logEvent("request_log_write_error", map[string]any{"error": err.Error(), "request_id": entry.RequestID})
 		}
 	}
+}
+
+func (s *Server) withRequestBillingSnapshot(entry RequestLogEntry) RequestLogEntry {
+	if entry.Model == "" {
+		return entry
+	}
+	pricing := s.currentConfig().Models[entry.Model].Billing
+	entry.BillingPerRequestUSD = pricing.PerRequestUSD
+	entry.BillingInputPerMillionUSD = pricing.InputPerMillionUSD
+	entry.BillingOutputPerMillionUSD = pricing.OutputPerMillionUSD
+	entry.BillingCachedInputPerMillionUSD = pricing.CachedInputPerMillionUSD
+	entry.ModelUsedCostUSD = calculateConfiguredUsageCost(pricing, billingRequestRecord{
+		PromptTokens:     entry.PromptTokens,
+		CompletionTokens: entry.CompletionTokens,
+		CacheTokens:      entry.CacheTokens,
+	})
+	now := time.Now().UTC()
+	entry.CostCalculatedAt = &now
+	return entry
 }
 
 func (s *Server) recordRecentRequest(entry RequestLogEntry) {

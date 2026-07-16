@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"llm-swap/internal/config"
 )
 
 type fakeRecordsStore struct {
@@ -45,12 +48,30 @@ func (f *fakeRecordsStore) Close() error {
 
 func TestRecordsStoreReceivesRequestAndLocalLogStillWrites(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"usage": map[string]any{"total_tokens": 11}, "choices": []map[string]any{{"finish_reason": "stop"}}})
+		writeJSON(w, map[string]any{
+			"usage": map[string]any{
+				"prompt_tokens":     100,
+				"completion_tokens": 50,
+				"total_tokens":      150,
+				"prompt_tokens_details": map[string]any{
+					"cached_tokens": 20,
+				},
+			},
+			"choices": []map[string]any{{"finish_reason": "stop"}},
+		})
 	}))
 	defer upstream.Close()
 
 	logPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
-	srv := NewServerWithGatewayPersistence(testProxyConfig(), logPath)
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.Billing = config.ModelBilling{
+		InputPerMillionUSD:       1,
+		OutputPerMillionUSD:      2,
+		CachedInputPerMillionUSD: 0.25,
+	}
+	cfg.Models["qwen"] = model
+	srv := NewServerWithGatewayPersistence(cfg, logPath)
 	store := &fakeRecordsStore{}
 	srv.recordsStore = store
 	registerProxyWorker(t, srv, "worker-a", upstream.URL, true)
@@ -69,9 +90,27 @@ func TestRecordsStoreReceivesRequestAndLocalLogStillWrites(t *testing.T) {
 	if got := store.requests[0].RequestHeaders["x-app-id"]; got != "app-a" {
 		t.Fatalf("stored x-app-id = %q, want app-a", got)
 	}
+	if got := store.requests[0].ModelUsedCostUSD; math.Abs(got-0.000185) > 1e-9 {
+		t.Fatalf("stored model_used_cost_usd = %v, want cost snapshot 0.000185", got)
+	}
+	if store.requests[0].CostCalculatedAt == nil {
+		t.Fatalf("stored cost_calculated_at is nil, want snapshot timestamp")
+	}
+	if got := store.requests[0].BillingInputPerMillionUSD; got != 1 {
+		t.Fatalf("stored billing_input_per_million_usd = %v, want 1", got)
+	}
+	if got := store.requests[0].BillingOutputPerMillionUSD; got != 2 {
+		t.Fatalf("stored billing_output_per_million_usd = %v, want 2", got)
+	}
+	if got := store.requests[0].BillingCachedInputPerMillionUSD; got != 0.25 {
+		t.Fatalf("stored billing_cached_input_per_million_usd = %v, want 0.25", got)
+	}
 	entry := readSingleRequestLogEntry(t, logPath)
 	if entry.RequestID != store.requests[0].RequestID {
 		t.Fatalf("local log request_id = %q, store request_id = %q", entry.RequestID, store.requests[0].RequestID)
+	}
+	if entry.ModelUsedCostUSD != store.requests[0].ModelUsedCostUSD || entry.CostCalculatedAt == nil {
+		t.Fatalf("local log billing snapshot = cost %v calculated_at %v, want store snapshot", entry.ModelUsedCostUSD, entry.CostCalculatedAt)
 	}
 }
 

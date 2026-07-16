@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"net/http"
 	"sort"
@@ -75,16 +76,21 @@ type BillingAppSummary struct {
 }
 
 type BillingRequestCostRow struct {
-	RequestID         string    `json:"request_id"`
-	Time              time.Time `json:"time"`
-	Model             string    `json:"model"`
-	AppID             string    `json:"app_id,omitempty"`
-	WorkerID          string    `json:"worker_id,omitempty"`
-	InputTokens       int       `json:"input_tokens"`
-	OutputTokens      int       `json:"output_tokens"`
-	CachedInputTokens int       `json:"cached_input_tokens"`
-	TotalTokens       int       `json:"total_tokens"`
-	ModelUsedCost     float64   `json:"model_used_cost"`
+	RequestID                       string     `json:"request_id"`
+	Time                            time.Time  `json:"time"`
+	Model                           string     `json:"model"`
+	AppID                           string     `json:"app_id,omitempty"`
+	WorkerID                        string     `json:"worker_id,omitempty"`
+	InputTokens                     int        `json:"input_tokens"`
+	OutputTokens                    int        `json:"output_tokens"`
+	CachedInputTokens               int        `json:"cached_input_tokens"`
+	TotalTokens                     int        `json:"total_tokens"`
+	BillingPerRequestUSD            float64    `json:"billing_per_request_usd,omitempty"`
+	BillingInputPerMillionUSD       float64    `json:"billing_input_per_million_usd,omitempty"`
+	BillingOutputPerMillionUSD      float64    `json:"billing_output_per_million_usd,omitempty"`
+	BillingCachedInputPerMillionUSD float64    `json:"billing_cached_input_per_million_usd,omitempty"`
+	ModelUsedCost                   float64    `json:"model_used_cost"`
+	CostCalculatedAt                *time.Time `json:"cost_calculated_at,omitempty"`
 }
 
 type billingReadyInterval struct {
@@ -95,18 +101,24 @@ type billingReadyInterval struct {
 }
 
 type billingRequestRecord struct {
-	ID               int64
-	RequestID        string
-	Time             time.Time
-	Model            string
-	WorkerID         string
-	AppID            string
-	TotalTokens      int
-	PromptTokens     int
-	CompletionTokens int
-	CacheTokens      int
-	DurationMS       int64
-	StatusCode       int
+	ID                              int64
+	RequestID                       string
+	Time                            time.Time
+	Model                           string
+	WorkerID                        string
+	AppID                           string
+	TotalTokens                     int
+	PromptTokens                    int
+	CompletionTokens                int
+	CacheTokens                     int
+	DurationMS                      int64
+	StatusCode                      int
+	BillingPerRequestUSD            float64
+	BillingInputPerMillionUSD       float64
+	BillingOutputPerMillionUSD      float64
+	BillingCachedInputPerMillionUSD float64
+	ModelUsedCostUSD                float64
+	CostCalculatedAt                *time.Time
 }
 
 func (s *Server) handleBilling(w http.ResponseWriter, r *http.Request) {
@@ -390,6 +402,9 @@ func (s *PostgresRecordsStore) billingRequests(ctx context.Context, start, end t
 	rows, err := s.db.QueryContext(runCtx, `
 SELECT id, request_id, event_time, model, worker_id, app_id, total_tokens
   , prompt_tokens, completion_tokens, cache_tokens, duration_ms, status_code
+  , billing_per_request_usd::float8, billing_input_per_million_usd::float8
+  , billing_output_per_million_usd::float8, billing_cached_input_per_million_usd::float8
+  , model_used_cost_usd::float8, cost_calculated_at
 FROM request_records
 WHERE event_time >= $1 AND event_time < $2
 ORDER BY id`, start.UTC(), end.UTC())
@@ -400,11 +415,18 @@ ORDER BY id`, start.UTC(), end.UTC())
 	var requests []billingRequestRecord
 	for rows.Next() {
 		var request billingRequestRecord
+		var costCalculatedAt sql.NullTime
 		if err := rows.Scan(
 			&request.ID, &request.RequestID, &request.Time, &request.Model, &request.WorkerID, &request.AppID, &request.TotalTokens,
 			&request.PromptTokens, &request.CompletionTokens, &request.CacheTokens, &request.DurationMS, &request.StatusCode,
+			&request.BillingPerRequestUSD, &request.BillingInputPerMillionUSD,
+			&request.BillingOutputPerMillionUSD, &request.BillingCachedInputPerMillionUSD,
+			&request.ModelUsedCostUSD, &costCalculatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if costCalculatedAt.Valid {
+			request.CostCalculatedAt = &costCalculatedAt.Time
 		}
 		if request.Model != "" {
 			requests = append(requests, request)
@@ -423,16 +445,24 @@ func (s *PostgresRecordsStore) persistBillingRequestCosts(ctx context.Context, r
 	defer tx.Rollback()
 	now := time.Now().UTC()
 	for _, row := range rows {
-		if row.RequestID == "" {
+		if row.RequestID == "" || row.CostCalculatedAt != nil {
 			continue
 		}
 		if _, err := tx.ExecContext(runCtx, `
 UPDATE request_records
 SET model_used_cost_usd = $1,
-    cost_calculated_at = $2
-WHERE request_id = $3 AND event_time = $4 AND model = $5`,
+    cost_calculated_at = $2,
+    billing_per_request_usd = $3,
+    billing_input_per_million_usd = $4,
+    billing_output_per_million_usd = $5,
+    billing_cached_input_per_million_usd = $6
+WHERE request_id = $7 AND event_time = $8 AND model = $9 AND cost_calculated_at IS NULL`,
 			row.ModelUsedCost,
 			now,
+			row.BillingPerRequestUSD,
+			row.BillingInputPerMillionUSD,
+			row.BillingOutputPerMillionUSD,
+			row.BillingCachedInputPerMillionUSD,
 			row.RequestID,
 			row.Time.UTC(),
 			row.Model,
@@ -521,19 +551,25 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		row := ensureBillingModel(models, model)
 		pricing := query.ModelPricing[model]
 		for _, request := range modelRequests {
-			usedCost := calculateConfiguredUsageCost(pricing, request)
+			effectivePricing := billingRequestPricing(pricing, request)
+			usedCost := billingRequestUsedCost(effectivePricing, request)
 			row.ModelUsedCost += usedCost
 			requestCost := BillingRequestCostRow{
-				RequestID:         request.RequestID,
-				Time:              request.Time,
-				Model:             request.Model,
-				AppID:             request.AppID,
-				WorkerID:          request.WorkerID,
-				InputTokens:       request.PromptTokens,
-				OutputTokens:      request.CompletionTokens,
-				CachedInputTokens: request.CacheTokens,
-				TotalTokens:       request.TotalTokens,
-				ModelUsedCost:     roundMoney(usedCost),
+				RequestID:                       request.RequestID,
+				Time:                            request.Time,
+				Model:                           request.Model,
+				AppID:                           request.AppID,
+				WorkerID:                        request.WorkerID,
+				InputTokens:                     request.PromptTokens,
+				OutputTokens:                    request.CompletionTokens,
+				CachedInputTokens:               request.CacheTokens,
+				TotalTokens:                     request.TotalTokens,
+				BillingPerRequestUSD:            effectivePricing.PerRequestUSD,
+				BillingInputPerMillionUSD:       effectivePricing.InputPerMillionUSD,
+				BillingOutputPerMillionUSD:      effectivePricing.OutputPerMillionUSD,
+				BillingCachedInputPerMillionUSD: effectivePricing.CachedInputPerMillionUSD,
+				ModelUsedCost:                   roundMoney(usedCost),
+				CostCalculatedAt:                request.CostCalculatedAt,
 			}
 			requestCostRows = append(requestCostRows, requestCost)
 			if strings.TrimSpace(request.AppID) != "" {
@@ -640,6 +676,25 @@ func calculateConfiguredUsageCost(pricing config.ModelBilling, request billingRe
 		return pricing.PerRequestUSD
 	}
 	return tokenCost
+}
+
+func billingRequestUsedCost(pricing config.ModelBilling, request billingRequestRecord) float64 {
+	if request.CostCalculatedAt != nil {
+		return request.ModelUsedCostUSD
+	}
+	return calculateConfiguredUsageCost(pricing, request)
+}
+
+func billingRequestPricing(fallback config.ModelBilling, request billingRequestRecord) config.ModelBilling {
+	if request.CostCalculatedAt == nil {
+		return fallback
+	}
+	return config.ModelBilling{
+		PerRequestUSD:            request.BillingPerRequestUSD,
+		InputPerMillionUSD:       request.BillingInputPerMillionUSD,
+		OutputPerMillionUSD:      request.BillingOutputPerMillionUSD,
+		CachedInputPerMillionUSD: request.BillingCachedInputPerMillionUSD,
+	}
 }
 
 func requestDurationSeconds(request billingRequestRecord) float64 {

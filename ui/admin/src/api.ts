@@ -134,6 +134,10 @@ export type RequestLogEntry = {
   upstream_url?: string;
   cost_by_token_rmb?: number;
   cost_by_request_rmb?: number;
+  billing_per_request_usd?: number;
+  billing_input_per_million_usd?: number;
+  billing_output_per_million_usd?: number;
+  billing_cached_input_per_million_usd?: number;
   model_used_cost_usd?: number;
   cost_calculated_at?: string;
 };
