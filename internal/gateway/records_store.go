@@ -282,6 +282,19 @@ func (s *PostgresRecordsStore) RecordWorkerModelSnapshot(ctx context.Context, wo
 	defer tx.Rollback()
 	for model := range ready {
 		if _, err := tx.ExecContext(runCtx, `
+UPDATE worker_model_ready_intervals
+SET ended_at = started_at + ($4 * interval '1 second'),
+    last_seen_at = started_at,
+    updated_at = now()
+WHERE worker_id = $1
+  AND model = $2
+  AND ended_at IS NULL
+  AND last_seen_at IS NULL
+  AND started_at + ($4 * interval '1 second') < $3`,
+			workerID, model, seenAt.UTC(), int(openReadyIntervalGrace.Seconds())); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(runCtx, `
 INSERT INTO worker_model_ready_intervals (
   gateway_id, worker_id, model, started_at, share_ratio, last_seen_at
 )

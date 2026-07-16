@@ -347,6 +347,75 @@ WHERE worker_id = $1 AND model = 'qwen'`, workerID).Scan(&startedAt, &endedAt, &
 	}
 }
 
+func TestPostgresRecordWorkerModelSnapshotDoesNotReviveLegacyOpenInterval(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("PG_DSN"))
+	if dsn == "" {
+		t.Skip("PG_DSN is required for postgres billing test")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresRecordsStore(ctx, dsn, "billing-test", 3*time.Second, true)
+	if err != nil {
+		t.Fatalf("connect postgres records store: %v", err)
+	}
+	defer store.Close()
+
+	testPrefix := "billing-test-" + strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
+	prefix := testPrefix + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	workerID := prefix + "-worker"
+	start := time.Date(2000, 1, 4, 0, 0, 0, 0, time.UTC).Add(time.Duration(time.Now().UnixNano()%int64(24*time.Hour)) * time.Nanosecond).Truncate(time.Millisecond)
+	seenAt := start.Add(4 * 24 * time.Hour)
+	cleanupBillingTestRows(t, store.db, testPrefix)
+	defer cleanupBillingTestRows(t, store.db, testPrefix)
+
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO worker_model_ready_intervals (gateway_id, worker_id, model, started_at, share_ratio)
+VALUES ($1, $2, $3, $4, 1)`,
+		"billing-test", workerID, "qwen", start); err != nil {
+		t.Fatalf("insert legacy open interval: %v", err)
+	}
+	if err := store.RecordWorkerModelSnapshot(ctx, workerID, []protocol.RunningModel{{Model: "qwen", State: "ready"}}, seenAt); err != nil {
+		t.Fatalf("record ready snapshot: %v", err)
+	}
+
+	rows, err := store.db.QueryContext(ctx, `
+SELECT started_at, ended_at, last_seen_at
+FROM worker_model_ready_intervals
+WHERE worker_id = $1 AND model = 'qwen'
+ORDER BY started_at`, workerID)
+	if err != nil {
+		t.Fatalf("query intervals: %v", err)
+	}
+	defer rows.Close()
+	var intervals []struct {
+		startedAt  time.Time
+		endedAt    sql.NullTime
+		lastSeenAt sql.NullTime
+	}
+	for rows.Next() {
+		var interval struct {
+			startedAt  time.Time
+			endedAt    sql.NullTime
+			lastSeenAt sql.NullTime
+		}
+		if err := rows.Scan(&interval.startedAt, &interval.endedAt, &interval.lastSeenAt); err != nil {
+			t.Fatalf("scan interval: %v", err)
+		}
+		intervals = append(intervals, interval)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate intervals: %v", err)
+	}
+	if len(intervals) != 2 {
+		t.Fatalf("intervals = %+v, want sealed legacy interval and new current interval", intervals)
+	}
+	if !intervals[0].startedAt.Equal(start) || !intervals[0].endedAt.Valid || !intervals[0].endedAt.Time.Equal(start.Add(openReadyIntervalGrace)) {
+		t.Fatalf("legacy interval = %+v, want ended at %s", intervals[0], start.Add(openReadyIntervalGrace))
+	}
+	if !intervals[1].startedAt.Equal(seenAt) || intervals[1].endedAt.Valid || !intervals[1].lastSeenAt.Valid || !intervals[1].lastSeenAt.Time.Equal(seenAt) {
+		t.Fatalf("current interval = %+v, want open at %s", intervals[1], seenAt)
+	}
+}
+
 func billingAppsByID(apps []BillingAppSummary) map[string]BillingAppSummary {
 	out := map[string]BillingAppSummary{}
 	for _, app := range apps {
