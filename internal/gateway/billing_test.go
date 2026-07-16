@@ -297,7 +297,7 @@ VALUES ($1, $2, $3, $4, 1, $5)`,
 	if len(summary.Models) != 1 {
 		t.Fatalf("models = %+v, want one qwen row", summary.Models)
 	}
-	want := lastSeen.Add(openReadyIntervalGrace).Sub(start).Seconds()
+	want := lastSeen.Sub(start).Seconds()
 	if summary.Models[0].ReadySeconds != want {
 		t.Fatalf("ready seconds = %v, want %v", summary.Models[0].ReadySeconds, want)
 	}
@@ -408,8 +408,8 @@ ORDER BY started_at`, workerID)
 	if len(intervals) != 2 {
 		t.Fatalf("intervals = %+v, want sealed legacy interval and new current interval", intervals)
 	}
-	if !intervals[0].startedAt.Equal(start) || !intervals[0].endedAt.Valid || !intervals[0].endedAt.Time.Equal(start.Add(openReadyIntervalGrace)) {
-		t.Fatalf("legacy interval = %+v, want ended at %s", intervals[0], start.Add(openReadyIntervalGrace))
+	if !intervals[0].startedAt.Equal(start) || !intervals[0].endedAt.Valid || !intervals[0].endedAt.Time.Equal(start) {
+		t.Fatalf("legacy interval = %+v, want ended at %s", intervals[0], start)
 	}
 	if !intervals[1].startedAt.Equal(seenAt) || intervals[1].endedAt.Valid || !intervals[1].lastSeenAt.Valid || !intervals[1].lastSeenAt.Time.Equal(seenAt) {
 		t.Fatalf("current interval = %+v, want open at %s", intervals[1], seenAt)

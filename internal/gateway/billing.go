@@ -11,7 +11,6 @@ import (
 )
 
 const defaultWorkerDayCostRMB = 55.0
-const openReadyIntervalGrace = 10 * time.Minute
 const capacityUtilizationTarget = 0.90
 
 var billingLocalLocation = time.FixedZone("UTC+8", 8*60*60)
@@ -339,17 +338,13 @@ func (s *PostgresRecordsStore) billingReadyIntervals(ctx context.Context, start,
 	rows, err := s.db.QueryContext(runCtx, `
 WITH intervals AS (
   SELECT worker_id, model, started_at,
-    CASE
-      WHEN ended_at IS NOT NULL THEN ended_at
-      WHEN COALESCE(last_seen_at, started_at) + ($3 * interval '1 second') >= $2 THEN $2
-      ELSE COALESCE(last_seen_at, started_at) + ($3 * interval '1 second')
-    END AS effective_end
+    LEAST(COALESCE(ended_at, last_seen_at, started_at), $2) AS effective_end
   FROM worker_model_ready_intervals
 )
 SELECT worker_id, model, GREATEST(started_at, $1), LEAST(effective_end, $2)
 FROM intervals
 WHERE started_at < $2 AND effective_end > $1
-ORDER BY worker_id, started_at`, start.UTC(), end.UTC(), int(openReadyIntervalGrace.Seconds()))
+ORDER BY worker_id, started_at`, start.UTC(), end.UTC())
 	if err != nil {
 		return nil, err
 	}
