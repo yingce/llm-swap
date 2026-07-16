@@ -37,7 +37,7 @@ func uiAuth(token string, next http.Handler) http.Handler {
 			http.SetCookie(w, &http.Cookie{
 				Name:     uiAuthCookieName,
 				Value:    token,
-				Path:     "/ui",
+				Path:     "/",
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 				Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),

@@ -506,6 +506,9 @@ func TestUIPageTokenSetsCookie(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != uiAuthCookieName || cookies[0].Value != "agent-secret" || !cookies[0].HttpOnly {
 		t.Fatalf("cookies = %+v, want auth cookie", cookies)
 	}
+	if cookies[0].Path != "/" {
+		t.Fatalf("cookie path = %q, want / so /api billing requests include UI auth", cookies[0].Path)
+	}
 }
 
 func TestUIEndpointsAcceptAuthCookie(t *testing.T) {
