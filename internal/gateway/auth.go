@@ -30,23 +30,30 @@ func uiAuth(token string, next http.Handler) http.Handler {
 			return
 		}
 		if uiTokenAuthorized(r, token) {
+			if strings.HasPrefix(r.URL.Path, "/ui") {
+				setUIAuthCookie(w, r, token)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 		if r.URL.Path == "/ui" && r.URL.Query().Get("token") == token {
-			http.SetCookie(w, &http.Cookie{
-				Name:     uiAuthCookieName,
-				Value:    token,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-				Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
-			})
+			setUIAuthCookie(w, r, token)
 			http.Redirect(w, r, "/ui", http.StatusSeeOther)
 			return
 		}
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte("unauthorized"))
+	})
+}
+
+func setUIAuthCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     uiAuthCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
 	})
 }
 

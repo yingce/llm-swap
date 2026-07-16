@@ -524,6 +524,23 @@ func TestUIEndpointsAcceptAuthCookie(t *testing.T) {
 	}
 }
 
+func TestUIAuthMigratesExistingUICookieToRootPath(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/ui/status", nil)
+	req.AddCookie(&http.Cookie{Name: uiAuthCookieName, Value: "agent-secret", Path: "/ui"})
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != uiAuthCookieName || cookies[0].Path != "/" {
+		t.Fatalf("cookies = %+v, want migrated root auth cookie", cookies)
+	}
+}
+
 func getUIEvents(t *testing.T, srv *Server, path string) uiEventsResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)

@@ -401,7 +401,7 @@ export function getSummaryMetrics(range: string): Promise<MetricsResponse> {
   return request<MetricsResponse>(`/ui/metrics/summary?range=${encodeURIComponent(range)}&step=1m`);
 }
 
-export function getBilling(rangeHours = 24, includeRequests = false): Promise<BillingSummary> {
+export async function getBilling(rangeHours = 24, includeRequests = false): Promise<BillingSummary> {
   const end = new Date();
   const start = new Date(end.getTime() - rangeHours * 60 * 60 * 1000);
   const params = new URLSearchParams({
@@ -412,7 +412,15 @@ export function getBilling(rangeHours = 24, includeRequests = false): Promise<Bi
   if (includeRequests) {
     params.set("include_requests", "1");
   }
-  return request<BillingSummary>(`/api/billing?${params.toString()}`);
+  const query = params.toString();
+  try {
+    return await request<BillingSummary>(`/api/billing?${query}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.trim().toLowerCase() === "unauthorized") {
+      return request<BillingSummary>(`/ui/api/billing?${query}`);
+    }
+    throw error;
+  }
 }
 
 export type AdminActionResponse = {
