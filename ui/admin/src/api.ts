@@ -388,7 +388,7 @@ export function getBilling(rangeHours = 24, includeRequests = false): Promise<Bi
   if (includeRequests) {
     params.set("include_requests", "1");
   }
-  return request<BillingSummary>(`/ui/api/billing?${params.toString()}`);
+  return request<BillingSummary>(`/api/billing?${params.toString()}`);
 }
 
 export type AdminActionResponse = {

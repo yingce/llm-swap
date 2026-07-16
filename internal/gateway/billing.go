@@ -81,7 +81,7 @@ type billingRequestRecord struct {
 	TotalTokens int
 }
 
-func (s *Server) handleUIBilling(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBilling(w http.ResponseWriter, r *http.Request) {
 	if s.recordsStore == nil {
 		http.Error(w, "records store is not enabled", http.StatusServiceUnavailable)
 		return

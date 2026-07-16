@@ -68,6 +68,19 @@ func TestBillingReadyCostSplitsConcurrentModelsOnSameWorker(t *testing.T) {
 
 func TestBillingEndpointRequiresRecordsStore(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
+	req := httptest.NewRequest(http.MethodGet, "/api/billing", nil)
+	req.AddCookie(&http.Cookie{Name: uiAuthCookieName, Value: "agent-secret"})
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestLegacyUIBillingEndpointStillWorks(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/ui/api/billing", nil)
 	req.AddCookie(&http.Cookie{Name: uiAuthCookieName, Value: "agent-secret"})
 	rr := httptest.NewRecorder()
