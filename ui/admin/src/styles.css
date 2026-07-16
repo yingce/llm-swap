@@ -215,6 +215,35 @@ small {
   min-width: 112px;
 }
 
+.price-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 128px;
+}
+
+.price-recommendation {
+  background: transparent;
+  border: 0;
+  color: #176b87;
+  font-size: 12px;
+  justify-self: start;
+  min-height: 0;
+  padding: 0;
+}
+
+.price-recommendation:hover {
+  background: transparent;
+  color: #0e5872;
+  text-decoration: underline;
+}
+
+.empty-recommendation,
+.empty-recommendation:hover {
+  color: #8793a0;
+  cursor: default;
+  text-decoration: none;
+}
+
 table {
   border-collapse: collapse;
   min-width: 720px;
