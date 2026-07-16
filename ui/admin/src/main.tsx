@@ -41,6 +41,8 @@ type EditableGatewayConfig = {
   tag_policies: Record<string, TagPolicyConfig>;
 };
 
+type BillingPricingMode = "per_request" | "per_token";
+
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
   { id: "models", label: "Models" },
@@ -199,6 +201,24 @@ function App() {
     });
   }
 
+  function updateModelBillingMode(modelName: string, mode: BillingPricingMode) {
+    updateDraft((draft) => {
+      const model = draft.models[modelName];
+      if (!model) {
+        return;
+      }
+      const billing: ModelBillingConfig = { ...(model.billing ?? {}) };
+      if (mode === "per_request") {
+        delete billing.input_per_million_usd;
+        delete billing.output_per_million_usd;
+        delete billing.cached_input_per_million_usd;
+      } else {
+        delete billing.per_request_usd;
+      }
+      model.billing = hasBillingValues(billing) ? billing : undefined;
+    });
+  }
+
   function resetDraft() {
     if (!configResponse) {
       return;
@@ -316,6 +336,7 @@ function App() {
               pricingMessage={configMessage}
               pricingError={configError}
               onRangeChange={(hours) => void loadBilling(hours)}
+              onModeChange={updateModelBillingMode}
               onPriceChange={updateModelBillingPrice}
               onSavePricing={() => void applyPricingDraft()}
             />
@@ -653,6 +674,7 @@ function Billing({
   pricingMessage,
   pricingError,
   onRangeChange,
+  onModeChange,
   onPriceChange,
   onSavePricing
 }: {
@@ -664,6 +686,7 @@ function Billing({
   pricingMessage: string;
   pricingError: string;
   onRangeChange: (hours: number) => void;
+  onModeChange: (modelName: string, mode: BillingPricingMode) => void;
   onPriceChange: (modelName: string, field: keyof ModelBillingConfig, value: number | undefined) => void;
   onSavePricing: () => void;
 }) {
@@ -728,6 +751,7 @@ function Billing({
               <th>Requests</th>
               <th>Cost</th>
               <th>Used cost</th>
+              <th>Mode</th>
               <th>Per request</th>
               <th>Input / 1M</th>
               <th>Output / 1M</th>
@@ -739,6 +763,7 @@ function Billing({
               const model = pricingDraft?.models[modelName];
               const billingRow = billingModelMap.get(modelName);
               const pricing = model?.billing ?? {};
+              const mode = billingPricingMode(pricing);
               const recommended = recommendedBillingPricing(billingRow);
               return (
                 <tr key={modelName}>
@@ -747,36 +772,54 @@ function Billing({
                   <td>{formatMoney(billingRow?.model_cost)}</td>
                   <td>{formatMoney(billingRow?.model_used_cost)}</td>
                   <td>
-                    <PricingCell
-                      value={pricing.per_request_usd}
-                      recommended={recommended.per_request_usd}
-                      onChange={(value) => onPriceChange(modelName, "per_request_usd", value)}
+                    <select
+                      value={mode}
                       disabled={!model}
-                    />
+                      onChange={(event) => onModeChange(modelName, event.target.value as BillingPricingMode)}
+                    >
+                      <option value="per_request">Per request</option>
+                      <option value="per_token">Per token</option>
+                    </select>
                   </td>
                   <td>
-                    <PricingCell
-                      value={pricing.input_per_million_usd}
-                      recommended={recommended.input_per_million_usd}
-                      onChange={(value) => onPriceChange(modelName, "input_per_million_usd", value)}
-                      disabled={!model}
-                    />
+                    {mode === "per_request" ? (
+                      <PricingCell
+                        value={pricing.per_request_usd}
+                        recommended={recommended.per_request_usd}
+                        onChange={(value) => onPriceChange(modelName, "per_request_usd", value)}
+                        disabled={!model}
+                      />
+                    ) : <span className="muted-cell">-</span>}
                   </td>
                   <td>
-                    <PricingCell
-                      value={pricing.output_per_million_usd}
-                      recommended={recommended.output_per_million_usd}
-                      onChange={(value) => onPriceChange(modelName, "output_per_million_usd", value)}
-                      disabled={!model}
-                    />
+                    {mode === "per_token" ? (
+                      <PricingCell
+                        value={pricing.input_per_million_usd}
+                        recommended={recommended.input_per_million_usd}
+                        onChange={(value) => onPriceChange(modelName, "input_per_million_usd", value)}
+                        disabled={!model}
+                      />
+                    ) : <span className="muted-cell">-</span>}
                   </td>
                   <td>
-                    <PricingCell
-                      value={pricing.cached_input_per_million_usd}
-                      recommended={recommended.cached_input_per_million_usd}
-                      onChange={(value) => onPriceChange(modelName, "cached_input_per_million_usd", value)}
-                      disabled={!model}
-                    />
+                    {mode === "per_token" ? (
+                      <PricingCell
+                        value={pricing.output_per_million_usd}
+                        recommended={recommended.output_per_million_usd}
+                        onChange={(value) => onPriceChange(modelName, "output_per_million_usd", value)}
+                        disabled={!model}
+                      />
+                    ) : <span className="muted-cell">-</span>}
+                  </td>
+                  <td>
+                    {mode === "per_token" ? (
+                      <PricingCell
+                        value={pricing.cached_input_per_million_usd}
+                        recommended={recommended.cached_input_per_million_usd}
+                        onChange={(value) => onPriceChange(modelName, "cached_input_per_million_usd", value)}
+                        disabled={!model}
+                      />
+                    ) : <span className="muted-cell">-</span>}
                   </td>
                 </tr>
               );
@@ -1551,22 +1594,14 @@ function recommendedBillingPricing(model: BillingSummary["models"][number] | und
   if (!model || model.model_cost <= 0) {
     return {};
   }
-  const dimensions = [
-    model.requests > 0,
-    model.input_tokens > 0,
-    model.output_tokens > 0,
-    model.cached_input_tokens > 0
-  ].filter(Boolean).length;
-  if (dimensions === 0) {
-    return {};
-  }
-  const costPerDimension = model.model_cost / dimensions;
+  const tokenDimensions = [model.input_tokens > 0, model.output_tokens > 0, model.cached_input_tokens > 0].filter(Boolean).length;
+  const tokenCostPerDimension = tokenDimensions > 0 ? model.model_cost / tokenDimensions : 0;
   return {
-    per_request_usd: model.requests > 0 ? roundPricingValue(costPerDimension / model.requests) : undefined,
-    input_per_million_usd: model.input_tokens > 0 ? roundPricingValue(costPerDimension / model.input_tokens * 1_000_000) : undefined,
-    output_per_million_usd: model.output_tokens > 0 ? roundPricingValue(costPerDimension / model.output_tokens * 1_000_000) : undefined,
+    per_request_usd: model.requests > 0 ? roundPricingValue(model.model_cost / model.requests) : undefined,
+    input_per_million_usd: model.input_tokens > 0 ? roundPricingValue(tokenCostPerDimension / model.input_tokens * 1_000_000) : undefined,
+    output_per_million_usd: model.output_tokens > 0 ? roundPricingValue(tokenCostPerDimension / model.output_tokens * 1_000_000) : undefined,
     cached_input_per_million_usd: model.cached_input_tokens > 0
-      ? roundPricingValue(costPerDimension / model.cached_input_tokens * 1_000_000)
+      ? roundPricingValue(tokenCostPerDimension / model.cached_input_tokens * 1_000_000)
       : undefined
   };
 }
@@ -1592,6 +1627,17 @@ function parseOptionalPrice(raw: string) {
 
 function hasBillingValues(billing: ModelBillingConfig) {
   return Object.values(billing).some((value) => typeof value === "number" && Number.isFinite(value));
+}
+
+function billingPricingMode(billing: ModelBillingConfig): BillingPricingMode {
+  if (
+    billing.input_per_million_usd !== undefined ||
+    billing.output_per_million_usd !== undefined ||
+    billing.cached_input_per_million_usd !== undefined
+  ) {
+    return "per_token";
+  }
+  return "per_request";
 }
 
 function formatRate(value: number | undefined) {

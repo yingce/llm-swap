@@ -215,6 +215,10 @@ small {
   min-width: 112px;
 }
 
+.muted-cell {
+  color: #8793a0;
+}
+
 .price-cell {
   display: grid;
   gap: 6px;
