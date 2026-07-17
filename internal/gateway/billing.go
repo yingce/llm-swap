@@ -15,6 +15,7 @@ import (
 
 const defaultWorkerDayCostRMB = 55.0
 const fallbackCNYToUSDRate = 0.14
+const unattributedBillingAppID = "_unattributed"
 
 var billingLocalLocation = time.FixedZone("UTC+8", 8*60*60)
 
@@ -561,6 +562,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		pricing := query.ModelPricing[model]
 		for _, request := range modelRequests {
 			durationSeconds := requestDurationSeconds(request)
+			appID := billingAppID(request.AppID)
 			modelUsage := ensureBillingAppModelUsage(modelUsageByModel, model)
 			modelUsage.Requests++
 			modelUsage.DurationSeconds += durationSeconds
@@ -571,7 +573,7 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 				RequestID:                       request.RequestID,
 				Time:                            request.Time,
 				Model:                           request.Model,
-				AppID:                           request.AppID,
+				AppID:                           appID,
 				WorkerID:                        request.WorkerID,
 				InputTokens:                     request.PromptTokens,
 				OutputTokens:                    request.CompletionTokens,
@@ -585,19 +587,17 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 				CostCalculatedAt:                request.CostCalculatedAt,
 			}
 			requestCostRows = append(requestCostRows, requestCost)
-			if strings.TrimSpace(request.AppID) != "" {
-				app := ensureBillingApp(apps, request.AppID)
-				appUsage := ensureBillingAppUsage(appUsageByModel, request.Model, request.AppID)
-				appUsage.Requests++
-				appUsage.DurationSeconds += durationSeconds
-				app.Requests++
-				app.RequestDurationSeconds += durationSeconds
-				app.InputTokens += int64(request.PromptTokens)
-				app.OutputTokens += int64(request.CompletionTokens)
-				app.CachedInputTokens += int64(request.CacheTokens)
-				app.TotalTokens += int64(request.TotalTokens)
-				app.ModelUsedCost += usedCost
-			}
+			app := ensureBillingApp(apps, appID)
+			appUsage := ensureBillingAppUsage(appUsageByModel, request.Model, appID)
+			appUsage.Requests++
+			appUsage.DurationSeconds += durationSeconds
+			app.Requests++
+			app.RequestDurationSeconds += durationSeconds
+			app.InputTokens += int64(request.PromptTokens)
+			app.OutputTokens += int64(request.CompletionTokens)
+			app.CachedInputTokens += int64(request.CacheTokens)
+			app.TotalTokens += int64(request.TotalTokens)
+			app.ModelUsedCost += usedCost
 		}
 	}
 	allocateAppIdleCosts(models, apps, appUsageByModel, modelUsageByModel)
@@ -714,6 +714,14 @@ func billingRequestPricing(fallback config.ModelBilling, request billingRequestR
 		OutputPerMillionUSD:      request.BillingOutputPerMillionUSD,
 		CachedInputPerMillionUSD: request.BillingCachedInputPerMillionUSD,
 	}
+}
+
+func billingAppID(appID string) string {
+	trimmed := strings.TrimSpace(appID)
+	if trimmed == "" {
+		return unattributedBillingAppID
+	}
+	return trimmed
 }
 
 func requestDurationSeconds(request billingRequestRecord) float64 {
