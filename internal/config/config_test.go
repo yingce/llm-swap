@@ -89,6 +89,44 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayRejectsReservedModelDirectory(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: .locks\n", 1)
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("error = %v, want reserved model_dir error", err)
+	}
+}
+
+func TestLoadGatewayRejectsArtifactSourceCacheCollision(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: model.gguf\n", 1)
+	raw = strings.Replace(raw, "object: qwen.tar.gz", "object: releases/model.gguf", 1)
+	raw = strings.Replace(raw, "kind: tar_gz", "kind: file", 1)
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "artifact source") {
+		t.Fatalf("error = %v, want artifact source cache collision", err)
+	}
+}
+
+func TestLoadGatewayRejectsShellUnsafeModelDirectoryForRawRun(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: \"joyfox model;touch-pwned\"\n", 1)
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "safe relative directory name") {
+		t.Fatalf("error = %v, want shell-safe model_dir validation", err)
+	}
+}
+
 func TestResolvedModelDirUsesConfiguredDirectoryOrModelName(t *testing.T) {
 	if got := ResolvedModelDir("qwen", Model{}); got != "qwen" {
 		t.Fatalf("ResolvedModelDir without override = %q, want qwen", got)

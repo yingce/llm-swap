@@ -260,7 +260,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 
 		modelDirName := config.ResolvedModelDir(modelName, model)
 		key := artifactKey(modelName, modelDirName, model.Artifact.Object, model.Artifact.Kind, model.Artifact.CRC64ECMA)
-		if state, ok := installs[modelName]; ok && state.running {
+		if state, ok := installs[modelName]; ok && state.running && state.key == key {
 			status[modelName] = "installing"
 			installing = true
 			continue

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 )
@@ -24,8 +25,16 @@ func validateModelIdentities(cfg GatewayConfig) error {
 	for _, name := range names {
 		model := cfg.Models[name]
 		dir := ResolvedModelDir(name, model)
-		if model.ModelDir != "" && (dir == "" || dir == "." || dir == ".." || dir != model.ModelDir || strings.ContainsAny(dir, "/\\:")) {
-			return fmt.Errorf("model %s model_dir must be a safe relative directory name", name)
+		if model.ModelDir != "" {
+			if dir != model.ModelDir || !isSafeModelDirName(dir) {
+				return fmt.Errorf("model %s model_dir must be a safe relative directory name", name)
+			}
+			if dir == ".locks" {
+				return fmt.Errorf("model %s model_dir .locks is reserved", name)
+			}
+			if dir == path.Base(strings.TrimSpace(model.Artifact.Object)) {
+				return fmt.Errorf("model %s model_dir %s collides with artifact source cache basename", name, dir)
+			}
 		}
 		if previous, exists := dirs[dir]; exists {
 			return fmt.Errorf("models %s and %s resolve to duplicate model_dir %s", previous, name, dir)
@@ -52,4 +61,21 @@ func validateModelIdentities(cfg GatewayConfig) error {
 		}
 	}
 	return nil
+}
+
+func isSafeModelDirName(dir string) bool {
+	if dir == "" || dir == "." || dir == ".." {
+		return false
+	}
+	for i := 0; i < len(dir); i++ {
+		char := dir[i]
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '.' || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }

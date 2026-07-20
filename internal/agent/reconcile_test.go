@@ -1079,6 +1079,79 @@ func TestAsyncInstallKeyIncludesModelDirectory(t *testing.T) {
 	}
 }
 
+func TestAsyncInstallForOldDirectoryDoesNotWithholdReadyNewDirectory(t *testing.T) {
+	const (
+		modelName = "joyfox-model-v2"
+		oldDir    = "joyfox-model-20260719"
+		newDir    = "joyfox-model-20260720"
+	)
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: "123456789",
+	}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, newDir), modelName, artifact); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+	rec := Reconciler{ModelRoot: modelRoot}
+	cfg := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			modelName: {ModelDir: newDir, Artifact: artifact, Run: "serve {{model_path}}"},
+		},
+		TagPolicy: protocol.AgentTagPolicy{AllowedModels: []string{modelName}},
+	}
+	installs := map[string]*artifactInstallState{
+		modelName: {
+			key:     artifactKey(modelName, oldDir, artifact.Object, artifact.Kind, artifact.CRC64ECMA),
+			running: true,
+		},
+	}
+
+	status, _, err := rec.installAllowedArtifactsAsync(context.Background(), cfg, installs, make(chan artifactInstallResult, 1))
+	if err != nil {
+		t.Fatalf("installAllowedArtifactsAsync() error = %v", err)
+	}
+	if got := status[modelName]; got != "ready" {
+		t.Fatalf("artifact status = %q, want ready from new directory marker", got)
+	}
+}
+
+func TestAsyncInstallForOldDirectoryKeepsMissingNewDirectoryPending(t *testing.T) {
+	const (
+		modelName = "joyfox-model-v2"
+		oldDir    = "joyfox-model-20260719"
+		newDir    = "joyfox-model-20260720"
+	)
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: "123456789",
+	}
+	rec := Reconciler{ModelRoot: t.TempDir()}
+	cfg := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			modelName: {ModelDir: newDir, Artifact: artifact, Run: "serve {{model_path}}"},
+		},
+		TagPolicy: protocol.AgentTagPolicy{AllowedModels: []string{modelName}},
+	}
+	staleKey := artifactKey(modelName, oldDir, artifact.Object, artifact.Kind, artifact.CRC64ECMA)
+	installs := map[string]*artifactInstallState{
+		modelName: {key: staleKey, running: true},
+	}
+
+	status, _, err := rec.installAllowedArtifactsAsync(context.Background(), cfg, installs, make(chan artifactInstallResult, 1))
+	if err != nil {
+		t.Fatalf("installAllowedArtifactsAsync() error = %v", err)
+	}
+	if got := status[modelName]; got != "pending" {
+		t.Fatalf("artifact status = %q, want pending behind old directory install", got)
+	}
+	if state := installs[modelName]; !state.running || state.key != staleKey {
+		t.Fatalf("stale running install state = %+v, want unchanged blocker", state)
+	}
+}
+
 func TestRunHeartbeatsWhileArtifactInstallBlocked(t *testing.T) {
 	crc := crc64String([]byte("model payload"))
 	getStarted := make(chan struct{})
@@ -1345,8 +1418,8 @@ func TestRunDoesNotStartNewArtifactInstallWhileSameModelRunning(t *testing.T) {
 
 	select {
 	case hb := <-postBHeartbeat:
-		if got := hb.Artifacts["qwen"]; got != "installing" {
-			t.Fatalf("post-change artifact status = %q, want installing", got)
+		if got := hb.Artifacts["qwen"]; got != "pending" {
+			t.Fatalf("post-change artifact status = %q, want pending behind old artifact install", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("heartbeat after artifact B config was not observed")
