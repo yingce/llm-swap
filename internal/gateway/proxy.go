@@ -33,16 +33,23 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model := ExtractModel(body)
-	if model == "" {
+	requestedModel := ExtractModel(body)
+	if requestedModel == "" {
 		protocol.WriteOpenAIError(w, http.StatusBadRequest, "missing_model", "request body must include a non-empty model")
 		return
 	}
-	if _, ok := cfg.Models[model]; !ok {
+	model, modelCfg, ok := resolveRequestedModel(cfg, requestedModel)
+	if !ok {
 		protocol.WriteOpenAIError(w, http.StatusNotFound, "model_not_available", "model is not available")
 		return
 	}
-	modelCfg := cfg.Models[model]
+	if requestedModel != model {
+		body, err = rewriteRequestModel(body, model)
+		if err != nil {
+			protocol.WriteOpenAIError(w, http.StatusBadRequest, "invalid_request", "failed to rewrite request model")
+			return
+		}
+	}
 	body = normalizeProxyRequestBody(body, modelCfg)
 	baseLogEntry := requestLogEntryFromBody(requestID, model, body)
 	baseLogEntry.RequestHeaders = requestXHeadersForLog(r.Header)
@@ -108,7 +115,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			tagLimitRelease()
 			continue
 		}
-		s.logEvent("scheduler_decision", map[string]any{
+		s.logEvent("scheduler_decision", withRequestedModel(map[string]any{
 			"request_id":        requestID,
 			"model":             model,
 			"worker_id":         worker.ID,
@@ -119,7 +126,7 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			"max_loaded":        decision.MaxLoaded,
 			"max_loaded_auto":   decision.MaxLoadedAuto,
 			"candidates":        decision.Candidates,
-		})
+		}, requestedModel, model))
 		accountingRelease := s.accounting.Acquire(requestID, model, tag, worker.ID)
 		metricsRelease := s.metrics.AcquireActiveRequest(worker.ID, model)
 		release := releaseOnce(workerRelease, accountingRelease, metricsRelease, workerLimitRelease, tagLimitRelease)
@@ -137,14 +144,14 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			if dispatchFailure != nil {
 				s.metrics.ObserveDispatchFailure(model, worker.ID, dispatchFailure.code)
 				s.metrics.ObserveProxyRetry(model, worker.ID, dispatchFailure.code)
-				s.logEvent("proxy_retry", map[string]any{
+				s.logEvent("proxy_retry", withRequestedModel(map[string]any{
 					"request_id":  requestID,
 					"model":       model,
 					"worker_id":   worker.ID,
 					"reason":      dispatchFailure.code,
 					"status_code": statusCode,
 					"attempt":     dispatchAttempts,
-				})
+				}, requestedModel, model))
 				s.markReplicaCooldown(requestID, model, worker, dispatchFailure, statusCode, dispatchAttempts)
 			}
 			continue
@@ -165,14 +172,14 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		s.recordRequestStats(entry)
 		s.metrics.ObserveRequest(model, worker.ID, statusCode, time.Since(start))
-		s.logEvent("request", map[string]any{
+		s.logEvent("request", withRequestedModel(map[string]any{
 			"request_id":  requestID,
 			"model":       model,
 			"worker_id":   worker.ID,
 			"tag":         tag,
 			"status_code": statusCode,
 			"latency_ms":  time.Since(start).Milliseconds(),
-		})
+		}, requestedModel, model))
 		return
 	}
 
@@ -181,11 +188,11 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if lastDispatchFailure != nil {
 		s.metrics.ObserveDispatchFailure(model, "", lastDispatchFailure.code)
-		s.logEvent("proxy_retry_exhausted", map[string]any{
+		s.logEvent("proxy_retry_exhausted", withRequestedModel(map[string]any{
 			"request_id": requestID,
 			"model":      model,
 			"reason":     lastDispatchFailure.code,
-		})
+		}, requestedModel, model))
 		lastDispatchFailure.write(w)
 		return
 	}

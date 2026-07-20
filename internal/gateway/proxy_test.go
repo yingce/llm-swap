@@ -147,6 +147,92 @@ func TestProxyDisabledModelReturnsOpenAIError(t *testing.T) {
 	assertOpenAIErrorCode(t, rr.Body.Bytes(), "model_not_available")
 }
 
+func TestProxyAliasRoutesAndAccountsByConcreteModel(t *testing.T) {
+	var gotModel string
+	var gotGatewayModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			writeJSON(w, map[string]any{})
+			return
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		gotModel = payload.Model
+		gotGatewayModel = r.Header.Get("X-Gateway-Model")
+		writeJSON(w, map[string]any{
+			"choices": []map[string]any{{"finish_reason": "stop"}},
+			"usage":   map[string]any{"total_tokens": 9},
+		})
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(aliasProxyConfig())
+	store := &fakeRecordsStore{}
+	srv.recordsStore = store
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	registerProxyWorkerModel(t, srv, "worker-a", upstream.URL, "qwen-v2", true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen-latest","messages":[]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if gotModel != "qwen-v2" {
+		t.Fatalf("upstream model = %q, want qwen-v2", gotModel)
+	}
+	if gotGatewayModel != "qwen-v2" {
+		t.Fatalf("X-Gateway-Model = %q, want qwen-v2", gotGatewayModel)
+	}
+	if len(store.requests) != 1 || store.requests[0].Model != "qwen-v2" {
+		t.Fatalf("request records = %+v, want one qwen-v2 record", store.requests)
+	}
+	if got := srv.access.ModelTotalTokens("qwen-v2"); got != 9 {
+		t.Fatalf("qwen-v2 total tokens = %d, want 9", got)
+	}
+	if got := srv.access.ModelTotalTokens("qwen-latest"); got != 0 {
+		t.Fatalf("qwen-latest total tokens = %d, want 0", got)
+	}
+	metricsBody := scrapeMetrics(t, srv)
+	assertMetricLine(t, metricsBody, `llm_swap_gateway_requests_total{model="qwen-v2",status_code="200",worker_id="worker-a"} 1`)
+	if strings.Contains(metricsBody, `model="qwen-latest"`) {
+		t.Fatalf("metrics contain alias label qwen-latest:\n%s", metricsBody)
+	}
+	logText := logs.String()
+	for _, want := range []string{`"model":"qwen-v2"`, `"requested_model":"qwen-latest"`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %s:\n%s", want, logText)
+		}
+	}
+}
+
+func TestProxyAliasDirectConcreteRequestOmitsRequestedModelLogField(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(aliasProxyConfig())
+	var logs bytes.Buffer
+	srv.logger = log.New(&logs, "", 0)
+	registerProxyWorkerModel(t, srv, "worker-a", upstream.URL, "qwen-v2", true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen-v2","messages":[]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if strings.Contains(logs.String(), `"requested_model"`) {
+		t.Fatalf("direct request logs contain requested_model:\n%s", logs.String())
+	}
+}
+
 func TestProxyGeneratesRequestIDForwardsGatewayHeadersAndLogs(t *testing.T) {
 	var gotRequestID string
 	var gotGatewayModel string
@@ -1421,6 +1507,21 @@ func testProxyConfig() config.GatewayConfig {
 	return cfg
 }
 
+func aliasProxyConfig() config.GatewayConfig {
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	delete(cfg.Models, "qwen")
+	delete(cfg.Models, "other")
+	cfg.Models["qwen-v2"] = model
+	cfg.ModelAliases = map[string]string{"qwen-latest": "qwen-v2"}
+	policy := cfg.TagPolicies["gpu-4090"]
+	policy.AllowedModels = []string{"qwen-v2"}
+	policy.WarmWhenIdle = "qwen-v2"
+	cfg.TagPolicies["gpu-4090"] = policy
+	delete(cfg.TagPolicies, "gpu-a100")
+	return cfg
+}
+
 func proxyRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer client-secret")
@@ -1430,15 +1531,19 @@ func proxyRequest(body string) *http.Request {
 }
 
 func registerProxyWorker(t *testing.T, srv *Server, id, baseURL string, running bool) {
+	registerProxyWorkerModel(t, srv, id, baseURL, "qwen", running)
+}
+
+func registerProxyWorkerModel(t *testing.T, srv *Server, id, baseURL, model string, running bool) {
 	t.Helper()
 	hb := protocol.HeartbeatRequest{
 		AgentID:      id,
 		Tags:         []string{"gpu-4090"},
 		LlamaSwapURL: baseURL,
-		Artifacts:    map[string]string{"qwen": "ready"},
+		Artifacts:    map[string]string{model: "ready"},
 	}
 	if running {
-		hb.RunningModels = []protocol.RunningModel{{Model: "qwen", State: "ready"}}
+		hb.RunningModels = []protocol.RunningModel{{Model: model, State: "ready"}}
 	}
 	resp := srv.workers.UpsertHeartbeat(hb, time.Now())
 	if resp.WorkerState != string(WorkerActive) {

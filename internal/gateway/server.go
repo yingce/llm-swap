@@ -314,7 +314,7 @@ type modelEntry struct {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	cfg := activeGatewayConfig(s.currentConfig())
-	models := make([]modelEntry, 0, len(cfg.Models))
+	models := make([]modelEntry, 0, len(cfg.Models)+len(cfg.ModelAliases))
 	scheduler := Scheduler{Config: cfg, Workers: s.workers}
 	for name := range cfg.Models {
 		if _, err := scheduler.Pick(name, now, nil); err != nil {
@@ -322,6 +322,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		models = append(models, modelEntry{
 			ID:      name,
+			Object:  "model",
+			OwnedBy: "self_host",
+		})
+	}
+	for alias, target := range cfg.ModelAliases {
+		if _, err := scheduler.Pick(target, now, nil); err != nil {
+			continue
+		}
+		models = append(models, modelEntry{
+			ID:      alias,
 			Object:  "model",
 			OwnedBy: "self_host",
 		})

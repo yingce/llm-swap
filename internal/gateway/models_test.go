@@ -88,6 +88,48 @@ func TestModelsEndpointOmitsDisabledModels(t *testing.T) {
 	}
 }
 
+func TestModelsEndpointListsAvailableAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ready      bool
+		wantModels []string
+	}{
+		{name: "ready target", ready: true, wantModels: []string{"qwen-latest", "qwen-v2"}},
+		{name: "unavailable target", ready: false, wantModels: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(aliasProxyConfig())
+			registerProxyWorkerModel(t, srv, "worker-a", "http://worker", "qwen-v2", tc.ready)
+
+			req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			req.Header.Set("Authorization", "Bearer client-secret")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			var resp modelsResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			gotModels := make([]string, 0, len(resp.Data))
+			for _, model := range resp.Data {
+				gotModels = append(gotModels, model.ID)
+			}
+			if len(gotModels) != len(tc.wantModels) {
+				t.Fatalf("models = %v, want %v", gotModels, tc.wantModels)
+			}
+			for i := range gotModels {
+				if gotModels[i] != tc.wantModels[i] {
+					t.Fatalf("models = %v, want %v", gotModels, tc.wantModels)
+				}
+			}
+		})
+	}
+}
+
 func TestModelsEndpointRequiresClientToken(t *testing.T) {
 	srv := NewServer(testProxyConfig())
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
