@@ -27,6 +27,7 @@ import {
   WorkerStatus,
   dryRunConfig
 } from "./api";
+import { removeAlias, setAliasTarget, validateAliasDraft } from "./modelAliases";
 import "./styles.css";
 
 type Tab = "dashboard" | "models" | "workers" | "billing" | "events" | "requests" | "configOps" | "advanced";
@@ -38,6 +39,7 @@ type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
+  model_aliases: Record<string, string>;
   tag_policies: Record<string, TagPolicyConfig>;
 };
 
@@ -184,6 +186,12 @@ function App() {
   function replaceTagPolicy(tagName: string, nextPolicy: TagPolicyConfig) {
     updateDraft((draft) => {
       draft.tag_policies[tagName] = normalizeTagPolicy(nextPolicy);
+    });
+  }
+
+  function replaceModelAliases(nextAliases: Record<string, string>) {
+    updateDraft((draft) => {
+      draft.model_aliases = { ...nextAliases };
     });
   }
 
@@ -345,6 +353,7 @@ function App() {
               onDryRun={() => void dryRunDraft()}
               onApply={() => void applyDraft()}
               onModelChange={replaceModel}
+              onAliasesChange={replaceModelAliases}
               onTagChange={replaceTagPolicy}
             />
           )}
@@ -1061,6 +1070,7 @@ function ConfigOps({
   onDryRun,
   onApply,
   onModelChange,
+  onAliasesChange,
   onTagChange
 }: {
   status: StatusResponse | null;
@@ -1076,6 +1086,7 @@ function ConfigOps({
   onDryRun: () => void;
   onApply: () => void;
   onModelChange: (modelName: string, nextModel: EditableModelConfig) => void;
+  onAliasesChange: (nextAliases: Record<string, string>) => void;
   onTagChange: (tagName: string, nextPolicy: TagPolicyConfig) => void;
 }) {
   const modelNames = useMemo(() => sortedKeys(draft?.models), [draft]);
@@ -1172,6 +1183,13 @@ function ConfigOps({
               onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
             />
           ) : null}
+
+          <ModelAliasesEditor
+            aliases={draft.model_aliases}
+            modelNames={modelNames}
+            modelStatuses={status?.models ?? []}
+            onChange={onAliasesChange}
+          />
         </div>
 
         <div className="config-stack">
@@ -1319,6 +1337,15 @@ function ModelEditor({
           />
           <span>Disabled</span>
         </label>
+        <label className="field-span">
+          <span>Model directory</span>
+          <input
+            value={model.model_dir ?? ""}
+            placeholder={name}
+            onChange={(event) => onChange({ ...model, model_dir: event.target.value })}
+          />
+          <small>Empty uses the concrete model name: {name}.</small>
+        </label>
         <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
         <NumberField label="Min loaded" value={model.min_loaded} onChange={(value) => onChange({ ...model, min_loaded: value })} />
         <NumberField label="Max concurrency" value={model.max_concurrency} onChange={(value) => onChange({ ...model, max_concurrency: value })} />
@@ -1397,6 +1424,106 @@ function ModelEditor({
             }}
           />
         </label>
+      </div>
+    </div>
+  );
+}
+
+function ModelAliasesEditor({
+  aliases,
+  modelNames,
+  modelStatuses,
+  onChange
+}: {
+  aliases: Record<string, string>;
+  modelNames: string[];
+  modelStatuses: ModelStatus[];
+  onChange: (nextAliases: Record<string, string>) => void;
+}) {
+  const [aliasName, setAliasName] = useState("");
+  const [target, setTarget] = useState(modelNames[0] ?? "");
+  const [validationMessage, setValidationMessage] = useState("");
+  const statusByModel = new Map(modelStatuses.map((model) => [model.name, model]));
+
+  useEffect(() => {
+    if (!modelNames.includes(target)) {
+      setTarget(modelNames[0] ?? "");
+    }
+  }, [modelNames, target]);
+
+  function addAlias() {
+    const nextValidationMessage = validateAliasDraft(aliasName, target, modelNames, aliases);
+    setValidationMessage(nextValidationMessage);
+    if (nextValidationMessage) {
+      return;
+    }
+    onChange(setAliasTarget(aliases, aliasName, target));
+    setAliasName("");
+  }
+
+  return (
+    <div className="config-card">
+      <div className="config-card-head">
+        <div>
+          <h3>Model aliases</h3>
+          <p>Route a stable public name to a concrete model.</p>
+        </div>
+      </div>
+
+      <div className="alias-list">
+        {sortedKeys(aliases).map((alias) => {
+          const aliasTarget = aliases[alias];
+          const targetStatus = statusByModel.get(aliasTarget);
+          const readyWorkers = targetStatus?.ready_workers ?? 0;
+          const runningWorkers = targetStatus?.running_workers ?? 0;
+          return (
+            <div className="alias-row" key={alias}>
+              <strong>{alias}</strong>
+              <select value={aliasTarget} onChange={(event) => onChange(setAliasTarget(aliases, alias, event.target.value))}>
+                {modelNames.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}
+              </select>
+              <div className="alias-status">
+                <Badge tone={readyWorkers > 0 ? "good" : "warn"}>{readyWorkers > 0 ? "ready" : "zero ready"}</Badge>
+                <span>{readyWorkers} ready / {runningWorkers} running</span>
+              </div>
+              <button type="button" onClick={() => onChange(removeAlias(aliases, alias))}>Remove</button>
+            </div>
+          );
+        })}
+        {Object.keys(aliases).length === 0 ? <div className="empty">No model aliases configured.</div> : null}
+      </div>
+
+      <div className="alias-add">
+        <label>
+          <span>Alias name</span>
+          <input
+            value={aliasName}
+            placeholder="latest"
+            onChange={(event) => {
+              setAliasName(event.target.value);
+              if (validationMessage) {
+                setValidationMessage(validateAliasDraft(event.target.value, target, modelNames, aliases));
+              }
+            }}
+          />
+        </label>
+        <label>
+          <span>Concrete target</span>
+          <select
+            value={target}
+            disabled={modelNames.length === 0}
+            onChange={(event) => {
+              setTarget(event.target.value);
+              if (validationMessage) {
+                setValidationMessage(validateAliasDraft(aliasName, event.target.value, modelNames, aliases));
+              }
+            }}
+          >
+            {modelNames.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}
+          </select>
+        </label>
+        <button type="button" className="primary" onClick={addAlias}>Add alias</button>
+        {validationMessage ? <span className="alias-validation">{validationMessage}</span> : null}
       </div>
     </div>
   );
@@ -1857,6 +1984,7 @@ function cloneEditableConfig(config: EditableGatewayConfig): EditableGatewayConf
         }
       ])
     ),
+    model_aliases: { ...config.model_aliases },
     tag_policies: Object.fromEntries(
       Object.entries(config.tag_policies).map(([name, policy]) => [
         name,
@@ -1890,6 +2018,7 @@ function toEditableConfig(configResponse: ConfigResponse): EditableGatewayConfig
   );
   return {
     models: editableModels,
+    model_aliases: { ...(configResponse.config.model_aliases ?? {}) },
     tag_policies: editableTagPolicies
   };
 }
@@ -1913,6 +2042,7 @@ function toGatewayConfigView(draft: EditableGatewayConfig): GatewayConfigView {
           max_queue: model.max_queue,
           queue_timeout_ms: model.queue_timeout_ms,
           ttl: model.ttl,
+          model_dir: model.model_dir?.trim() || undefined,
           artifact: { ...model.artifact },
           run: model.run,
           runtime: model.runtime,
@@ -1923,6 +2053,9 @@ function toGatewayConfigView(draft: EditableGatewayConfig): GatewayConfigView {
         };
         return [name, nextModel];
       })
+    ),
+    model_aliases: Object.fromEntries(
+      Object.entries(draft.model_aliases).sort(([a], [b]) => a.localeCompare(b))
     ),
     tag_policies: Object.fromEntries(
       Object.entries(draft.tag_policies).map(([name, policy]) => [
@@ -1941,6 +2074,14 @@ function renderDraftYAML(baseYaml: string, draft: EditableGatewayConfig) {
   const document = YAML.parseDocument(baseYaml);
   const rendered = toGatewayConfigView(draft);
   document.set("models", createYamlModelsMap(rendered.models, draft.models));
+  const sortedAliases = Object.fromEntries(
+    Object.entries(rendered.model_aliases).sort(([a], [b]) => a.localeCompare(b))
+  );
+  if (Object.keys(sortedAliases).length > 0) {
+    document.set("model_aliases", sortedAliases);
+  } else {
+    document.delete("model_aliases");
+  }
   document.set("tag_policies", rendered.tag_policies);
   return String(document);
 }
@@ -1958,9 +2099,13 @@ function createYamlModelsMap(
         max_concurrency: model.max_concurrency,
         max_queue: model.max_queue,
         queue_timeout_ms: model.queue_timeout_ms,
-        ttl: model.ttl,
-        artifact: { ...model.artifact }
+        ttl: model.ttl
       };
+      const modelDir = model.model_dir?.trim();
+      if (modelDir) {
+        nextModel.model_dir = modelDir;
+      }
+      nextModel.artifact = { ...model.artifact };
       if (model.disabled) {
         nextModel.disabled = true;
       }

@@ -188,6 +188,7 @@ export type ArtifactConfig = {
 
 export type ModelConfig = {
   disabled?: boolean;
+  model_dir?: string;
   priority: number;
   min_loaded: number;
   max_loaded: number;
@@ -226,6 +227,7 @@ export type TagPolicyConfig = {
 
 export type GatewayConfigView = {
   models: Record<string, ModelConfig>;
+  model_aliases: Record<string, string>;
   tag_policies: Record<string, TagPolicyConfig>;
 };
 
