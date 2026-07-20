@@ -28,7 +28,7 @@ import {
   dryRunConfig
 } from "./api";
 import { removeAlias, setAliasTarget, validateAliasDraft } from "./modelAliases";
-import { pathForTab, tabFromPath, type Tab } from "./routes";
+import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./routes";
 import "./styles.css";
 
 type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
@@ -163,7 +163,9 @@ function App() {
   }, []);
 
   function selectTab(next: Tab) {
-    window.history.pushState(null, "", pathForTab(next));
+    if (shouldPushTabPath(window.location.pathname, next)) {
+      window.history.pushState(null, "", pathForTab(next));
+    }
     setTab(next);
   }
 
@@ -1139,7 +1141,7 @@ function ConfigOps({
       <div className="config-toolbar">
         <div>
           <h2>Config Ops</h2>
-          <p className="toolbar-sub">Version {configResponse.version} · model + tag changes only</p>
+          <p className="toolbar-sub">Version {configResponse.version} · model directories, aliases + tag policies</p>
         </div>
         <div className="config-toolbar-actions">
           <Badge tone={dirty ? "warn" : "good"}>{dirty ? "draft changed" : "in sync"}</Badge>
@@ -1154,7 +1156,7 @@ function ConfigOps({
 
       <div className="config-grid">
         <div className="config-stack">
-          <ConfigListCard title="Models" subtitle="Select a model to edit push and replica policy.">
+          <ConfigListCard title="Models" subtitle="Select a model to edit its directory, artifact, runtime, push, and replica policy.">
             <label className="checkbox-item compact-checkbox">
               <input
                 type="checkbox"

@@ -78,6 +78,53 @@ func TestUIConfigDryRunReportsAliasHotApply(t *testing.T) {
 	}
 }
 
+func TestUIConfigDryRunReportsAliasAddedAndRemovedAsHotApply(t *testing.T) {
+	baseRaw := testGatewayYAMLWithModels("v1", "v2")
+	withAlias := strings.Replace(baseRaw, "tag_policies:\n", "model_aliases:\n  latest: v1\ntag_policies:\n", 1)
+	tests := []struct {
+		name    string
+		current string
+		next    string
+		kind    string
+	}{
+		{name: "added", current: baseRaw, next: withAlias, kind: "added"},
+		{name: "removed", current: withAlias, next: baseRaw, kind: "removed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := config.LoadGateway(strings.NewReader(tt.current))
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := NewServer(cfg)
+			req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(tt.next))
+			req.Header.Set("Authorization", "Bearer agent-secret")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			var resp uiConfigDryRunResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			change, ok := findConfigChange(resp.Changes, "model_aliases.latest", tt.kind)
+			if !ok {
+				t.Fatalf("changes = %+v, want %s latest alias", resp.Changes, tt.kind)
+			}
+			if change.RequiresGatewayRestart || change.RequiresWorkerRestart {
+				t.Fatalf("change = %+v, want alias hot apply without restart", change)
+			}
+			if resp.ApplyMode != "hot_apply" || resp.RequiresGatewayRestart {
+				t.Fatalf("response = %+v, want hot_apply without gateway restart", resp)
+			}
+		})
+	}
+}
+
 func TestUIConfigApplyUpdatesAgentConfigAndPersistsYAML(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	srv := NewServerWithGatewayConfigPath(testUIGatewayConfig(), configPath)

@@ -15,6 +15,10 @@ export function pathForTab(tab: Tab) {
   return paths[tab];
 }
 
+export function shouldPushTabPath(currentPath: string, tab: Tab) {
+  return currentPath !== pathForTab(tab);
+}
+
 export function tabFromPath(pathname: string): Tab {
   return (Object.entries(paths).find(([, path]) => path === pathname)?.[0] as Tab | undefined) ?? "dashboard";
 }

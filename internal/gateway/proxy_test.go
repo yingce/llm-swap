@@ -150,6 +150,7 @@ func TestProxyDisabledModelReturnsOpenAIError(t *testing.T) {
 func TestProxyAliasRoutesAndAccountsByConcreteModel(t *testing.T) {
 	var gotModel string
 	var gotGatewayModel string
+	upstreamErr := make(chan error, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			writeJSON(w, map[string]any{})
@@ -159,10 +160,13 @@ func TestProxyAliasRoutesAndAccountsByConcreteModel(t *testing.T) {
 			Model string `json:"model"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode upstream request: %v", err)
+			upstreamErr <- err
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
 		}
 		gotModel = payload.Model
 		gotGatewayModel = r.Header.Get("X-Gateway-Model")
+		upstreamErr <- nil
 		writeJSON(w, map[string]any{
 			"choices": []map[string]any{{"finish_reason": "stop"}},
 			"usage":   map[string]any{"total_tokens": 9},
@@ -180,6 +184,9 @@ func TestProxyAliasRoutesAndAccountsByConcreteModel(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen-latest","messages":[]}`))
 
+	if err := <-upstreamErr; err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -313,12 +320,16 @@ func TestProxySchedulerDecisionLogIncludesAutoMaxLoaded(t *testing.T) {
 
 func TestProxyNormalizesTopKZeroForSGLangModels(t *testing.T) {
 	var gotTopK float64
+	upstreamErr := make(chan error, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode upstream body: %v", err)
+			upstreamErr <- err
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
 		}
 		gotTopK, _ = body["top_k"].(float64)
+		upstreamErr <- nil
 		writeJSON(w, map[string]any{"ok": true})
 	}))
 	defer upstream.Close()
@@ -333,6 +344,9 @@ func TestProxyNormalizesTopKZeroForSGLangModels(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[],"top_k":0}`))
 
+	if err := <-upstreamErr; err != nil {
+		t.Fatalf("decode upstream body: %v", err)
+	}
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -343,6 +357,7 @@ func TestProxyNormalizesTopKZeroForSGLangModels(t *testing.T) {
 
 func TestProxyNormalizesTransformersImagePartsForSGLangModels(t *testing.T) {
 	var gotPart map[string]any
+	upstreamErr := make(chan error, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []struct {
@@ -350,12 +365,17 @@ func TestProxyNormalizesTransformersImagePartsForSGLangModels(t *testing.T) {
 			} `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode upstream body: %v", err)
+			upstreamErr <- err
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
 		}
 		if len(body.Messages) != 1 || len(body.Messages[0].Content) != 2 {
-			t.Fatalf("unexpected upstream messages: %+v", body.Messages)
+			upstreamErr <- fmt.Errorf("unexpected upstream messages: %+v", body.Messages)
+			http.Error(w, "invalid messages", http.StatusBadRequest)
+			return
 		}
 		gotPart = body.Messages[0].Content[0]
+		upstreamErr <- nil
 		writeJSON(w, map[string]any{"ok": true})
 	}))
 	defer upstream.Close()
@@ -370,6 +390,9 @@ func TestProxyNormalizesTransformersImagePartsForSGLangModels(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"image","url":"https://example.com/dog.png"},{"type":"text","text":"图片中是什么"}]}]}`))
 
+	if err := <-upstreamErr; err != nil {
+		t.Fatalf("decode upstream body: %v", err)
+	}
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}

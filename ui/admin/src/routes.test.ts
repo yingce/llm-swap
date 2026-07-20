@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pathForTab, tabFromPath, type Tab } from "./routes";
+import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./routes";
 
 describe("admin routes", () => {
   const routes: Array<[Tab, string]> = [
@@ -24,5 +24,10 @@ describe("admin routes", () => {
 
   it("maps an unknown path to the dashboard", () => {
     expect(tabFromPath("/ui/not-a-page")).toBe("dashboard");
+  });
+
+  it("only pushes history when the selected tab changes the path", () => {
+    expect(shouldPushTabPath("/ui/models", "models")).toBe(false);
+    expect(shouldPushTabPath("/ui", "models")).toBe(true);
   });
 });
