@@ -51,10 +51,11 @@ Each alias maps directly to one canonical model. Alias chains are not
 supported. An alias cannot equal a canonical model name, and every target must
 exist in `models`. Concrete model names remain directly requestable.
 
-The resolved model directory must be a non-empty, safe relative directory name.
-Absolute paths, `.`/`..`, path separators, and duplicate resolved directories
-are rejected. This keeps every concrete version isolated beneath
-`agent.model_root` and avoids two artifact installers replacing the same
+An explicitly configured `model_dir` must be a non-empty, safe relative
+directory name. Absolute paths, `.`/`..`, and path separators are rejected.
+When `model_dir` is omitted, the existing canonical-key directory behavior is
+preserved without adding new model-name restrictions. Duplicate resolved
+directories are rejected so two artifact installers cannot replace the same
 directory.
 
 ## Request and Routing Flow
