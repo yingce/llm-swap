@@ -1025,7 +1025,7 @@ func TestReconcileRunOnceInstallErrorSkipsConfigAndRestart(t *testing.T) {
 	}
 	installs := map[string]*artifactInstallState{
 		"qwen": {
-			key: artifactKey("qwen", artifact.Object, artifact.Kind, artifact.CRC64ECMA),
+			key: artifactKey("qwen", "qwen", artifact.Object, artifact.Kind, artifact.CRC64ECMA),
 			err: errors.New("download failed"),
 		},
 	}
@@ -1053,6 +1053,29 @@ func TestReconcileRunOnceInstallErrorSkipsConfigAndRestart(t *testing.T) {
 	}
 	if heartbeats[0].NeedsRestart {
 		t.Fatalf("heartbeat needs_restart = true, want false")
+	}
+}
+
+func TestAsyncInstallKeyIncludesModelDirectory(t *testing.T) {
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: "123456789",
+	}
+	currentKey := artifactKey("joyfox-model-v2", "joyfox-model-20260720", artifact.Object, artifact.Kind, artifact.CRC64ECMA)
+	staleKey := artifactKey("joyfox-model-v2", "joyfox-model-20260719", artifact.Object, artifact.Kind, artifact.CRC64ECMA)
+	installs := map[string]*artifactInstallState{
+		"joyfox-model-v2": {key: currentKey, running: true},
+	}
+
+	(&Reconciler{}).applyInstallResult(installs, artifactInstallResult{
+		model: "joyfox-model-v2",
+		key:   staleKey,
+	})
+
+	state := installs["joyfox-model-v2"]
+	if !state.running {
+		t.Fatal("stale completion from old model directory stopped current install")
 	}
 }
 

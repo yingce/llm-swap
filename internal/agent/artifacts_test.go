@@ -295,6 +295,54 @@ func TestInstallArtifactFileWritesBasenameAndMarker(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactAtUsesCustomDirectory(t *testing.T) {
+	payload := []byte("versioned model payload")
+	crc := crc64String(payload)
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc,
+	}
+	server := artifactServer(t, payload, crc)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	installed, err := InstallArtifactAt(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		modelRoot,
+		"joyfox-model-v2",
+		"joyfox-model-20260720",
+		artifact,
+	)
+	if err != nil {
+		t.Fatalf("InstallArtifactAt() error = %v", err)
+	}
+	if !installed {
+		t.Fatal("InstallArtifactAt() installed = false, want true")
+	}
+
+	modelDir := filepath.Join(modelRoot, "joyfox-model-20260720")
+	got, err := os.ReadFile(filepath.Join(modelDir, "model.gguf"))
+	if err != nil {
+		t.Fatalf("read installed payload: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("installed payload = %q, want %q", got, payload)
+	}
+	matches, err := MarkerMatches(modelDir, "joyfox-model-v2", artifact)
+	if err != nil {
+		t.Fatalf("MarkerMatches() error = %v", err)
+	}
+	if !matches {
+		t.Fatal("marker does not preserve canonical model identity")
+	}
+	if _, err := os.Stat(filepath.Join(modelRoot, "joyfox-model-v2")); !os.IsNotExist(err) {
+		t.Fatalf("canonical model directory exists or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestInstallArtifactReusesExistingSourceFileInModelRoot(t *testing.T) {
 	payload := []byte("model payload already present")
 	crc := crc64String(payload)

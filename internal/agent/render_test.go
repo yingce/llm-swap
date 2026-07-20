@@ -179,6 +179,37 @@ func TestRenderLlamaSwapConfigBuildsRuntimeCommand(t *testing.T) {
 	}
 }
 
+func TestRenderLlamaSwapConfigUsesModelDir(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"joyfox-model-v2": {
+				ModelDir: "joyfox-model-20260720",
+				Runtime:  "vllm",
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"joyfox-model-v2"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	cmd := models["joyfox-model-v2"].(map[string]any)["cmd"].(string)
+	for _, want := range []string{
+		"/models/joyfox-model-20260720",
+		"--served-model-name",
+		"joyfox-model-v2",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("runtime cmd missing %q: %q", want, cmd)
+		}
+	}
+}
+
 func TestRenderLlamaSwapConfigRuntimeJSONArgsStayReadable(t *testing.T) {
 	jsonOverride := `{"init_vision":true,"init_audio":false,"quantization_config":{"bits":4,"modules_to_not_convert":["vpm","resampler"]}}`
 	resp := protocol.AgentConfigResponse{

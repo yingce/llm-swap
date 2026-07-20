@@ -66,7 +66,7 @@ func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, 
 		if !ok {
 			return nil, fmt.Errorf("allowed model %q missing from config models", modelName)
 		}
-		modelPath := filepath.ToSlash(filepath.Join(modelRoot, modelName))
+		modelPath := filepath.ToSlash(filepath.Join(modelRoot, config.ResolvedModelDir(modelName, model)))
 		cmd, err := modelCommand(modelName, model, modelPath)
 		if err != nil {
 			return nil, err

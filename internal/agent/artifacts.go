@@ -177,11 +177,19 @@ func CRC64ECMAFile(path string) (string, error) {
 }
 
 func InstallArtifact(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName string, artifact config.Artifact) (bool, error) {
-	return InstallArtifactWithProgress(ctx, httpClient, ossBaseURL, modelRoot, modelName, artifact, nil)
+	return InstallArtifactAt(ctx, httpClient, ossBaseURL, modelRoot, modelName, modelName, artifact)
+}
+
+func InstallArtifactAt(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName, modelDirName string, artifact config.Artifact) (bool, error) {
+	return InstallArtifactWithProgressAt(ctx, httpClient, ossBaseURL, modelRoot, modelName, modelDirName, artifact, nil)
 }
 
 func InstallArtifactWithProgress(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName string, artifact config.Artifact, onProgress ArtifactProgressFunc) (bool, error) {
-	modelDir := filepath.Join(modelRoot, modelName)
+	return InstallArtifactWithProgressAt(ctx, httpClient, ossBaseURL, modelRoot, modelName, modelName, artifact, onProgress)
+}
+
+func InstallArtifactWithProgressAt(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName, modelDirName string, artifact config.Artifact, onProgress ArtifactProgressFunc) (bool, error) {
+	modelDir := filepath.Join(modelRoot, modelDirName)
 	matches, err := MarkerMatches(modelDir, modelName, artifact)
 	if err != nil {
 		return false, err

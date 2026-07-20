@@ -86,6 +86,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 type artifactInstallKey struct {
 	Model     string
+	ModelDir  string
 	Object    string
 	Kind      string
 	CRC64ECMA string
@@ -103,9 +104,10 @@ type artifactInstallResult struct {
 	err   error
 }
 
-func artifactKey(modelName string, artifactObject string, artifactKind string, artifactCRC string) artifactInstallKey {
+func artifactKey(modelName string, modelDirName string, artifactObject string, artifactKind string, artifactCRC string) artifactInstallKey {
 	return artifactInstallKey{
 		Model:     modelName,
+		ModelDir:  modelDirName,
 		Object:    artifactObject,
 		Kind:      artifactKind,
 		CRC64ECMA: artifactCRC,
@@ -256,14 +258,15 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			continue
 		}
 
-		key := artifactKey(modelName, model.Artifact.Object, model.Artifact.Kind, model.Artifact.CRC64ECMA)
+		modelDirName := config.ResolvedModelDir(modelName, model)
+		key := artifactKey(modelName, modelDirName, model.Artifact.Object, model.Artifact.Kind, model.Artifact.CRC64ECMA)
 		if state, ok := installs[modelName]; ok && state.running {
 			status[modelName] = "installing"
 			installing = true
 			continue
 		}
 
-		modelDir := filepath.Join(r.ModelRoot, modelName)
+		modelDir := filepath.Join(r.ModelRoot, modelDirName)
 		matches, err := MarkerMatches(modelDir, modelName, model.Artifact)
 		if err != nil {
 			status[modelName] = "error"
@@ -299,7 +302,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 		status[modelName] = "installing"
 		installing = true
 		startedNewInstall = true
-		go func(modelName string, key artifactInstallKey) {
+		go func(modelName string, modelDirName string, key artifactInstallKey) {
 			started := time.Now()
 			r.recordEvent(protocol.AgentEvent{
 				Event:     "artifact_install_start",
@@ -308,7 +311,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 				Kind:      model.Artifact.Kind,
 				CRC64ECMA: model.Artifact.CRC64ECMA,
 			})
-			_, err := InstallArtifactWithProgress(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, model.Artifact, func(progress ArtifactProgress) {
+			_, err := InstallArtifactWithProgressAt(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, modelDirName, model.Artifact, func(progress ArtifactProgress) {
 				r.recordEvent(protocol.AgentEvent{
 					Event:           "artifact_download_progress",
 					Model:           modelName,
@@ -343,7 +346,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			case installDone <- result:
 			case <-ctx.Done():
 			}
-		}(modelName, key)
+		}(modelName, modelDirName, key)
 	}
 
 	return status, installing, outErr
@@ -492,7 +495,8 @@ func (r *Reconciler) installAllowedArtifacts(ctx context.Context, cfg protocol.A
 			outErr = errors.Join(outErr, fmt.Errorf("allowed model %q missing from config models", modelName))
 			continue
 		}
-		if _, err := InstallArtifact(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, model.Artifact); err != nil {
+		modelDirName := config.ResolvedModelDir(modelName, model)
+		if _, err := InstallArtifactAt(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, modelDirName, model.Artifact); err != nil {
 			status[modelName] = "error"
 			outErr = errors.Join(outErr, fmt.Errorf("install artifact for %q: %w", modelName, err))
 			continue
