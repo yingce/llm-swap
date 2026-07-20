@@ -42,10 +42,11 @@ func validateModelIdentities(cfg GatewayConfig) error {
 				return fmt.Errorf("model %s model_dir %s collides with artifact source cache basename", name, dir)
 			}
 		}
-		if previous, exists := dirs[dir]; exists {
-			return fmt.Errorf("models %s and %s resolve to duplicate model_dir %s", previous, name, dir)
+		dirIdentity := path.Clean(dir)
+		if previous, exists := dirs[dirIdentity]; exists {
+			return fmt.Errorf("models %s and %s resolve to duplicate model_dir %s", previous, name, dirIdentity)
 		}
-		dirs[dir] = name
+		dirs[dirIdentity] = name
 	}
 
 	aliases := make([]string, 0, len(cfg.ModelAliases))

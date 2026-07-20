@@ -89,6 +89,27 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayRejectsOmittedModelDirectoriesThatCleanToSamePath(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  family/tmp/../v1:\n", 1)
+	raw = strings.Replace(raw, "tag_policies:\n", `  family/v1:
+    artifact:
+      object: family-v1.tar.gz
+      kind: tar_gz
+      crc64ecma: "456"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+`, 1)
+	raw = strings.Replace(raw, "allowed_models: [qwen]", "allowed_models: [family/tmp/../v1, family/v1]", 1)
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "duplicate model_dir family/v1") {
+		t.Fatalf("error = %v, want cleaned duplicate model_dir family/v1", err)
+	}
+}
+
 func TestLoadGatewayRejectsReservedModelDirectory(t *testing.T) {
 	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: .locks\n", 1)
 
