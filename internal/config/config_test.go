@@ -115,6 +115,42 @@ func TestLoadGatewayRejectsArtifactSourceCacheCollision(t *testing.T) {
 	}
 }
 
+func TestLoadGatewayRejectsCrossModelArtifactSourceCacheCollision(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+models:
+  a:
+    model_dir: shared.gguf
+    artifact:
+      object: releases/a.gguf
+      kind: file
+      crc64ecma: "123"
+    run: "serve {{model_path}}"
+  b:
+    model_dir: b-model
+    artifact:
+      object: releases/shared.gguf
+      kind: file
+      crc64ecma: "456"
+    run: "serve {{model_path}}"
+tag_policies:
+  gpu-4090:
+    allowed_models: [a, b]
+`
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "shared.gguf") || !strings.Contains(err.Error(), "artifact source") {
+		t.Fatalf("error = %v, want cross-model artifact source cache collision", err)
+	}
+}
+
 func TestLoadGatewayRejectsShellUnsafeModelDirectoryForRawRun(t *testing.T) {
 	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: \"joyfox model;touch-pwned\"\n", 1)
 

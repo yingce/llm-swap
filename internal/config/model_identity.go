@@ -21,6 +21,12 @@ func validateModelIdentities(cfg GatewayConfig) error {
 	}
 	sort.Strings(names)
 
+	artifactSourceBasenames := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		basename := path.Base(strings.TrimSpace(cfg.Models[name].Artifact.Object))
+		artifactSourceBasenames[basename] = struct{}{}
+	}
+
 	dirs := map[string]string{}
 	for _, name := range names {
 		model := cfg.Models[name]
@@ -32,7 +38,7 @@ func validateModelIdentities(cfg GatewayConfig) error {
 			if dir == ".locks" {
 				return fmt.Errorf("model %s model_dir .locks is reserved", name)
 			}
-			if dir == path.Base(strings.TrimSpace(model.Artifact.Object)) {
+			if _, exists := artifactSourceBasenames[dir]; exists {
 				return fmt.Errorf("model %s model_dir %s collides with artifact source cache basename", name, dir)
 			}
 		}
