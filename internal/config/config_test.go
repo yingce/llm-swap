@@ -1,9 +1,120 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestLoadGatewayAcceptsModelDirectoryAndAlias(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: joyfox-model-20260720\n", 1)
+	raw += "\nmodel_aliases:\n  joyfox-model-latest: qwen\n"
+
+	cfg, err := LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Models["qwen"].ModelDir; got != "joyfox-model-20260720" {
+		t.Fatalf("model_dir = %q, want joyfox-model-20260720", got)
+	}
+	if got := cfg.ModelAliases["joyfox-model-latest"]; got != "qwen" {
+		t.Fatalf("alias target = %q, want qwen", got)
+	}
+}
+
+func TestLoadGatewayRejectsInvalidModelIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "missing alias target",
+			raw:  validGatewayYAML("") + "\nmodel_aliases:\n  joyfox-model-latest: missing\n",
+			want: "not defined",
+		},
+		{
+			name: "alias and model collision",
+			raw:  validGatewayYAML("") + "\nmodel_aliases:\n  qwen: qwen\n",
+			want: "collides",
+		},
+		{
+			name: "blank alias",
+			raw:  validGatewayYAML("") + "\nmodel_aliases:\n  \"\": qwen\n",
+			want: "non-empty trimmed alias and target",
+		},
+		{
+			name: "nested directory",
+			raw:  strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: nested/qwen\n", 1),
+			want: "safe relative directory name",
+		},
+		{
+			name: "traversal directory",
+			raw:  strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: ..\n", 1),
+			want: "safe relative directory name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadGateway(strings.NewReader(tt.raw))
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadGatewayRejectsDuplicateModelDirectories(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: shared-model\n", 1)
+	raw = strings.Replace(raw, "tag_policies:\n", `  llama:
+    model_dir: shared-model
+    artifact:
+      object: llama.tar.gz
+      kind: tar_gz
+      crc64ecma: "456"
+    run: "vllm serve {{model_path}} --port ${PORT}"
+tag_policies:
+`, 1)
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "duplicate model_dir shared-model") {
+		t.Fatalf("error = %v, want duplicate model_dir", err)
+	}
+}
+
+func TestResolvedModelDirUsesConfiguredDirectoryOrModelName(t *testing.T) {
+	if got := ResolvedModelDir("qwen", Model{}); got != "qwen" {
+		t.Fatalf("ResolvedModelDir without override = %q, want qwen", got)
+	}
+	if got := ResolvedModelDir("qwen", Model{ModelDir: "joyfox-model-20260720"}); got != "joyfox-model-20260720" {
+		t.Fatalf("ResolvedModelDir with override = %q, want joyfox-model-20260720", got)
+	}
+}
+
+func TestModelDirectoryJSONNameAndOmitEmpty(t *testing.T) {
+	omitted, err := json.Marshal(Model{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(omitted), "model_dir") {
+		t.Fatalf("empty model_dir was not omitted: %s", omitted)
+	}
+
+	included, err := json.Marshal(Model{ModelDir: "joyfox-model-20260720"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(included), `"model_dir":"joyfox-model-20260720"`) {
+		t.Fatalf("model_dir JSON field missing or misnamed: %s", included)
+	}
+}
 
 func TestLoadGatewayConfigValidatesWarmModel(t *testing.T) {
 	raw := `

@@ -101,6 +101,9 @@ func validateGateway(cfg GatewayConfig) error {
 			return fmt.Errorf("model %s billing prices must be non-negative", name)
 		}
 	}
+	if err := validateModelIdentities(cfg); err != nil {
+		return err
+	}
 	for tag, policy := range cfg.TagPolicies {
 		if policy.MaxConcurrency < 0 || policy.MaxQueue < 0 || policy.WorkerDefaults.MaxConcurrency < 0 || policy.WorkerDefaults.MaxQueue < 0 {
 			return fmt.Errorf("tag %s concurrency and queue limits must be non-negative", tag)

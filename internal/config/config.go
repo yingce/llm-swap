@@ -9,6 +9,7 @@ type GatewayConfig struct {
 	MetricsStore MetricsStoreConfig   `yaml:"metrics_store" json:"metrics_store"`
 	RecordsStore RecordsStoreConfig   `yaml:"records_store" json:"records_store"`
 	Models       map[string]Model     `yaml:"models" json:"models"`
+	ModelAliases map[string]string    `yaml:"model_aliases" json:"model_aliases"`
 	TagPolicies  map[string]TagPolicy `yaml:"tag_policies" json:"tag_policies"`
 }
 
@@ -47,6 +48,7 @@ type RecordsStoreConfig struct {
 
 type Model struct {
 	Disabled       bool         `yaml:"disabled" json:"disabled,omitempty"`
+	ModelDir       string       `yaml:"model_dir" json:"model_dir,omitempty"`
 	Priority       int          `yaml:"priority" json:"priority"`
 	MinLoaded      int          `yaml:"min_loaded" json:"min_loaded"`
 	MaxLoaded      int          `yaml:"max_loaded" json:"max_loaded"`
