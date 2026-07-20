@@ -40,6 +40,44 @@ func TestUIConfigDryRunReportsAddedModel(t *testing.T) {
 	}
 }
 
+func TestUIConfigDryRunReportsAliasHotApply(t *testing.T) {
+	raw := strings.Replace(
+		testGatewayYAMLWithModels("v1", "v2"),
+		"tag_policies:\n",
+		"model_aliases:\n  latest: v1\ntag_policies:\n",
+		1,
+	)
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg)
+	nextRaw := strings.Replace(raw, "latest: v1", "latest: v2", 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(nextRaw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var resp uiConfigDryRunResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	change, ok := findConfigChange(resp.Changes, "model_aliases.latest", "changed")
+	if !ok {
+		t.Fatalf("changes = %+v, want changed latest alias", resp.Changes)
+	}
+	if change.RequiresGatewayRestart || change.RequiresWorkerRestart {
+		t.Fatalf("change = %+v, want alias hot apply without restart", change)
+	}
+	if resp.ApplyMode != "hot_apply" || resp.RequiresGatewayRestart {
+		t.Fatalf("response = %+v, want hot_apply without gateway restart", resp)
+	}
+}
+
 func TestUIConfigApplyUpdatesAgentConfigAndPersistsYAML(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	srv := NewServerWithGatewayConfigPath(testUIGatewayConfig(), configPath)
@@ -329,6 +367,44 @@ func TestUIConfigDryRunReportsLoadedWorkerImpactForRuntimeChange(t *testing.T) {
 	}
 	if change, ok := findConfigChange(resp.Changes, "models.qwen", "changed"); !ok || !change.RequiresWorkerRestart {
 		t.Fatalf("changes = %+v, want model change requiring worker restart", resp.Changes)
+	}
+}
+
+func TestUIConfigDryRunReportsModelDirImpact(t *testing.T) {
+	raw := testGatewayYAMLWithModels("qwen")
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg)
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	})
+	nextRaw := strings.Replace(raw, "  qwen:\n", "  qwen:\n    model_dir: qwen-20260720\n", 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(nextRaw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var resp uiConfigDryRunResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	change, ok := findConfigChange(resp.Changes, "models.qwen", "changed")
+	if !ok || change.Detail != "runtime command or artifact changed" || !change.RequiresWorkerRestart {
+		t.Fatalf("changes = %+v, want runtime change requiring loaded worker restart", resp.Changes)
+	}
+	impact, ok := findConfigImpact(resp.Impacts, "qwen", "gpu-01")
+	if !ok || !impact.Loaded || !impact.RequiresWorkerRestart {
+		t.Fatalf("impacts = %+v, want loaded qwen impact on gpu-01", resp.Impacts)
 	}
 }
 

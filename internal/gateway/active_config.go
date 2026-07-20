@@ -4,13 +4,14 @@ import "llm-swap/internal/config"
 
 func activeGatewayConfig(cfg config.GatewayConfig) config.GatewayConfig {
 	out := cloneGatewayConfig(cfg)
-	if len(out.Models) == 0 {
-		return out
-	}
-
 	for name, model := range out.Models {
 		if model.Disabled {
 			delete(out.Models, name)
+		}
+	}
+	for alias, target := range out.ModelAliases {
+		if _, ok := out.Models[target]; !ok {
+			delete(out.ModelAliases, alias)
 		}
 	}
 	for tag, policy := range out.TagPolicies {

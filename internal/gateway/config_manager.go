@@ -285,6 +285,18 @@ func diffGatewayConfig(oldCfg config.GatewayConfig, newCfg config.GatewayConfig)
 			changes = append(changes, uiConfigChange{Path: "models." + name, Type: "removed", Model: name, RequiresWorkerRestart: true})
 		}
 	}
+	for _, alias := range sortedAliasNames(oldCfg.ModelAliases, newCfg.ModelAliases) {
+		oldTarget, oldOK := oldCfg.ModelAliases[alias]
+		newTarget, newOK := newCfg.ModelAliases[alias]
+		switch {
+		case !oldOK:
+			changes = append(changes, uiConfigChange{Path: "model_aliases." + alias, Type: "added"})
+		case !newOK:
+			changes = append(changes, uiConfigChange{Path: "model_aliases." + alias, Type: "removed"})
+		case oldTarget != newTarget:
+			changes = append(changes, uiConfigChange{Path: "model_aliases." + alias, Type: "changed"})
+		}
+	}
 	if !reflect.DeepEqual(oldCfg.TagPolicies, newCfg.TagPolicies) {
 		changes = append(changes, uiConfigChange{Path: "tag_policies", Type: "changed"})
 	}
@@ -329,7 +341,8 @@ func applyModeForChanges(changes []uiConfigChange) string {
 }
 
 func modelRuntimeFieldsChanged(a config.Model, b config.Model) bool {
-	return a.Run != b.Run ||
+	return a.ModelDir != b.ModelDir ||
+		a.Run != b.Run ||
 		a.Runtime != b.Runtime ||
 		!reflect.DeepEqual(a.RuntimeArgs, b.RuntimeArgs) ||
 		a.CmdStop != b.CmdStop ||
@@ -346,12 +359,31 @@ func sortedModelNames(models map[string]config.Model) []string {
 	return names
 }
 
+func sortedAliasNames(aliasMaps ...map[string]string) []string {
+	set := map[string]struct{}{}
+	for _, aliases := range aliasMaps {
+		for alias := range aliases {
+			set[alias] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(set))
+	for alias := range set {
+		names = append(names, alias)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func cloneGatewayConfig(cfg config.GatewayConfig) config.GatewayConfig {
 	out := cfg
 	out.Models = make(map[string]config.Model, len(cfg.Models))
 	for name, model := range cfg.Models {
 		model.RuntimeArgs = append([]string(nil), model.RuntimeArgs...)
 		out.Models[name] = model
+	}
+	out.ModelAliases = make(map[string]string, len(cfg.ModelAliases))
+	for alias, target := range cfg.ModelAliases {
+		out.ModelAliases[alias] = target
 	}
 	out.TagPolicies = make(map[string]config.TagPolicy, len(cfg.TagPolicies))
 	for tag, policy := range cfg.TagPolicies {
