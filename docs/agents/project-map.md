@@ -1,11 +1,12 @@
 # LLM Swap Project Map
 
-Last updated: 2026-06-24.
+Last updated: 2026-07-20.
 
 This document is the current high-level map for future agents. It reflects the
 code state after the gateway UI, token unification, worker event persistence,
 request accounting, scheduling, install script, vLLM/SGLang wrappers, and
-llama.cpp runtime wrapper work.
+llama.cpp runtime wrapper, versioned model directory, public model alias, and
+refresh-safe admin UI routing work.
 
 ## System Shape
 
@@ -46,7 +47,15 @@ disabled the gateway still runs with no external database.
 - `worker`: a machine with a local llama-swap process and one agent process.
 - `agent`: thin worker-side controller; it installs artifacts and reports state.
 - `llama-swap`: worker-local runtime switcher and proxy target.
-- `model`: logical public model name in gateway config.
+- `model`: concrete canonical identity defined by a `models` map key. Gateway
+  policy, worker state, llama-swap, metrics, billing, and request records use
+  this name.
+- `model_dir`: optional worker-local install/runtime directory for a canonical
+  model. It changes only the path beneath `agent.model_root`; when omitted, the
+  canonical model name remains the directory name.
+- `model_alias`: stable public request name that maps directly to one canonical
+  model through top-level `model_aliases`. Aliases are not worker identities and
+  cannot chain or collide with canonical model names.
 - `artifact`: downloadable model payload. Supported kinds are `file` and
   `tar_gz`.
 - `tag_policy`: gateway policy for workers with a tag. It defines installable
@@ -79,16 +88,26 @@ disabled the gateway still runs with no external database.
   - Client model and chat endpoints use the client token.
   - UI routes use the agent token.
   - Heartbeat events are cached and persisted to worker event JSONL.
+  - `/v1/models` lists available canonical models and aliases whose canonical
+    targets are currently available.
 
 - `internal/gateway/proxy.go`
   - OpenAI-compatible chat proxy path.
-  - Extracts the requested model, normalizes some SGLang request fields, applies
-    queue/concurrency gates, schedules a worker, proxies to llama-swap, records
-    request stats, records pressure observations, and emits metrics/logs.
+  - Resolves a requested alias to its canonical target before model policy,
+    queue/concurrency gates, placement, tag selection, active accounting,
+    cooldowns, metrics, billing, and request records. Direct canonical requests
+    pass through unchanged.
+  - Rewrites an alias request body's `model` field to the canonical name before
+    SGLang normalization and dispatch, so llama-swap and the runtime receive the
+    name they were configured to serve.
+  - Request, scheduler, and retry structured logs keep the canonical name in
+    `model` and add `requested_model` when the client used an alias. Persistent
+    accounting and low-cardinality metric labels remain canonical so traffic
+    and cost are attributed to the concrete version that served them.
   - When no ready worker exists but the scheduler reports eligible capacity,
     records a `no_ready` pressure observation so the async reconciler can warm
-    an empty worker for the requested model. The current request still fails
-    fast; requests only route to ready replicas.
+    an empty worker for the resolved canonical model. The current request still
+    fails fast; requests only route to ready replicas.
   - Retryable proxy failures mark only the failing replica as cooled down for
     30 seconds, then retry another ready replica when available.
   - `top_k: 0` is normalized to `-1` for SGLang-backed models.
@@ -230,6 +249,12 @@ disabled the gateway still runs with no external database.
     running the frontend build.
   - Shows model availability, traffic, workers, health, GPU memory/utilization,
     running models, artifacts, and recent worker events.
+  - Config Ops exposes the optional local model directory and a Model aliases
+    card for adding, retargeting, or removing stable names. Alias rows show the
+    canonical target's ready/running replica counts and warn on zero-ready
+    targets without blocking cold-start or recovery configurations.
+  - Config drafts round-trip `model_dir` and `model_aliases` through YAML, omit
+    empty directories, and sort aliases for deterministic diffs.
   - Recent events have columns: Received, Worker, Event, Model, Detail.
   - Optional historical metrics endpoints:
     `/ui/metrics/summary`, `/ui/metrics/model`, and `/ui/metrics/worker`.
@@ -253,9 +278,10 @@ disabled the gateway still runs with no external database.
   - Dry-run/apply responses include `apply_mode`: `hot_apply` for changes that
     take effect immediately, or `save_requires_gateway_restart` when the YAML
     was persisted but the running snapshot was intentionally left unchanged.
-  - The admin UI now treats config as a structured operations console by
-    default: `Config Ops` edits models and tag policies, while `Advanced` is a
-    read-only YAML viewer for full config inspection and copy/paste.
+  - The admin UI treats config as a structured operations console by default:
+    `Config Ops` edits model policy, model directories, model aliases, and tag
+    policies, while `Advanced` is a read-only YAML viewer for full config
+    inspection and copy/paste.
   - Dry-run returns coarse impact changes plus loaded-worker impacts. Model
     policy changes are hot-update candidates. Runtime command/artifact changes
     only require worker restart/reload when the affected model is currently
@@ -264,6 +290,10 @@ disabled the gateway still runs with no external database.
     as requiring gateway restart. `gateway.proxy_attempts` can hot-apply from
     YAML unless it was overridden by gateway env/CLI at process startup; in that
     case UI apply persists the YAML but keeps the running override until restart.
+  - Alias additions, removals, and target changes have independent
+    `model_aliases.<name>` diff paths and hot-apply without a gateway or worker
+    restart. A `model_dir` change is a runtime-affecting model change; it reports
+    restart/reload impact only for workers where that canonical model is loaded.
   - Admin action routes support worker drain/undrain, model warm/unload, and
     replica cooldown clear. These actions stay gateway-owned, use the existing
     llama-swap client for runtime actions, and record gateway worker events so
@@ -289,6 +319,9 @@ disabled the gateway still runs with no external database.
   - Main worker reconcile loop.
   - Fetches tag-scoped config from gateway.
   - Installs allowed artifacts, one active install at a time.
+  - Resolves each canonical model's install directory from `model_dir`, falling
+    back to the canonical name. Directory identity participates in the async
+    install key so completion for an old path cannot satisfy a new-path install.
   - Fetches local llama-swap running models.
   - Renders llama-swap config from the ready allowed-model subset so a worker
     can start serving already-installed models while other artifacts continue
@@ -314,10 +347,16 @@ disabled the gateway still runs with no external database.
   - Persists downloaded source artifacts at
     `<model_root>/<basename(artifact.object)>`; model directories still get
     their own installed files and `.llm-agent-artifact.json` marker.
+  - Installs each payload beneath `<model_root>/<model_dir or canonical name>`.
+    Marker identity and heartbeat artifact keys remain canonical; changing the
+    local directory does not rename the model seen by gateway or llama-swap.
 
 - `internal/agent/render.go`
   - Renders local llama-swap config.
-  - `{{model_path}}` expands to `<model_root>/<model_name>`.
+  - `{{model_path}}` and standard runtime wrapper paths expand to
+    `<model_root>/<model_dir or canonical model name>`.
+  - The llama-swap model key and vLLM/SGLang served model name or llama.cpp alias
+    remain the canonical model name, independent of the local directory.
   - Writes `apiKeys` when a llama-swap token is configured.
   - Wraps each model command with shell logging to
     `/opt/llmswap/logs/model-runtime.log`.
@@ -342,6 +381,16 @@ Gateway config:
 - `tokens.client` is for client-facing OpenAI-compatible routes.
 - `tokens.agent` is for internal agent routes and the UI.
 - `tokens.llama_swap` is optional. If omitted, it defaults to `tokens.agent`.
+- Each `models.<name>` key is a concrete canonical identity. Tag policies,
+  worker reports, lifecycle controls, runtime names, and direct client requests
+  use canonical keys, not aliases.
+- `models.<name>.model_dir` is optional. It must be one safe relative directory
+  name beneath `agent.model_root`; absolute/nested/traversal paths, `.locks`,
+  source-cache basename collisions, and duplicate resolved directories are
+  rejected. Omitting it preserves `<model_root>/<canonical-name>`.
+- `model_aliases.<alias>` must target a defined canonical model directly. Alias
+  chains, blank/untrimmed entries, and aliases colliding with canonical names are
+  invalid. Disabled targets are removed from the active runtime view.
 - `models.<name>.run` is the command rendered into llama-swap config.
 - `models.<name>.runtime` can be used instead of `run` for standard wrappers:
   `vllm`, `sglang`, or `llamacpp`. The agent generates `PORT=${PORT}`,
@@ -706,7 +755,23 @@ Worker-side model runtime logs:
 UI routes:
 
 - `/ui`
+- `/ui/models`
+- `/ui/workers`
+- `/ui/billing`
+- `/ui/event-log`
+- `/ui/request-log`
+- `/ui/config`
+- `/ui/advanced`
+
+Each path above serves the embedded React application and maps to an independent
+Dashboard, Models, Workers, Billing, Events, Requests, Config Ops, or Advanced
+page. Tab clicks use browser history, refresh restores the selected page, and
+back/forward navigation updates the active tab. The `event-log` and
+`request-log` names deliberately avoid the existing JSON endpoint paths below,
+whose contracts and handlers are preserved:
+
 - `/ui/status`
+- `/ui/requests?limit=50&offset=0`
 - `/ui/events?limit=50&offset=0`
 - `/ui/api/config`
 - `/ui/api/config/validate`
@@ -789,6 +854,18 @@ gateway-side tailnet path.
   Use explicit `max_loaded` to cap expensive models.
 - `min_loaded=0` models behave as opportunity cache and can remain loaded until
   capacity is needed elsewhere.
+- For a version upgrade, add the new concrete model and unique `model_dir`, add
+  its canonical key to the intended tag policies, warm at least one replica to
+  ready, and validate the concrete name before retargeting the stable alias.
+- Retargeting only `model_aliases.<alias>` is a gateway hot update: workers keep
+  serving their canonical models and new requests immediately resolve through
+  the new pointer. The gateway permits an unready target for cold-start and
+  recovery cases, but Config Ops exposes zero-ready status so routine rollouts
+  can remain ready-first.
+- Roll back by repointing the alias to the old, still-ready canonical model.
+  Versioned directories are not deleted automatically, preserving the old
+  artifact for this pointer rollback. Editing `model_dir` in place is different:
+  it changes the runtime path and follows loaded-worker restart/reload impact.
 
 ## Known Compatibility Notes
 

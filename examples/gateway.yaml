@@ -32,7 +32,10 @@ records_store:
   timeout_ms: 3000
 
 models:
-  qwen3-32b-awq:
+  qwen3-32b-awq-v20260720:
+    # Optional. When omitted, the agent uses the concrete model key as the
+    # directory name beneath agent.model_root.
+    model_dir: qwen3-32b-awq-20260720
     priority: 10
     min_loaded: 0
     # Optional hard ceiling. When omitted, gateway uses automatic expansion
@@ -43,7 +46,7 @@ models:
     queue_timeout_ms: 30000
     ttl: 600
     artifact:
-      object: models/qwen3-32b-awq.tar.gz
+      object: models/qwen3-32b-awq-20260720.tar.gz
       kind: tar_gz
       crc64ecma: sample-crc64ecma
     runtime: sglang
@@ -59,6 +62,11 @@ models:
       - --max-running-requests 1
       - --max-queued-requests 8
 
+# Stable public names point directly to concrete model keys. Retargeting is a
+# hot apply; normally wait until the new concrete model has a ready replica.
+model_aliases:
+  qwen3-32b-awq-latest: qwen3-32b-awq-v20260720
+
 tag_policies:
   gpu-sample:
     max_concurrency: 2
@@ -67,5 +75,5 @@ tag_policies:
       max_concurrency: 2
       max_queue: 8
     allowed_models:
-      - qwen3-32b-awq
-    warm_when_idle: qwen3-32b-awq
+      - qwen3-32b-awq-v20260720
+    warm_when_idle: qwen3-32b-awq-v20260720
