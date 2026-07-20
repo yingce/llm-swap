@@ -440,6 +440,122 @@ func TestReconcileRunOnceWaitsForRunningModelReplacementArtifact(t *testing.T) {
 	}
 }
 
+func TestReconcileRunOnceRunningModelsFailureDefersConfigAndRestart(t *testing.T) {
+	testRunningModelsFailureDefersConfigAndRestart(t, true)
+}
+
+func TestReconcileRunningModelsFailureDefersConfigAndRestart(t *testing.T) {
+	testRunningModelsFailureDefersConfigAndRestart(t, false)
+}
+
+func testRunningModelsFailureDefersConfigAndRestart(t *testing.T, async bool) {
+	t.Helper()
+
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen-new"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker(qwen replacement) error = %v", err)
+	}
+
+	oldCfg := reconcileConfigWithArtifact("https://oss.example.com", artifact)
+	oldModel := oldCfg.Models["qwen"]
+	oldModel.ModelDir = "qwen-old"
+	oldModel.Run = "serve-old --model {{model_path}}"
+	oldCfg.Models["qwen"] = oldModel
+	newCfg := reconcileConfigWithArtifact("https://oss.example.com", artifact)
+	newModel := newCfg.Models["qwen"]
+	newModel.ModelDir = "qwen-new"
+	newModel.Run = "serve-new --model {{model_path}}"
+	newCfg.Models["qwen"] = newModel
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	oldRendered, err := RenderLlamaSwapConfig(oldCfg, modelRoot, "worker-token")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig(old) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, oldRendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, newCfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+	running := &fakeRunningModelsClient{err: errors.New("llama-swap state unavailable")}
+	svc := &FakeService{}
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+		RunningModels:   running,
+		needsRestart:    true,
+	}
+
+	reconcile := func() error {
+		if async {
+			_, err := rec.reconcileRunOnce(context.Background(), make(map[string]*artifactInstallState), make(chan artifactInstallResult, 1))
+			return err
+		}
+		_, err := rec.Reconcile(context.Background())
+		return err
+	}
+
+	if err := reconcile(); err == nil || !strings.Contains(err.Error(), "fetch llama-swap running models") {
+		t.Fatalf("reconcile error = %v, want running-model fetch error", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if heartbeats[0].NeedsRestart || len(heartbeats[0].RestartModels) != 0 {
+		t.Fatalf("heartbeat during unknown running state = %+v, want no restart request", heartbeats[0])
+	}
+	if heartbeats[0].LastError == "" {
+		t.Fatal("heartbeat last_error is empty, want running-model fetch error")
+	}
+	if got := heartbeats[0].Artifacts["qwen"]; got != "ready" {
+		t.Fatalf("artifact status = %q, want ready", got)
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0 while running state is unknown", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, oldRendered) {
+		t.Fatalf("config changed while running state was unknown:\n%s", got)
+	}
+	if _, err := os.Stat(restartPendingMarkerPath(configPath)); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist", err)
+	}
+	if !rec.needsRestart {
+		t.Fatal("internal restart state was cleared after running-model fetch failure")
+	}
+
+	running.err = nil
+	running.models = []protocol.RunningModel{{Model: "qwen", State: "ready"}}
+	if err := reconcile(); err != nil {
+		t.Fatalf("reconcile after running state recovered: %v", err)
+	}
+	if len(heartbeats) != 2 || !heartbeats[1].NeedsRestart {
+		t.Fatalf("heartbeats after recovery = %+v, want restart request", heartbeats)
+	}
+	if svc.Restarts != 1 {
+		t.Fatalf("service restarts after recovery = %d, want 1", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(got), "qwen-new") || strings.Contains(string(got), "qwen-old") {
+		t.Fatalf("replacement config was not activated after recovery:\n%s", got)
+	}
+	if rec.needsRestart {
+		t.Fatal("internal restart state remains set after successful recovery restart")
+	}
+}
+
 func TestReconcileWaitsForRunningModelReplacementArtifact(t *testing.T) {
 	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
 	modelRoot := t.TempDir()

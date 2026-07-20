@@ -384,7 +384,113 @@ func TestInstallArtifactReusesExistingSourceFileInModelRoot(t *testing.T) {
 	}
 }
 
-func TestInstallArtifactPersistsDownloadedSourceFileInModelRoot(t *testing.T) {
+func TestLocalArtifactSourceKeysPrimaryCacheByArtifactIdentity(t *testing.T) {
+	modelRoot := t.TempDir()
+	first := config.Artifact{Object: "v1/model.tar.gz", Kind: "tar_gz", CRC64ECMA: "111"}
+	second := config.Artifact{Object: "v2/model.tar.gz", Kind: "tar_gz", CRC64ECMA: "222"}
+
+	firstPath, firstReady, err := localArtifactSource(modelRoot, first)
+	if err != nil {
+		t.Fatalf("localArtifactSource(first) error = %v", err)
+	}
+	secondPath, secondReady, err := localArtifactSource(modelRoot, second)
+	if err != nil {
+		t.Fatalf("localArtifactSource(second) error = %v", err)
+	}
+	if firstReady || secondReady {
+		t.Fatalf("source readiness = (%t, %t), want both false", firstReady, secondReady)
+	}
+	if firstPath == secondPath {
+		t.Fatalf("primary source paths collide at %q", firstPath)
+	}
+	wantDir := filepath.Join(modelRoot, ".locks")
+	if filepath.Dir(firstPath) != wantDir || filepath.Dir(secondPath) != wantDir {
+		t.Fatalf("primary source dirs = (%q, %q), want %q", filepath.Dir(firstPath), filepath.Dir(secondPath), wantDir)
+	}
+	if filepath.Base(firstPath) != artifactLockName("", first)+".source" {
+		t.Fatalf("first source path = %q, want identity-keyed .source", firstPath)
+	}
+	if filepath.Base(secondPath) != artifactLockName("", second)+".source" {
+		t.Fatalf("second source path = %q, want identity-keyed .source", secondPath)
+	}
+	if artifactLockName("", first) == artifactLockName("", second) {
+		t.Fatal("different artifacts unexpectedly share a lock")
+	}
+}
+
+func TestInstallArtifactsWithSameBasenameUseIndependentSources(t *testing.T) {
+	payloads := map[string][]byte{
+		"/v1/model.gguf": []byte("version one payload"),
+		"/v2/model.gguf": []byte("version two payload"),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, ok := payloads[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set(ossCRC64Header, crc64String(payload))
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(payload)
+		}
+	}))
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	artifacts := []config.Artifact{
+		{Object: "v1/model.gguf", Kind: "file", CRC64ECMA: crc64String(payloads["/v1/model.gguf"])},
+		{Object: "v2/model.gguf", Kind: "file", CRC64ECMA: crc64String(payloads["/v2/model.gguf"])},
+	}
+	models := []string{"model-v1", "model-v2"}
+	for i, artifact := range artifacts {
+		installed, err := InstallArtifact(context.Background(), server.Client(), server.URL, modelRoot, models[i], artifact)
+		if err != nil {
+			t.Fatalf("InstallArtifact(%s) error = %v", models[i], err)
+		}
+		if !installed {
+			t.Fatalf("InstallArtifact(%s) installed = false, want true", models[i])
+		}
+		got, err := os.ReadFile(filepath.Join(modelRoot, models[i], "model.gguf"))
+		if err != nil {
+			t.Fatalf("read installed %s: %v", models[i], err)
+		}
+		want := payloads["/"+artifacts[i].Object]
+		if !bytes.Equal(got, want) {
+			t.Fatalf("installed %s payload = %q, want %q", models[i], got, want)
+		}
+		matches, err := MarkerMatches(filepath.Join(modelRoot, models[i]), models[i], artifact)
+		if err != nil {
+			t.Fatalf("MarkerMatches(%s) error = %v", models[i], err)
+		}
+		if !matches {
+			t.Fatalf("marker for %s does not match", models[i])
+		}
+	}
+
+	firstPath, firstReady, err := localArtifactSource(modelRoot, artifacts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPath, secondReady, err := localArtifactSource(modelRoot, artifacts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPath == secondPath || !firstReady || !secondReady {
+		t.Fatalf("cached sources = (%q, %t), (%q, %t), want distinct ready sources", firstPath, firstReady, secondPath, secondReady)
+	}
+	for i, path := range []string{firstPath, secondPath} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read cached source %d: %v", i, err)
+		}
+		want := payloads["/"+artifacts[i].Object]
+		if !bytes.Equal(got, want) {
+			t.Fatalf("cached source %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestInstallArtifactPersistsDownloadedSourceByArtifactIdentity(t *testing.T) {
 	payload := []byte("download once keep source")
 	crc := crc64String(payload)
 	artifact := config.Artifact{
@@ -404,7 +510,17 @@ func TestInstallArtifactPersistsDownloadedSourceFileInModelRoot(t *testing.T) {
 		t.Fatalf("InstallArtifact() installed = false, want true")
 	}
 
-	got, err := os.ReadFile(filepath.Join(modelRoot, "model.gguf"))
+	sourcePath, ready, err := localArtifactSource(modelRoot, artifact)
+	if err != nil {
+		t.Fatalf("localArtifactSource() error = %v", err)
+	}
+	if !ready {
+		t.Fatal("downloaded source is not ready")
+	}
+	if filepath.Dir(sourcePath) != filepath.Join(modelRoot, ".locks") {
+		t.Fatalf("source path = %q, want cache under .locks", sourcePath)
+	}
+	got, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatalf("read persisted source artifact: %v", err)
 	}

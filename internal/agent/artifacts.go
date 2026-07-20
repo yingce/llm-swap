@@ -304,15 +304,25 @@ func localArtifactSource(modelRoot string, artifact config.Artifact) (string, bo
 	if filename == "." || filename == string(filepath.Separator) || filename == "" {
 		return "", false, fmt.Errorf("artifact object %q has no base filename", artifact.Object)
 	}
-	sourcePath := filepath.Join(modelRoot, filename)
+
+	sourcePath := filepath.Join(modelRoot, ".locks", artifactLockName("", artifact)+".source")
 	gotCRC, err := CRC64ECMAFile(sourcePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return sourcePath, false, nil
+	if err == nil && gotCRC == artifact.CRC64ECMA {
+		return sourcePath, true, nil
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return sourcePath, false, err
 	}
-	return sourcePath, gotCRC == artifact.CRC64ECMA, nil
+
+	legacyPath := filepath.Join(modelRoot, filename)
+	legacyCRC, err := CRC64ECMAFile(legacyPath)
+	if err == nil && legacyCRC == artifact.CRC64ECMA {
+		return legacyPath, true, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return sourcePath, false, err
+	}
+	return sourcePath, false, nil
 }
 
 func persistArtifactSource(tmpFile, sourcePath string) error {

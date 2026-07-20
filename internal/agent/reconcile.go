@@ -136,7 +136,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	reconcileErr = errors.Join(reconcileErr, err)
 	runningModels, err := r.fetchRunningModels(ctx)
 	reconcileErr = errors.Join(reconcileErr, err)
-	if err == nil {
+	runningStateKnown := err == nil
+	if runningStateKnown {
 		r.observeRunningModelChanges(runningModels)
 	}
 	gpuDevices, err := r.fetchGPUDevices(ctx)
@@ -145,7 +146,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	var pendingConfigContent []byte
 	var restartModels []string
 	restartBlocked := restartBlockedByUnreadyRunningModelReplacement(cfg, artifactStatus, runningModels)
-	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked {
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked && runningStateKnown {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
@@ -170,7 +171,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 		}
 	}
 
-	needsRestart := r.needsRestart && !restartBlocked
+	needsRestart := r.needsRestart && !restartBlocked && runningStateKnown
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, needsRestart, artifactStatus)
 	if needsRestart {
 		hb.RestartModels = append([]string(nil), restartModels...)
@@ -419,7 +420,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	reconcileErr = errors.Join(reconcileErr, err)
 	runningModels, err := r.fetchRunningModels(ctx)
 	reconcileErr = errors.Join(reconcileErr, err)
-	if err == nil {
+	runningStateKnown := err == nil
+	if runningStateKnown {
 		r.observeRunningModelChanges(runningModels)
 	}
 	gpuDevices, err := r.fetchGPUDevices(ctx)
@@ -428,7 +430,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	var pendingConfigContent []byte
 	var restartModels []string
 	restartBlocked := restartBlockedByUnreadyRunningModelReplacement(cfg, artifactStatus, runningModels)
-	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked {
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked && runningStateKnown {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
@@ -450,7 +452,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		}
 	}
 
-	needsRestart := r.needsRestart && !restartBlocked
+	needsRestart := r.needsRestart && !restartBlocked && runningStateKnown
 	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, needsRestart, artifactStatus)
 	if needsRestart {
 		hb.RestartModels = append([]string(nil), restartModels...)
