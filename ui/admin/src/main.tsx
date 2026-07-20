@@ -28,9 +28,8 @@ import {
   dryRunConfig
 } from "./api";
 import { removeAlias, setAliasTarget, validateAliasDraft } from "./modelAliases";
+import { pathForTab, tabFromPath, type Tab } from "./routes";
 import "./styles.css";
-
-type Tab = "dashboard" | "models" | "workers" | "billing" | "events" | "requests" | "configOps" | "advanced";
 
 type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
   runtime_args: string[];
@@ -59,7 +58,7 @@ const tabs: Array<{ id: Tab; label: string }> = [
 ];
 
 function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTab] = useState<Tab>(() => tabFromPath(window.location.pathname));
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [events, setEvents] = useState<WorkerEvent[]>([]);
   const [eventOffset, setEventOffset] = useState(0);
@@ -151,6 +150,22 @@ function App() {
     const timer = window.setInterval(refresh, 5000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const initialTab = tabFromPath(window.location.pathname);
+    if (pathForTab(initialTab) !== window.location.pathname) {
+      window.history.replaceState(null, "", pathForTab(initialTab));
+    }
+
+    const handlePopState = () => setTab(tabFromPath(window.location.pathname));
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  function selectTab(next: Tab) {
+    window.history.pushState(null, "", pathForTab(next));
+    setTab(next);
+  }
 
   const summary = status?.summary;
   const renderedConfigYaml = useMemo(() => {
@@ -306,7 +321,7 @@ function App() {
       <div className="shell">
         <nav className="tabs" aria-label="Admin sections">
           {tabs.map((item) => (
-            <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+            <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => selectTab(item.id)}>
               {item.label}
             </button>
           ))}

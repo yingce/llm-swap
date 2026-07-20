@@ -389,7 +389,26 @@ func uiWorkerIDs(workers []uiWorker) []string {
 func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 
-	for _, path := range []string{"/ui", "/ui/assets/", "/ui/status", "/ui/events", "/ui/requests", "/ui/metrics/summary", "/ui/metrics/model", "/ui/metrics/worker", "/api/billing", "/ui/api/billing", "/ui/api/config"} {
+	for _, path := range []string{
+		"/ui",
+		"/ui/models",
+		"/ui/workers",
+		"/ui/billing",
+		"/ui/event-log",
+		"/ui/request-log",
+		"/ui/config",
+		"/ui/advanced",
+		"/ui/assets/",
+		"/ui/status",
+		"/ui/events",
+		"/ui/requests",
+		"/ui/metrics/summary",
+		"/ui/metrics/model",
+		"/ui/metrics/worker",
+		"/api/billing",
+		"/ui/api/billing",
+		"/ui/api/config",
+	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 
@@ -647,6 +666,54 @@ func TestUIPageServesDashboardHTML(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestUIPageRoutesServeEmbeddedApp(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	for _, path := range []string{
+		"/ui/models",
+		"/ui/workers",
+		"/ui/billing",
+		"/ui/event-log",
+		"/ui/request-log",
+		"/ui/config",
+		"/ui/advanced",
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer agent-secret")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+				t.Fatalf("content-type = %q, want text/html", got)
+			}
+			if body := rr.Body.String(); !strings.Contains(body, "llmswap-admin-root") {
+				t.Fatalf("body missing admin root marker:\n%s", body)
+			}
+		})
+	}
+
+	for _, path := range []string{"/ui/events", "/ui/requests"} {
+		t.Run(path+" remains JSON", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer agent-secret")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+				t.Fatalf("content-type = %q, want application/json", got)
+			}
+		})
 	}
 }
 
