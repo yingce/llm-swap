@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -346,6 +347,238 @@ func TestReconcileRunOnceRendersReadySubsetWhileOtherArtifactInstalls(t *testing
 	case <-installDone:
 	case <-time.After(time.Second):
 		t.Fatal("cold artifact install did not finish after release")
+	}
+}
+
+func TestReconcileRunOnceWaitsForRunningModelReplacementArtifact(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "cold"), "cold", artifact); err != nil {
+		t.Fatalf("WriteMarker(cold) error = %v", err)
+	}
+
+	oldCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+	oldQwen := oldCfg.Models["qwen"]
+	oldQwen.ModelDir = "qwen-old"
+	oldCfg.Models["qwen"] = oldQwen
+	newCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+	newQwen := newCfg.Models["qwen"]
+	newQwen.ModelDir = "qwen-new"
+	newCfg.Models["qwen"] = newQwen
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	oldRendered, err := RenderLlamaSwapConfig(oldCfg, modelRoot, "worker-token")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig(old) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, oldRendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, newCfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+	svc := &FakeService{}
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+		RunningModels:   &fakeRunningModelsClient{models: []protocol.RunningModel{{Model: "qwen", State: "ready"}}},
+	}
+
+	installs := map[string]*artifactInstallState{
+		"qwen": {
+			key:     artifactKey("qwen", "qwen-new", artifact.Object, artifact.Kind, artifact.CRC64ECMA),
+			running: true,
+		},
+	}
+	installDone := make(chan artifactInstallResult, 1)
+	if _, err := rec.reconcileRunOnce(context.Background(), installs, installDone); err != nil {
+		t.Fatalf("reconcileRunOnce(pending) error = %v", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if heartbeats[0].NeedsRestart || len(heartbeats[0].RestartModels) != 0 {
+		t.Fatalf("pending replacement heartbeat = %+v, want no restart request", heartbeats[0])
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0 while replacement installs", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, oldRendered) {
+		t.Fatalf("config changed while replacement installs:\n%s", got)
+	}
+	if _, err := os.Stat(restartPendingMarkerPath(configPath)); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist", err)
+	}
+
+	delete(installs, "qwen")
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen-new"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker(qwen replacement) error = %v", err)
+	}
+	if _, err := rec.reconcileRunOnce(context.Background(), installs, installDone); err != nil {
+		t.Fatalf("reconcileRunOnce(ready) error = %v", err)
+	}
+	if len(heartbeats) != 2 || !heartbeats[1].NeedsRestart {
+		t.Fatalf("ready replacement heartbeats = %+v, want second restart request", heartbeats)
+	}
+	if svc.Restarts != 1 {
+		t.Fatalf("service restarts = %d, want 1 after replacement becomes ready", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(got), "/qwen-new") || strings.Contains(string(got), "/qwen-old") {
+		t.Fatalf("replacement config was not activated:\n%s", got)
+	}
+}
+
+func TestReconcileWaitsForRunningModelReplacementArtifact(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "cold"), "cold", artifact); err != nil {
+		t.Fatalf("WriteMarker(cold) error = %v", err)
+	}
+
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "replacement unavailable", http.StatusServiceUnavailable)
+	}))
+	defer oss.Close()
+	oldCfg := reconcileConfigWithTwoModels(oss.URL, artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+	oldQwen := oldCfg.Models["qwen"]
+	oldQwen.ModelDir = "qwen-old"
+	oldCfg.Models["qwen"] = oldQwen
+	newCfg := reconcileConfigWithTwoModels(oss.URL, artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+	newQwen := newCfg.Models["qwen"]
+	newQwen.ModelDir = "qwen-new"
+	newCfg.Models["qwen"] = newQwen
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	oldRendered, err := RenderLlamaSwapConfig(oldCfg, modelRoot, "worker-token")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig(old) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, oldRendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, newCfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+	svc := &FakeService{}
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      oss.Client(),
+		Service:         svc,
+		RunningModels:   &fakeRunningModelsClient{models: []protocol.RunningModel{{Model: "qwen", State: "ready"}}},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "install artifact") {
+		t.Fatalf("Reconcile(pending) error = %v, want replacement install error", err)
+	}
+	if len(heartbeats) != 1 {
+		t.Fatalf("heartbeats = %d, want 1", len(heartbeats))
+	}
+	if heartbeats[0].NeedsRestart || len(heartbeats[0].RestartModels) != 0 {
+		t.Fatalf("pending replacement heartbeat = %+v, want no restart request", heartbeats[0])
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0 while replacement is unavailable", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, oldRendered) {
+		t.Fatalf("config changed while replacement is unavailable:\n%s", got)
+	}
+	if _, err := os.Stat(restartPendingMarkerPath(configPath)); !os.IsNotExist(err) {
+		t.Fatalf("pending restart marker err = %v, want not exist", err)
+	}
+
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen-new"), "qwen", artifact); err != nil {
+		t.Fatalf("WriteMarker(qwen replacement) error = %v", err)
+	}
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile(ready) error = %v", err)
+	}
+	if len(heartbeats) != 2 || !heartbeats[1].NeedsRestart {
+		t.Fatalf("ready replacement heartbeats = %+v, want second restart request", heartbeats)
+	}
+	if svc.Restarts != 1 {
+		t.Fatalf("service restarts = %d, want 1 after replacement becomes ready", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(got), "/qwen-new") || strings.Contains(string(got), "/qwen-old") {
+		t.Fatalf("replacement config was not activated:\n%s", got)
+	}
+}
+
+func TestReconcileRunningModelRemovalStillRequestsRestart(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "cold"), "cold", artifact); err != nil {
+		t.Fatalf("WriteMarker(cold) error = %v", err)
+	}
+
+	oldCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+	newCfg := reconcileConfigWithTwoModels("https://oss.example.com", artifact, "serve qwen --model {{model_path}}", "serve cold --model {{model_path}}")
+	delete(newCfg.Models, "qwen")
+	newCfg.TagPolicy.AllowedModels = []string{"cold"}
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	oldRendered, err := RenderLlamaSwapConfig(oldCfg, modelRoot, "worker-token")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig(old) error = %v", err)
+	}
+	if err := os.WriteFile(configPath, oldRendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, newCfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "active", RestartAllowed: false})
+	defer gateway.Close()
+	svc := &FakeService{}
+	rec := Reconciler{
+		AgentID:         "gpu-01",
+		Tags:            []string{"gpu-4090"},
+		ModelRoot:       modelRoot,
+		LlamaSwapConfig: configPath,
+		LlamaSwapURL:    "http://worker",
+		LlamaSwapToken:  "worker-token",
+		Gateway:         ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient:      gateway.Client(),
+		Service:         svc,
+		RunningModels:   &fakeRunningModelsClient{models: []protocol.RunningModel{{Model: "qwen", State: "ready"}}},
+	}
+
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(heartbeats) != 1 || !heartbeats[0].NeedsRestart {
+		t.Fatalf("heartbeats = %+v, want restart request for intentional removal", heartbeats)
+	}
+	if got := strings.Join(heartbeats[0].RestartModels, ","); got != "qwen" {
+		t.Fatalf("restart models = %q, want qwen", got)
+	}
+	if svc.Restarts != 0 {
+		t.Fatalf("service restarts = %d, want 0 before gateway authorization", svc.Restarts)
+	}
+	if got, err := os.ReadFile(configPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, oldRendered) {
+		t.Fatalf("config changed before removal restart was authorized:\n%s", got)
 	}
 }
 

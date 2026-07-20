@@ -144,7 +144,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 
 	var pendingConfigContent []byte
 	var restartModels []string
-	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
+	restartBlocked := restartBlockedByUnreadyRunningModelReplacement(cfg, artifactStatus, runningModels)
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
@@ -169,8 +170,9 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 		}
 	}
 
-	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
-	if r.needsRestart {
+	needsRestart := r.needsRestart && !restartBlocked
+	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, needsRestart, artifactStatus)
+	if needsRestart {
 		hb.RestartModels = append([]string(nil), restartModels...)
 	}
 	hb.RunningModels = runningModels
@@ -186,7 +188,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	}
 	r.dropReportedEvents(len(hb.Events))
 
-	if resp.RestartAllowed && r.needsRestart {
+	if resp.RestartAllowed && needsRestart {
 		if len(pendingConfigContent) > 0 {
 			changed, err := writeConfigIfChangedWithoutMarkingPending(r.LlamaSwapConfig, pendingConfigContent)
 			if err != nil {
@@ -425,7 +427,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	var pendingConfigContent []byte
 	var restartModels []string
-	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 {
+	restartBlocked := restartBlockedByUnreadyRunningModelReplacement(cfg, artifactStatus, runningModels)
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked {
 		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
@@ -447,8 +450,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		}
 	}
 
-	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, r.needsRestart, artifactStatus)
-	if r.needsRestart {
+	needsRestart := r.needsRestart && !restartBlocked
+	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, needsRestart, artifactStatus)
+	if needsRestart {
 		hb.RestartModels = append([]string(nil), restartModels...)
 	}
 	hb.RunningModels = runningModels
@@ -464,7 +468,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	}
 	r.dropReportedEvents(len(hb.Events))
 
-	if resp.RestartAllowed && r.needsRestart {
+	if resp.RestartAllowed && needsRestart {
 		if len(pendingConfigContent) > 0 {
 			if _, err := writeConfigIfChangedWithoutMarkingPending(r.LlamaSwapConfig, pendingConfigContent); err != nil {
 				return resp, errors.Join(reconcileErr, err)
@@ -575,6 +579,22 @@ func configWithReadyArtifacts(cfg protocol.AgentConfigResponse, artifactStatus m
 		out.Models[modelName] = model
 	}
 	return out, len(out.TagPolicy.AllowedModels)
+}
+
+func restartBlockedByUnreadyRunningModelReplacement(cfg protocol.AgentConfigResponse, artifactStatus map[string]string, runningModels []protocol.RunningModel) bool {
+	allowed := make(map[string]bool, len(cfg.TagPolicy.AllowedModels))
+	for _, model := range cfg.TagPolicy.AllowedModels {
+		allowed[model] = true
+	}
+	for _, model := range restartRelevantRunningModelNames(runningModels) {
+		if _, configured := cfg.Models[model]; !configured || !allowed[model] {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(artifactStatus[model]), "ready") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Reconciler) restart(ctx context.Context) error {
