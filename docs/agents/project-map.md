@@ -279,17 +279,15 @@ disabled the gateway still runs with no external database.
     take effect immediately, or `save_requires_gateway_restart` when the YAML
     was persisted but the running snapshot was intentionally left unchanged.
   - The admin UI treats config as a structured operations console by default:
-    `Config Ops` creates blank or cloned concrete models, edits model policy and
-    model directories, manages model aliases, selects Tag membership, and
-    deletes only unreferenced and unloaded model configuration entries. It
-    preserves canonical model names as immutable identities. `Advanced` is a
-    read-only YAML viewer for full config inspection and copy/paste.
-  - `New model` and `Copy` share one modal editor. Blank models start disabled
-    with the `vLLM` runtime and `min_loaded: 0`; copied models retain the source
-    runtime and Tag selections but reset those lifecycle defaults. Runtime
-    selection is limited to `vLLM`, `SGLang`, and `llama.cpp`. Legacy models
-    configured with a raw `run` command remain compatible as a read-only
-    `Custom command` state.
+    `Config Ops` creates blank concrete models through `New model`, edits
+    existing model policy and model directories in place, manages model
+    aliases, and selects Tag membership. It preserves canonical model names as
+    immutable identities. `Advanced` is a read-only YAML viewer for full config
+    inspection and includes `Copy YAML` for copy/paste.
+  - New blank models start disabled with the `vLLM` runtime and
+    `min_loaded: 0`. Runtime selection is limited to `vLLM`, `SGLang`, and
+    `llama.cpp`. Legacy models configured with a raw `run` command remain
+    compatible as a read-only `Custom command` state.
   - Saving the modal updates only the local configuration draft. Canceling it
     (including a dirty-draft discard) cannot change gateway configuration;
     validation and persistence remain explicit Dry run and Apply actions.
@@ -867,7 +865,7 @@ gateway-side tailnet path.
   capacity is needed elsewhere.
 - Canonical model names are immutable identities. For a version upgrade, create
   a new concrete model with a unique `model_dir` and add its canonical key to
-  the intended tag policies. New and copied models start disabled with
+  the intended tag policies. New blank models start disabled with
   `min_loaded: 0`: apply the draft, explicitly enable the new model, warm at
   least one replica to ready, validate the concrete name, then retarget the
   stable alias.
@@ -880,10 +878,6 @@ gateway-side tailnet path.
   Versioned directories are not deleted automatically, preserving the old
   artifact for this pointer rollback. Editing `model_dir` in place is different:
   it changes the runtime path and follows loaded-worker restart/reload impact.
-- Config Ops deletion is blocked until Alias targets, Tag-policy
-  `allowed_models` references, and reported ready, loading, or running replicas
-  are cleared or unloaded. It then removes only the configuration entry and
-  retains worker-local files and historical data.
 
 ## Known Compatibility Notes
 
