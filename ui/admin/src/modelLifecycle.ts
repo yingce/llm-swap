@@ -5,6 +5,14 @@ export type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
   max_loaded_auto: boolean;
 };
 
+export const MODEL_RUNTIME_OPTIONS = ["vllm", "sglang", "llamacpp"] as const;
+
+export type ModelCreateDraft = {
+  name: string;
+  model: EditableModelConfig;
+  tags: string[];
+};
+
 export type ModelDeleteBlockers = {
   aliases: string[];
   tags: string[];
@@ -25,7 +33,7 @@ export function emptyEditableModel(): EditableModelConfig {
     ttl: 0,
     artifact: { object: "", kind: "tar_gz", crc64ecma: "" },
     run: "",
-    runtime: "",
+    runtime: "vllm",
     runtime_args: []
   };
 }
@@ -39,6 +47,12 @@ export function copyEditableModel(source: EditableModelConfig): EditableModelCon
     disabled: true,
     min_loaded: 0
   };
+}
+
+export function isModelCreateDraftDirty(initial: ModelCreateDraft, current: ModelCreateDraft) {
+  return initial.name !== current.name
+    || initial.tags.join("\u0000") !== current.tags.join("\u0000")
+    || JSON.stringify(initial.model) !== JSON.stringify(current.model);
 }
 
 export function validateNewModelName(

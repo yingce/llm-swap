@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { EditableModelConfig } from "./modelLifecycle";
 import {
+  MODEL_RUNTIME_OPTIONS,
   copyEditableModel,
   emptyEditableModel,
+  isModelCreateDraftDirty,
   modelDeleteBlockers,
   setModelTagMembership,
   validateNewModelName
@@ -72,6 +74,11 @@ describe("model lifecycle drafts", () => {
     });
   });
 
+  it("defaults a blank model to vllm and exposes only supported runtime options", () => {
+    expect(MODEL_RUNTIME_OPTIONS).toEqual(["vllm", "sglang", "llamacpp"]);
+    expect(emptyEditableModel()).toMatchObject({ runtime: "vllm", disabled: true, min_loaded: 0 });
+  });
+
   it("copies model drafts without mutating nested source values", () => {
     const copied = copyEditableModel(sourceModel);
     expect(copied).toMatchObject({ disabled: true, min_loaded: 0, model_dir: sourceModel.model_dir });
@@ -79,6 +86,27 @@ describe("model lifecycle drafts", () => {
     copied.runtime_args.push("--new");
     expect(sourceModel.artifact.object).not.toBe("other.tar.gz");
     expect(sourceModel.runtime_args).not.toContain("--new");
+  });
+
+  it("keeps the copied runtime while resetting safe lifecycle defaults", () => {
+    const copied = copyEditableModel({ ...sourceModel, runtime: "sglang" });
+    expect(copied).toMatchObject({ runtime: "sglang", disabled: true, min_loaded: 0 });
+  });
+
+  it("detects dirty create drafts from name, model, or tag changes", () => {
+    const initial = {
+      name: "v1-copy",
+      model: copyEditableModel({ ...sourceModel, runtime: "sglang" }),
+      tags: ["gpu-a"]
+    };
+
+    expect(isModelCreateDraftDirty(initial, initial)).toBe(false);
+    expect(isModelCreateDraftDirty(initial, { ...initial, name: "v2" })).toBe(true);
+    expect(isModelCreateDraftDirty(initial, { ...initial, tags: ["gpu-b"] })).toBe(true);
+    expect(isModelCreateDraftDirty(initial, {
+      ...initial,
+      model: { ...initial.model, runtime: "llamacpp" }
+    })).toBe(true);
   });
 
   it("validates name collisions after trimming", () => {
