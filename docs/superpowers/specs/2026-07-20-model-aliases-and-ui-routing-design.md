@@ -160,11 +160,10 @@ The editor serializes `model_dir` and `model_aliases` through the existing YAML
 round-trip path. Empty `model_dir` values are omitted. Alias ordering is stable
 to avoid noisy drafts and dry-run diffs.
 
-This feature does not add full model create/delete UI. Concrete model versions
-continue to be created through the existing configuration source, while Config
-Ops can edit their directory and manage aliases. Full model CRUD is a separate
-feature because it requires defaults, artifact validation UX, and tag-policy
-coordination beyond alias switching.
+Historical note: the former exclusion of full model create/delete UI was
+superseded by the [Config Ops Model Lifecycle Design](2026-07-21-config-ops-model-lifecycle-design.md).
+That successor design adds guarded concrete-model lifecycle operations while
+preserving this document's canonical identity and alias-routing contract.
 
 ## Independent UI Routes
 

@@ -1,6 +1,6 @@
 # LLM Swap Project Map
 
-Last updated: 2026-07-20.
+Last updated: 2026-07-21.
 
 This document is the current high-level map for future agents. It reflects the
 code state after the gateway UI, token unification, worker event persistence,
@@ -279,9 +279,11 @@ disabled the gateway still runs with no external database.
     take effect immediately, or `save_requires_gateway_restart` when the YAML
     was persisted but the running snapshot was intentionally left unchanged.
   - The admin UI treats config as a structured operations console by default:
-    `Config Ops` edits model policy, model directories, model aliases, and tag
-    policies, while `Advanced` is a read-only YAML viewer for full config
-    inspection and copy/paste.
+    `Config Ops` creates blank or cloned concrete models, edits model policy and
+    model directories, manages model aliases, selects Tag membership, and
+    deletes only unreferenced and unloaded model configuration entries. It
+    preserves canonical model names as immutable identities. `Advanced` is a
+    read-only YAML viewer for full config inspection and copy/paste.
   - Dry-run returns coarse impact changes plus loaded-worker impacts. Model
     policy changes are hot-update candidates. Runtime command/artifact changes
     only require worker restart/reload when the affected model is currently
@@ -854,9 +856,11 @@ gateway-side tailnet path.
   Use explicit `max_loaded` to cap expensive models.
 - `min_loaded=0` models behave as opportunity cache and can remain loaded until
   capacity is needed elsewhere.
-- For a version upgrade, add the new concrete model and unique `model_dir`, add
-  its canonical key to the intended tag policies, warm at least one replica to
-  ready, and validate the concrete name before retargeting the stable alias.
+- Canonical model names are immutable identities. For a version upgrade, create
+  a new concrete model with a unique `model_dir`, add its canonical key to the
+  intended tag policies, warm at least one replica to ready, and validate the
+  concrete name before retargeting the stable alias. New and copied models start
+  disabled with `min_loaded: 0`.
 - Retargeting only `model_aliases.<alias>` is a gateway hot update: workers keep
   serving their canonical models and new requests immediately resolve through
   the new pointer. The gateway permits an unready target for cold-start and
@@ -866,6 +870,8 @@ gateway-side tailnet path.
   Versioned directories are not deleted automatically, preserving the old
   artifact for this pointer rollback. Editing `model_dir` in place is different:
   it changes the runtime path and follows loaded-worker restart/reload impact.
+- Config Ops deletion removes only an unreferenced and unloaded configuration
+  entry. It retains worker-local files and historical data.
 
 ## Known Compatibility Notes
 
