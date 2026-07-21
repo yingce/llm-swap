@@ -745,8 +745,90 @@ textarea {
   gap: 8px;
 }
 
-.model-create {
+.model-disabled-toggle {
+  align-self: flex-start;
+  align-items: center;
+  background: #f8fafb;
+  border: 1px solid #d9e1e8;
+  border-radius: 999px;
+  color: #536170;
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  padding: 7px 10px;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.model-disabled-toggle input {
+  margin: 0;
+}
+
+.modal-backdrop {
+  align-items: center;
+  background: rgb(24 32 42 / 48%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 20;
+}
+
+.model-create-modal {
+  background: #ffffff;
+  border: 1px solid #c7d3dc;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgb(24 32 42 / 28%);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: calc(100vh - 48px);
+  max-width: 920px;
+  overflow: hidden;
+  width: min(100%, 920px);
+}
+
+.model-create-modal > header {
+  border-bottom: 1px solid #e5ebf0;
+  padding: 16px 18px;
+}
+
+.model-create-modal > header h2 {
+  color: #18202a;
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+
+.model-create-modal > header p {
+  color: #677483;
+  font-size: 13px;
+  margin: 0;
+}
+
+.model-create-modal-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+
+.model-create-modal-body .config-card {
+  margin: 0;
+}
+
+.modal-discard-confirm {
+  background: #fff7f5;
+  border: 1px solid #f3bbb4;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.modal-discard-confirm p {
+  color: #6f332d;
+  font-size: 13px;
+  margin: 0;
 }
 
 .picker-list {
@@ -1047,5 +1129,26 @@ textarea {
 
   .model-card-actions button {
     flex: 1 1 140px;
+  }
+
+  .model-create-modal {
+    max-height: calc(100vh - 24px);
+  }
+
+  .modal-backdrop {
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .model-create-modal .model-card-actions {
+    flex-direction: column;
+  }
+
+  .model-create-modal .model-card-actions button {
+    width: 100%;
+  }
+
+  .model-disabled-toggle {
+    padding: 6px 9px;
   }
 }

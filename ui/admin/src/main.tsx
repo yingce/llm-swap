@@ -29,12 +29,15 @@ import {
 } from "./api";
 import { removeAlias, setAliasTarget, validateAliasDraft } from "./modelAliases";
 import {
+  MODEL_RUNTIME_OPTIONS,
   copyEditableModel,
   emptyEditableModel,
+  isModelCreateDraftDirty,
   modelDeleteBlockers,
   setModelTagMembership,
   validateNewModelName,
   type EditableModelConfig,
+  type ModelCreateDraft,
   type ModelDeleteBlockers
 } from "./modelLifecycle";
 import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./routes";
@@ -1139,9 +1142,9 @@ function ConfigOps({
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedTag, setSelectedTag] = useState("");
   const [createMode, setCreateMode] = useState<"blank" | "copy" | null>(null);
-  const [createName, setCreateName] = useState("");
-  const [createModel, setCreateModel] = useState<EditableModelConfig | null>(null);
-  const [createTags, setCreateTags] = useState<string[]>([]);
+  const [createDraft, setCreateDraft] = useState<ModelCreateDraft | null>(null);
+  const [createInitialDraft, setCreateInitialDraft] = useState<ModelCreateDraft | null>(null);
+  const [discardCreateConfirm, setDiscardCreateConfirm] = useState(false);
   const [createError, setCreateError] = useState("");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteNameConfirmation, setDeleteNameConfirmation] = useState("");
@@ -1176,32 +1179,45 @@ function ConfigOps({
 
   function startCreate(mode: "blank" | "copy") {
     const source = currentDraft.models[selectedModel];
+    const nextDraft: ModelCreateDraft = {
+      name: "",
+      model: mode === "copy" && source ? copyEditableModel(source) : emptyEditableModel(),
+      tags: mode === "copy" ? tagNames.filter((tag) => currentDraft.tag_policies[tag].allowed_models.includes(selectedModel)) : []
+    };
     setCreateMode(mode);
-    setCreateName("");
-    setCreateModel(mode === "copy" && source ? copyEditableModel(source) : emptyEditableModel());
-    setCreateTags(mode === "copy" ? tagNames.filter((tag) => currentDraft.tag_policies[tag].allowed_models.includes(selectedModel)) : []);
+    setCreateDraft(nextDraft);
+    setCreateInitialDraft(cloneModelCreateDraft(nextDraft));
+    setDiscardCreateConfirm(false);
     setCreateError("");
     setShowDeleteConfirm(false);
   }
 
-  function cancelCreate() {
+  function clearCreateModal() {
     setCreateMode(null);
-    setCreateName("");
-    setCreateModel(null);
-    setCreateTags([]);
+    setCreateDraft(null);
+    setCreateInitialDraft(null);
+    setDiscardCreateConfirm(false);
     setCreateError("");
   }
 
+  function requestCloseCreateModal() {
+    if (createDraft && createInitialDraft && isModelCreateDraftDirty(createInitialDraft, createDraft)) {
+      setDiscardCreateConfirm(true);
+      return;
+    }
+    clearCreateModal();
+  }
+
   function saveCreatedModel() {
-    if (!createModel) return;
-    const validationError = validateNewModelName(createName, currentDraft.models, currentDraft.model_aliases);
+    if (!createDraft) return;
+    const validationError = validateNewModelName(createDraft.name, currentDraft.models, currentDraft.model_aliases);
     setCreateError(validationError);
     if (validationError) return;
-    const modelName = createName.trim();
-    onCreateModel(modelName, createModel, createTags);
+    const modelName = createDraft.name.trim();
+    onCreateModel(modelName, createDraft.model, createDraft.tags);
     setShowDisabledModels(true);
     setSelectedModel(modelName);
-    cancelCreate();
+    clearCreateModal();
   }
 
   function deleteSelectedModel() {
@@ -1276,49 +1292,7 @@ function ConfigOps({
             })}
           </ConfigListCard>
 
-          {createMode && createModel ? (
-            <div className="model-create">
-              <ModelEditor
-                name="New model"
-                model={createModel}
-                editableName={{
-                  value: createName,
-                  onChange: (value) => {
-                    setCreateName(value);
-                    if (createError) setCreateError(validateNewModelName(value, currentDraft.models, currentDraft.model_aliases));
-                  },
-                  error: createError
-                }}
-                onChange={setCreateModel}
-              >
-                <div className="checkbox-block">
-                  <strong>Allowed tags</strong>
-                  <div className="tag-checkbox-list">
-                    {tagNames.map((tagName) => {
-                      const checked = createTags.includes(tagName);
-                      return (
-                        <label key={tagName} className="checkbox-item">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => setCreateTags((current) => checked
-                              ? current.filter((tag) => tag !== tagName)
-                              : [...current, tagName].sort())}
-                          />
-                          <span>{tagName}</span>
-                        </label>
-                      );
-                    })}
-                    {tagNames.length === 0 ? <div className="empty">No tag policies are configured.</div> : null}
-                  </div>
-                </div>
-                <div className="model-card-actions">
-                  <button type="button" className="primary" onClick={saveCreatedModel}>Save to draft</button>
-                  <button type="button" onClick={cancelCreate}>Cancel</button>
-                </div>
-              </ModelEditor>
-            </div>
-          ) : selectedModelConfig ? (
+          {selectedModelConfig ? (
             <ModelEditor
               key={selectedModel}
               name={selectedModel}
@@ -1422,6 +1396,27 @@ function ConfigOps({
           <ChangeList changes={changes} />
         </div>
       </div>
+
+      {createMode && createDraft && createInitialDraft ? (
+        <ModelCreateModal
+          mode={createMode}
+          draft={createDraft}
+          initialDraft={createInitialDraft}
+          tagNames={tagNames}
+          nameError={createError}
+          discardConfirm={discardCreateConfirm}
+          onChange={(nextDraft) => {
+            setCreateDraft(nextDraft);
+            if (createError) {
+              setCreateError(validateNewModelName(nextDraft.name, currentDraft.models, currentDraft.model_aliases));
+            }
+          }}
+          onSave={saveCreatedModel}
+          onRequestClose={requestCloseCreateModal}
+          onKeepEditing={() => setDiscardCreateConfirm(false)}
+          onDiscard={clearCreateModal}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1487,6 +1482,124 @@ function ConfigListCard({
   );
 }
 
+function cloneModelCreateDraft(draft: ModelCreateDraft): ModelCreateDraft {
+  return {
+    name: draft.name,
+    model: {
+      ...draft.model,
+      artifact: { ...draft.model.artifact },
+      runtime_args: [...draft.model.runtime_args],
+      billing: draft.model.billing ? { ...draft.model.billing } : undefined
+    },
+    tags: [...draft.tags]
+  };
+}
+
+function ModelCreateModal({
+  mode,
+  draft,
+  initialDraft,
+  tagNames,
+  nameError,
+  discardConfirm,
+  onChange,
+  onSave,
+  onRequestClose,
+  onKeepEditing,
+  onDiscard
+}: {
+  mode: "blank" | "copy";
+  draft: ModelCreateDraft;
+  initialDraft: ModelCreateDraft;
+  tagNames: string[];
+  nameError: string;
+  discardConfirm: boolean;
+  onChange: (next: ModelCreateDraft) => void;
+  onSave: () => void;
+  onRequestClose: () => void;
+  onKeepEditing: () => void;
+  onDiscard: () => void;
+}) {
+  const hasUnsavedChanges = isModelCreateDraftDirty(initialDraft, draft);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onRequestClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onRequestClose]);
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onRequestClose();
+        }
+      }}
+    >
+      <section className="model-create-modal" role="dialog" aria-modal="true" aria-labelledby="model-create-modal-title">
+        <header>
+          <h2 id="model-create-modal-title">{mode === "copy" ? "Copy model" : "New model"}</h2>
+          <p>{mode === "copy" ? "Create a disabled draft from the selected model." : "Create a disabled model draft."}</p>
+        </header>
+        <div className="model-create-modal-body">
+          <ModelEditor
+            name="New model"
+            model={draft.model}
+            editableName={{
+              value: draft.name,
+              onChange: (name) => onChange({ ...draft, name }),
+              error: nameError
+            }}
+            onChange={(model) => onChange({ ...draft, model })}
+          >
+            <div className="checkbox-block">
+              <strong>Allowed tags</strong>
+              <div className="tag-checkbox-list">
+                {tagNames.map((tagName) => {
+                  const checked = draft.tags.includes(tagName);
+                  return (
+                    <label key={tagName} className="checkbox-item">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onChange({
+                          ...draft,
+                          tags: checked ? draft.tags.filter((tag) => tag !== tagName) : [...draft.tags, tagName].sort()
+                        })}
+                      />
+                      <span>{tagName}</span>
+                    </label>
+                  );
+                })}
+                {tagNames.length === 0 ? <div className="empty">No tag policies are configured.</div> : null}
+              </div>
+            </div>
+            <div className="model-card-actions">
+              <button type="button" className="primary" onClick={onSave}>Save to draft</button>
+              <button type="button" onClick={onRequestClose}>Cancel</button>
+            </div>
+            {discardConfirm && hasUnsavedChanges ? (
+              <div className="modal-discard-confirm">
+                <strong>Discard unsaved model changes?</strong>
+                <p>This model has not been added to the config draft yet.</p>
+                <div className="model-card-actions">
+                  <button type="button" onClick={onKeepEditing}>Keep editing</button>
+                  <button type="button" className="danger" onClick={onDiscard}>Discard changes</button>
+                </div>
+              </div>
+            ) : null}
+          </ModelEditor>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ModelEditor({
   name,
   model,
@@ -1525,6 +1638,14 @@ function ModelEditor({
           <p>Push policy, runtime, and artifact settings.</p>
         </div>
         {actions}
+        <label className="model-disabled-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(model.disabled)}
+            onChange={(event) => onChange({ ...model, disabled: event.target.checked || undefined })}
+          />
+          <span>Disabled</span>
+        </label>
         {liveStatus ? <div className="config-card-state">
           <Badge tone={liveStatus?.available ? "good" : "warn"}>{liveStatus?.available ? "ready" : "draft only"}</Badge>
           <span>{`${liveStatus.ready_workers} ready / ${liveStatus.running_workers} running`}</span>
@@ -1546,14 +1667,6 @@ function ModelEditor({
             {editableName.error ? <span className="field-error">{editableName.error}</span> : null}
           </label>
         ) : null}
-        <label className="checkbox-item field-span">
-          <input
-            type="checkbox"
-            checked={Boolean(model.disabled)}
-            onChange={(event) => onChange({ ...model, disabled: event.target.checked || undefined })}
-          />
-          <span>Disabled</span>
-        </label>
         <label className="field-span">
           <span>Model directory</span>
           <input
@@ -1587,14 +1700,19 @@ function ModelEditor({
           onChange={(value) => onChange({ ...model, max_loaded: value })}
         />
 
-        <label>
-          <span>Runtime</span>
-          <input
-            value={model.runtime ?? ""}
-            disabled={isRawRunModel}
-            onChange={(event) => onChange({ ...model, runtime: event.target.value })}
-          />
-        </label>
+        {isRawRunModel ? (
+          <label>
+            <span>Runtime</span>
+            <input value="Custom command" readOnly />
+          </label>
+        ) : (
+          <label>
+            <span>Runtime</span>
+            <select value={model.runtime ?? "vllm"} onChange={(event) => onChange({ ...model, runtime: event.target.value })}>
+              {MODEL_RUNTIME_OPTIONS.map((runtime) => <option key={runtime} value={runtime}>{runtime}</option>)}
+            </select>
+          </label>
+        )}
         <label>
           <span>Check endpoint</span>
           <input value={model.check_endpoint ?? ""} onChange={(event) => onChange({ ...model, check_endpoint: event.target.value })} />
