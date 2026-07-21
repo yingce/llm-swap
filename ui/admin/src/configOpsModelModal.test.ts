@@ -23,10 +23,14 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain('import { createPortal } from "react-dom"');
     expect(source).toContain('ref={appContentRef}');
     expect(source).toContain("appContentRef.current");
-    expect(source).toContain("app.inert = Boolean(createMode)");
+    expect(source).toContain("app.inert = Boolean(createDraft)");
     expect(source).toContain("createPortal(");
     expect(source).toContain("document.body");
     expect(source).toContain("createTriggerRef.current");
-    expect(source).toContain("data-model-create-trigger");
+    expect(source).not.toContain('data-model-create-trigger="copy"');
+    expect(source).not.toContain("Delete model");
+    expect(source).not.toContain("onDeleteModel");
+    expect(source).toContain('data-model-create-trigger="new"');
+    expect(source).toContain("Copy YAML");
   });
 });

@@ -31,15 +31,12 @@ import {
 import { removeAlias, setAliasTarget, validateAliasDraft } from "./modelAliases";
 import {
   MODEL_RUNTIME_OPTIONS,
-  copyEditableModel,
   emptyEditableModel,
   isModelCreateDraftDirty,
-  modelDeleteBlockers,
   setModelTagMembership,
   validateNewModelName,
   type EditableModelConfig,
-  type ModelCreateDraft,
-  type ModelDeleteBlockers
+  type ModelCreateDraft
 } from "./modelLifecycle";
 import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./routes";
 import "./styles.css";
@@ -222,12 +219,6 @@ function App() {
     });
   }
 
-  function deleteModel(modelName: string) {
-    updateDraft((draft) => {
-      delete draft.models[modelName];
-    });
-  }
-
   function replaceModelAliases(nextAliases: Record<string, string>) {
     updateDraft((draft) => {
       draft.model_aliases = { ...nextAliases };
@@ -393,7 +384,6 @@ function App() {
               onApply={() => void applyDraft()}
               onModelChange={replaceModel}
               onCreateModel={createModel}
-              onDeleteModel={deleteModel}
               onAliasesChange={replaceModelAliases}
               onTagChange={replaceTagPolicy}
               appContentRef={appContentRef}
@@ -1113,7 +1103,6 @@ function ConfigOps({
   onApply,
   onModelChange,
   onCreateModel,
-  onDeleteModel,
   onAliasesChange,
   onTagChange,
   appContentRef
@@ -1132,7 +1121,6 @@ function ConfigOps({
   onApply: () => void;
   onModelChange: (modelName: string, nextModel: EditableModelConfig) => void;
   onCreateModel: (modelName: string, model: EditableModelConfig, selectedTags: string[]) => void;
-  onDeleteModel: (modelName: string) => void;
   onAliasesChange: (nextAliases: Record<string, string>) => void;
   onTagChange: (tagName: string, nextPolicy: TagPolicyConfig) => void;
   appContentRef: React.RefObject<HTMLElement | null>;
@@ -1146,16 +1134,11 @@ function ConfigOps({
   const tagNames = useMemo(() => sortedKeys(draft?.tag_policies), [draft]);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedTag, setSelectedTag] = useState("");
-  const [createMode, setCreateMode] = useState<"blank" | "copy" | null>(null);
   const [createDraft, setCreateDraft] = useState<ModelCreateDraft | null>(null);
   const [createInitialDraft, setCreateInitialDraft] = useState<ModelCreateDraft | null>(null);
   const [discardCreateConfirm, setDiscardCreateConfirm] = useState(false);
   const [createError, setCreateError] = useState("");
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [deleteNameConfirmation, setDeleteNameConfirmation] = useState("");
-  const configOpsContentRef = useRef<HTMLDivElement>(null);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
-  const createTriggerKindRef = useRef<"blank" | "copy" | null>(null);
 
   useEffect(() => {
     if (!selectedModel || !visibleModelNames.includes(selectedModel)) {
@@ -1172,23 +1155,20 @@ function ConfigOps({
   useEffect(() => {
     const app = appContentRef.current;
     if (!app) return;
-    app.inert = Boolean(createMode);
+    app.inert = Boolean(createDraft);
     return () => {
       app.inert = false;
     };
-  }, [appContentRef, createMode]);
+  }, [appContentRef, createDraft]);
 
   useEffect(() => {
-    if (createMode !== null) return;
+    if (createDraft !== null) return;
     const trigger = createTriggerRef.current;
-    const kind = createTriggerKindRef.current;
-    const fallback = kind
-      ? configOpsContentRef.current?.querySelector<HTMLButtonElement>(`[data-model-create-trigger="${kind}"]`)
-      : null;
-    (trigger?.isConnected ? trigger : fallback)?.focus();
+    if (trigger?.isConnected) {
+      trigger.focus();
+    }
     createTriggerRef.current = null;
-    createTriggerKindRef.current = null;
-  }, [createMode]);
+  }, [createDraft]);
 
   if (!configResponse || !draft) {
     return <div className="empty">Loading config workspace...</div>;
@@ -1198,33 +1178,21 @@ function ConfigOps({
   const selectedModelConfig = currentDraft.models[selectedModel];
   const selectedTagPolicy = currentDraft.tag_policies[selectedTag];
   const liveModelMap = new Map((status?.models ?? []).map((model) => [model.name, model]));
-  const deleteBlockers: ModelDeleteBlockers | null = selectedModelConfig
-    ? modelDeleteBlockers(selectedModel, currentDraft.model_aliases, currentDraft.tag_policies, status?.workers ?? [])
-    : null;
-  const canDelete = Boolean(deleteBlockers
-    && deleteBlockers.aliases.length === 0
-    && deleteBlockers.tags.length === 0
-    && deleteBlockers.running.length === 0);
 
-  function startCreate(mode: "blank" | "copy", trigger: HTMLButtonElement) {
-    const source = currentDraft.models[selectedModel];
+  function startCreate(trigger: HTMLButtonElement) {
     const nextDraft: ModelCreateDraft = {
       name: "",
-      model: mode === "copy" && source ? copyEditableModel(source) : emptyEditableModel(),
-      tags: mode === "copy" ? tagNames.filter((tag) => currentDraft.tag_policies[tag].allowed_models.includes(selectedModel)) : []
+      model: emptyEditableModel(),
+      tags: []
     };
-    setCreateMode(mode);
     setCreateDraft(nextDraft);
     setCreateInitialDraft(cloneModelCreateDraft(nextDraft));
     setDiscardCreateConfirm(false);
     setCreateError("");
-    setShowDeleteConfirm(false);
     createTriggerRef.current = trigger;
-    createTriggerKindRef.current = mode;
   }
 
   function clearCreateModal() {
-    setCreateMode(null);
     setCreateDraft(null);
     setCreateInitialDraft(null);
     setDiscardCreateConfirm(false);
@@ -1251,17 +1219,8 @@ function ConfigOps({
     clearCreateModal();
   }
 
-  function deleteSelectedModel() {
-    if (!selectedModel || !canDelete || deleteNameConfirmation !== selectedModel) return;
-    onDeleteModel(selectedModel);
-    setSelectedModel(visibleModelNames.filter((modelName) => modelName !== selectedModel)[0] ?? "");
-    setShowDeleteConfirm(false);
-    setDeleteNameConfirmation("");
-  }
-
   return (
     <div className="config-ops">
-      <div ref={configOpsContentRef}>
       <div className="config-toolbar">
         <div>
           <h2>Config Ops</h2>
@@ -1285,8 +1244,7 @@ function ConfigOps({
             subtitle="Select a model to edit its directory, artifact, runtime, push, and replica policy."
             actions={
               <div className="model-card-actions">
-                <button type="button" data-model-create-trigger="blank" onClick={(event) => startCreate("blank", event.currentTarget)}>New model</button>
-                <button type="button" data-model-create-trigger="copy" disabled={!selectedModelConfig} onClick={(event) => startCreate("copy", event.currentTarget)}>Copy</button>
+                <button type="button" data-model-create-trigger="new" onClick={(event) => startCreate(event.currentTarget)}>New model</button>
               </div>
             }
           >
@@ -1331,57 +1289,7 @@ function ConfigOps({
               model={selectedModelConfig}
               liveStatus={liveModelMap.get(selectedModel)}
               onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
-              actions={
-                <div className="model-card-actions">
-                  <button type="button" data-model-create-trigger="copy" onClick={(event) => startCreate("copy", event.currentTarget)}>Copy</button>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => {
-                      setShowDeleteConfirm((current) => !current);
-                      setDeleteNameConfirmation("");
-                    }}
-                  >
-                    Delete model
-                  </button>
-                </div>
-              }
-            >
-              {showDeleteConfirm && deleteBlockers ? (
-                <div className="delete-model-panel">
-                  <strong>Delete {selectedModel} from this draft?</strong>
-                  <p>Local worker files and model history are retained.</p>
-                  {!canDelete ? (
-                    <>
-                      <p>
-                        Remove every reference and unload every replica first. Use the <a href={pathForTab("models")}>Models page</a> to unload a replica; this action never unloads it automatically.
-                      </p>
-                      <ul className="delete-blocker-list">
-                        {deleteBlockers.aliases.map((alias) => <li key={`alias-${alias}`}>Alias: {alias}</li>)}
-                        {deleteBlockers.tags.map((tag) => <li key={`tag-${tag}`}>Tag: {tag}</li>)}
-                        {deleteBlockers.running.map((running) => <li key={`running-${running.workerID}-${running.state}`}>Running: {running.workerID}: {running.state}</li>)}
-                      </ul>
-                    </>
-                  ) : (
-                    <label>
-                      <span>Type the canonical name to confirm</span>
-                      <input value={deleteNameConfirmation} onChange={(event) => setDeleteNameConfirmation(event.target.value)} />
-                    </label>
-                  )}
-                  <div className="model-card-actions">
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={!canDelete || deleteNameConfirmation !== selectedModel}
-                      onClick={deleteSelectedModel}
-                    >
-                      Delete from draft
-                    </button>
-                    <button type="button" onClick={() => setShowDeleteConfirm(false)}>Cancel</button>
-                  </div>
-                </div>
-              ) : null}
-            </ModelEditor>
+            />
           ) : null}
 
           <ModelAliasesEditor
@@ -1428,11 +1336,9 @@ function ConfigOps({
           <ChangeList changes={changes} />
         </div>
       </div>
-      </div>
 
-      {createMode && createDraft && createInitialDraft ? (
+      {createDraft && createInitialDraft ? (
         <ModelCreateModal
-          mode={createMode}
           draft={createDraft}
           initialDraft={createInitialDraft}
           tagNames={tagNames}
@@ -1529,7 +1435,6 @@ function cloneModelCreateDraft(draft: ModelCreateDraft): ModelCreateDraft {
 }
 
 function ModelCreateModal({
-  mode,
   draft,
   initialDraft,
   tagNames,
@@ -1541,7 +1446,6 @@ function ModelCreateModal({
   onKeepEditing,
   onDiscard
 }: {
-  mode: "blank" | "copy";
   draft: ModelCreateDraft;
   initialDraft: ModelCreateDraft;
   tagNames: string[];
@@ -1613,8 +1517,8 @@ function ModelCreateModal({
         onKeyDown={handleKeyDown}
       >
         <header>
-          <h2 id="model-create-modal-title">{mode === "copy" ? "Copy model" : "New model"}</h2>
-          <p>{mode === "copy" ? "Create a disabled draft from the selected model." : "Create a disabled model draft."}</p>
+          <h2 id="model-create-modal-title">New model</h2>
+          <p>Create a disabled model draft.</p>
         </header>
         <div className="model-create-modal-body">
           <ModelEditor
@@ -1688,7 +1592,6 @@ function ModelEditor({
   model,
   liveStatus,
   editableName,
-  actions,
   children,
   onChange
 }: {
@@ -1696,7 +1599,6 @@ function ModelEditor({
   model: EditableModelConfig;
   liveStatus?: ModelStatus;
   editableName?: { value: string; onChange: (value: string) => void; error: string; inputRef?: React.Ref<HTMLInputElement> };
-  actions?: React.ReactNode;
   children?: React.ReactNode;
   onChange: (nextModel: EditableModelConfig) => void;
 }) {
@@ -1720,7 +1622,6 @@ function ModelEditor({
           <h3>{name}</h3>
           <p>Push policy, runtime, and artifact settings.</p>
         </div>
-        {actions}
         <label className="model-disabled-toggle">
           <input
             type="checkbox"

@@ -1,4 +1,4 @@
-import type { ModelConfig, TagPolicyConfig, WorkerStatus } from "./api";
+import type { ModelConfig, TagPolicyConfig } from "./api";
 
 export type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
   runtime_args: string[];
@@ -11,12 +11,6 @@ export type ModelCreateDraft = {
   name: string;
   model: EditableModelConfig;
   tags: string[];
-};
-
-export type ModelDeleteBlockers = {
-  aliases: string[];
-  tags: string[];
-  running: Array<{ workerID: string; state: string }>;
 };
 
 export function emptyEditableModel(): EditableModelConfig {
@@ -35,17 +29,6 @@ export function emptyEditableModel(): EditableModelConfig {
     run: "",
     runtime: "vllm",
     runtime_args: []
-  };
-}
-
-export function copyEditableModel(source: EditableModelConfig): EditableModelConfig {
-  return {
-    ...source,
-    artifact: { ...source.artifact },
-    runtime_args: [...source.runtime_args],
-    billing: source.billing ? { ...source.billing } : undefined,
-    disabled: true,
-    min_loaded: 0
   };
 }
 
@@ -82,20 +65,4 @@ export function setModelTagMembership(
       allowed_models: [...new Set(allowed)].sort()
     }];
   }));
-}
-
-export function modelDeleteBlockers(
-  model: string,
-  aliases: Record<string, string>,
-  policies: Record<string, TagPolicyConfig>,
-  workers: WorkerStatus[]
-): ModelDeleteBlockers {
-  return {
-    aliases: Object.keys(aliases).filter((alias) => aliases[alias] === model).sort(),
-    tags: Object.keys(policies).filter((tag) => policies[tag].allowed_models.includes(model)).sort(),
-    running: workers.flatMap((worker) => worker.running_models
-      .filter((entry) => entry.model === model)
-      .map((entry) => ({ workerID: worker.id, state: entry.state })))
-      .sort((a, b) => a.workerID.localeCompare(b.workerID) || a.state.localeCompare(b.state))
-  };
 }

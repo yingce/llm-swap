@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { EditableModelConfig } from "./modelLifecycle";
 import {
   MODEL_RUNTIME_OPTIONS,
-  copyEditableModel,
   emptyEditableModel,
   isModelCreateDraftDirty,
-  modelDeleteBlockers,
   setModelTagMembership,
   validateNewModelName
 } from "./modelLifecycle";
@@ -47,22 +45,6 @@ const tags = {
   }
 };
 
-const workers = [{
-  id: "worker-a",
-  tags: ["gpu-a"],
-  health: "healthy",
-  state: "ready",
-  llama_swap_url: "http://worker-a:6006",
-  active_requests: 0,
-  running_models: [{ model: "v1", state: "ready" }, { model: "v2", state: "loading" }],
-  gpu_devices: [],
-  allowed_models: ["v1", "v2"],
-  capacity: { max_concurrency: 2, max_queue: 4 },
-  scrape_failures: 0,
-  agent_build: {},
-  agent_version_status: "current" as const
-}];
-
 describe("model lifecycle drafts", () => {
   it("creates blank drafts with safe defaults", () => {
     expect(emptyEditableModel()).toMatchObject({
@@ -79,29 +61,15 @@ describe("model lifecycle drafts", () => {
     expect(emptyEditableModel()).toMatchObject({ runtime: "vllm", disabled: true, min_loaded: 0 });
   });
 
-  it("copies model drafts without mutating nested source values", () => {
-    const copied = copyEditableModel(sourceModel);
-    expect(copied).toMatchObject({ disabled: true, min_loaded: 0, model_dir: sourceModel.model_dir });
-    copied.artifact.object = "other.tar.gz";
-    copied.runtime_args.push("--new");
-    expect(sourceModel.artifact.object).not.toBe("other.tar.gz");
-    expect(sourceModel.runtime_args).not.toContain("--new");
-  });
-
-  it("keeps the copied runtime while resetting safe lifecycle defaults", () => {
-    const copied = copyEditableModel({ ...sourceModel, runtime: "sglang" });
-    expect(copied).toMatchObject({ runtime: "sglang", disabled: true, min_loaded: 0 });
-  });
-
   it("detects dirty create drafts from name, model, or tag changes", () => {
     const initial = {
-      name: "v1-copy",
-      model: copyEditableModel({ ...sourceModel, runtime: "sglang" }),
-      tags: ["gpu-a"]
+      name: "v2",
+      model: { ...emptyEditableModel(), runtime: "sglang" },
+      tags: []
     };
 
     expect(isModelCreateDraftDirty(initial, initial)).toBe(false);
-    expect(isModelCreateDraftDirty(initial, { ...initial, name: "v2" })).toBe(true);
+    expect(isModelCreateDraftDirty(initial, { ...initial, name: "v3" })).toBe(true);
     expect(isModelCreateDraftDirty(initial, { ...initial, tags: ["gpu-b"] })).toBe(true);
     expect(isModelCreateDraftDirty(initial, {
       ...initial,
@@ -119,11 +87,5 @@ describe("model lifecycle drafts", () => {
     expect(updated["gpu-a"].allowed_models).toEqual(["v1", "v2"]);
     expect(updated["gpu-b"].allowed_models).toEqual(["v3"]);
     expect(tags["gpu-b"].allowed_models).toEqual(["v3", "v2", "v2"]);
-  });
-
-  it("lists all blockers before deleting a model", () => {
-    expect(modelDeleteBlockers("v1", { latest: "v1" }, tags, workers)).toEqual({
-      aliases: ["latest"], tags: ["gpu-a"], running: [{ workerID: "worker-a", state: "ready" }]
-    });
   });
 });
