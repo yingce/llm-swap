@@ -284,6 +284,15 @@ disabled the gateway still runs with no external database.
     deletes only unreferenced and unloaded model configuration entries. It
     preserves canonical model names as immutable identities. `Advanced` is a
     read-only YAML viewer for full config inspection and copy/paste.
+  - `New model` and `Copy` share one modal editor. Blank models start disabled
+    with the `vLLM` runtime and `min_loaded: 0`; copied models retain the source
+    runtime and Tag selections but reset those lifecycle defaults. Runtime
+    selection is limited to `vLLM`, `SGLang`, and `llama.cpp`. Legacy models
+    configured with a raw `run` command remain compatible as a read-only
+    `Custom command` state.
+  - Saving the modal updates only the local configuration draft. Canceling it
+    (including a dirty-draft discard) cannot change gateway configuration;
+    validation and persistence remain explicit Dry run and Apply actions.
   - Dry-run returns coarse impact changes plus loaded-worker impacts. Model
     policy changes are hot-update candidates. Runtime command/artifact changes
     only require worker restart/reload when the affected model is currently
