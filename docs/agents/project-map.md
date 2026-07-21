@@ -857,10 +857,11 @@ gateway-side tailnet path.
 - `min_loaded=0` models behave as opportunity cache and can remain loaded until
   capacity is needed elsewhere.
 - Canonical model names are immutable identities. For a version upgrade, create
-  a new concrete model with a unique `model_dir`, add its canonical key to the
-  intended tag policies, warm at least one replica to ready, and validate the
-  concrete name before retargeting the stable alias. New and copied models start
-  disabled with `min_loaded: 0`.
+  a new concrete model with a unique `model_dir` and add its canonical key to
+  the intended tag policies. New and copied models start disabled with
+  `min_loaded: 0`: apply the draft, explicitly enable the new model, warm at
+  least one replica to ready, validate the concrete name, then retarget the
+  stable alias.
 - Retargeting only `model_aliases.<alias>` is a gateway hot update: workers keep
   serving their canonical models and new requests immediately resolve through
   the new pointer. The gateway permits an unready target for cold-start and
@@ -870,8 +871,10 @@ gateway-side tailnet path.
   Versioned directories are not deleted automatically, preserving the old
   artifact for this pointer rollback. Editing `model_dir` in place is different:
   it changes the runtime path and follows loaded-worker restart/reload impact.
-- Config Ops deletion removes only an unreferenced and unloaded configuration
-  entry. It retains worker-local files and historical data.
+- Config Ops deletion is blocked until Alias targets, Tag-policy
+  `allowed_models` references, and reported ready, loading, or running replicas
+  are cleared or unloaded. It then removes only the configuration entry and
+  retains worker-local files and historical data.
 
 ## Known Compatibility Notes
 
