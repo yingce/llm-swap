@@ -1199,6 +1199,7 @@ function ConfigOps({
     if (validationError) return;
     const modelName = createName.trim();
     onCreateModel(modelName, createModel, createTags);
+    setShowDisabledModels(true);
     setSelectedModel(modelName);
     cancelCreate();
   }
