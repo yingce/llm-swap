@@ -1148,6 +1148,9 @@ function ConfigOps({
   const [createError, setCreateError] = useState("");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteNameConfirmation, setDeleteNameConfirmation] = useState("");
+  const configOpsContentRef = useRef<HTMLDivElement>(null);
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const createTriggerKindRef = useRef<"blank" | "copy" | null>(null);
 
   useEffect(() => {
     if (!selectedModel || !visibleModelNames.includes(selectedModel)) {
@@ -1160,6 +1163,27 @@ function ConfigOps({
       setSelectedTag(tagNames[0] ?? "");
     }
   }, [draft, selectedTag, tagNames]);
+
+  useEffect(() => {
+    const content = configOpsContentRef.current;
+    if (!content) return;
+    content.inert = Boolean(createMode);
+    return () => {
+      content.inert = false;
+    };
+  }, [createMode]);
+
+  useEffect(() => {
+    if (createMode !== null) return;
+    const trigger = createTriggerRef.current;
+    const kind = createTriggerKindRef.current;
+    const fallback = kind
+      ? configOpsContentRef.current?.querySelector<HTMLButtonElement>(`[data-model-create-trigger="${kind}"]`)
+      : null;
+    (trigger?.isConnected ? trigger : fallback)?.focus();
+    createTriggerRef.current = null;
+    createTriggerKindRef.current = null;
+  }, [createMode]);
 
   if (!configResponse || !draft) {
     return <div className="empty">Loading config workspace...</div>;
@@ -1177,7 +1201,7 @@ function ConfigOps({
     && deleteBlockers.tags.length === 0
     && deleteBlockers.running.length === 0);
 
-  function startCreate(mode: "blank" | "copy") {
+  function startCreate(mode: "blank" | "copy", trigger: HTMLButtonElement) {
     const source = currentDraft.models[selectedModel];
     const nextDraft: ModelCreateDraft = {
       name: "",
@@ -1190,6 +1214,8 @@ function ConfigOps({
     setDiscardCreateConfirm(false);
     setCreateError("");
     setShowDeleteConfirm(false);
+    createTriggerRef.current = trigger;
+    createTriggerKindRef.current = mode;
   }
 
   function clearCreateModal() {
@@ -1230,6 +1256,7 @@ function ConfigOps({
 
   return (
     <div className="config-ops">
+      <div ref={configOpsContentRef}>
       <div className="config-toolbar">
         <div>
           <h2>Config Ops</h2>
@@ -1253,8 +1280,8 @@ function ConfigOps({
             subtitle="Select a model to edit its directory, artifact, runtime, push, and replica policy."
             actions={
               <div className="model-card-actions">
-                <button type="button" onClick={() => startCreate("blank")}>New model</button>
-                <button type="button" disabled={!selectedModelConfig} onClick={() => startCreate("copy")}>Copy</button>
+                <button type="button" data-model-create-trigger="blank" onClick={(event) => startCreate("blank", event.currentTarget)}>New model</button>
+                <button type="button" data-model-create-trigger="copy" disabled={!selectedModelConfig} onClick={(event) => startCreate("copy", event.currentTarget)}>Copy</button>
               </div>
             }
           >
@@ -1301,7 +1328,7 @@ function ConfigOps({
               onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
               actions={
                 <div className="model-card-actions">
-                  <button type="button" onClick={() => startCreate("copy")}>Copy</button>
+                  <button type="button" data-model-create-trigger="copy" onClick={(event) => startCreate("copy", event.currentTarget)}>Copy</button>
                   <button
                     type="button"
                     className="danger"
@@ -1395,6 +1422,7 @@ function ConfigOps({
           <ImpactSummary applyMode={applyMode} impacts={impacts} changes={changes} />
           <ChangeList changes={changes} />
         </div>
+      </div>
       </div>
 
       {createMode && createDraft && createInitialDraft ? (
@@ -1521,16 +1549,45 @@ function ModelCreateModal({
   onDiscard: () => void;
 }) {
   const hasUnsavedChanges = isModelCreateDraftDirty(initialDraft, draft);
+  const dialogRef = useRef<HTMLElement>(null);
+  const canonicalNameInputRef = useRef<HTMLInputElement>(null);
+  const discardChoiceRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onRequestClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onRequestClose]);
+    canonicalNameInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (discardConfirm && hasUnsavedChanges) {
+      discardChoiceRef.current?.focus();
+    }
+  }, [discardConfirm, hasUnsavedChanges]);
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      onRequestClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const dialog = dialogRef.current;
+    const focusable = dialog ? modalFocusableElements(dialog) : [];
+    if (focusable.length === 0) {
+      event.preventDefault();
+      dialog?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const focusIsOutsideDialog = !dialog?.contains(document.activeElement);
+    if (event.shiftKey && (document.activeElement === first || focusIsOutsideDialog)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || focusIsOutsideDialog)) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   return (
     <div
@@ -1541,7 +1598,15 @@ function ModelCreateModal({
         }
       }}
     >
-      <section className="model-create-modal" role="dialog" aria-modal="true" aria-labelledby="model-create-modal-title">
+      <section
+        ref={dialogRef}
+        className="model-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="model-create-modal-title"
+        tabIndex={-1}
+        onKeyDown={handleKeyDown}
+      >
         <header>
           <h2 id="model-create-modal-title">{mode === "copy" ? "Copy model" : "New model"}</h2>
           <p>{mode === "copy" ? "Create a disabled draft from the selected model." : "Create a disabled model draft."}</p>
@@ -1553,7 +1618,8 @@ function ModelCreateModal({
             editableName={{
               value: draft.name,
               onChange: (name) => onChange({ ...draft, name }),
-              error: nameError
+              error: nameError,
+              inputRef: canonicalNameInputRef
             }}
             onChange={(model) => onChange({ ...draft, model })}
           >
@@ -1588,7 +1654,7 @@ function ModelCreateModal({
                 <strong>Discard unsaved model changes?</strong>
                 <p>This model has not been added to the config draft yet.</p>
                 <div className="model-card-actions">
-                  <button type="button" onClick={onKeepEditing}>Keep editing</button>
+                  <button ref={discardChoiceRef} type="button" onClick={onKeepEditing}>Keep editing</button>
                   <button type="button" className="danger" onClick={onDiscard}>Discard changes</button>
                 </div>
               </div>
@@ -1598,6 +1664,17 @@ function ModelCreateModal({
       </section>
     </div>
   );
+}
+
+function modalFocusableElements(dialog: HTMLElement): HTMLElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLElement>([
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    '[tabindex]:not([tabindex="-1"])'
+  ].join(", "))).filter((element) => element.tabIndex >= 0 && !element.hasAttribute("inert"));
 }
 
 function ModelEditor({
@@ -1612,7 +1689,7 @@ function ModelEditor({
   name: string;
   model: EditableModelConfig;
   liveStatus?: ModelStatus;
-  editableName?: { value: string; onChange: (value: string) => void; error: string };
+  editableName?: { value: string; onChange: (value: string) => void; error: string; inputRef?: React.Ref<HTMLInputElement> };
   actions?: React.ReactNode;
   children?: React.ReactNode;
   onChange: (nextModel: EditableModelConfig) => void;
@@ -1659,6 +1736,7 @@ function ModelEditor({
           <label className="field-span">
             <span>Canonical model name</span>
             <input
+              ref={editableName.inputRef}
               value={editableName.value}
               required
               onChange={(event) => editableName.onChange(event.target.value)}

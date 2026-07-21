@@ -13,4 +13,16 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain("MODEL_RUNTIME_OPTIONS.map");
     expect(source).toContain('className="model-disabled-toggle"');
   });
+
+  it("manages focus inside the modal and keeps Config Ops inert while it is open", () => {
+    expect(source).toContain("canonicalNameInputRef.current?.focus()");
+    expect(source).toContain("discardChoiceRef.current?.focus()");
+    expect(source).toContain('event.key !== "Tab"');
+    expect(source).toContain("modalFocusableElements(dialog)");
+    expect(source).toContain("onKeyDown={handleKeyDown}");
+    expect(source).toContain("configOpsContentRef.current");
+    expect(source).toContain("content.inert = Boolean(createMode)");
+    expect(source).toContain("createTriggerRef.current");
+    expect(source).toContain("data-model-create-trigger");
+  });
 });
