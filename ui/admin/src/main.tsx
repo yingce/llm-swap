@@ -28,13 +28,17 @@ import {
   dryRunConfig
 } from "./api";
 import { removeAlias, setAliasTarget, validateAliasDraft } from "./modelAliases";
+import {
+  copyEditableModel,
+  emptyEditableModel,
+  modelDeleteBlockers,
+  setModelTagMembership,
+  validateNewModelName,
+  type EditableModelConfig,
+  type ModelDeleteBlockers
+} from "./modelLifecycle";
 import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./routes";
 import "./styles.css";
-
-type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
-  runtime_args: string[];
-  max_loaded_auto: boolean;
-};
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
@@ -206,6 +210,19 @@ function App() {
     });
   }
 
+  function createModel(modelName: string, model: EditableModelConfig, selectedTags: string[]) {
+    updateDraft((draft) => {
+      draft.models[modelName] = model;
+      draft.tag_policies = setModelTagMembership(draft.tag_policies, modelName, selectedTags);
+    });
+  }
+
+  function deleteModel(modelName: string) {
+    updateDraft((draft) => {
+      delete draft.models[modelName];
+    });
+  }
+
   function replaceModelAliases(nextAliases: Record<string, string>) {
     updateDraft((draft) => {
       draft.model_aliases = { ...nextAliases };
@@ -370,6 +387,8 @@ function App() {
               onDryRun={() => void dryRunDraft()}
               onApply={() => void applyDraft()}
               onModelChange={replaceModel}
+              onCreateModel={createModel}
+              onDeleteModel={deleteModel}
               onAliasesChange={replaceModelAliases}
               onTagChange={replaceTagPolicy}
             />
@@ -1087,6 +1106,8 @@ function ConfigOps({
   onDryRun,
   onApply,
   onModelChange,
+  onCreateModel,
+  onDeleteModel,
   onAliasesChange,
   onTagChange
 }: {
@@ -1103,6 +1124,8 @@ function ConfigOps({
   onDryRun: () => void;
   onApply: () => void;
   onModelChange: (modelName: string, nextModel: EditableModelConfig) => void;
+  onCreateModel: (modelName: string, model: EditableModelConfig, selectedTags: string[]) => void;
+  onDeleteModel: (modelName: string) => void;
   onAliasesChange: (nextAliases: Record<string, string>) => void;
   onTagChange: (tagName: string, nextPolicy: TagPolicyConfig) => void;
 }) {
@@ -1115,6 +1138,13 @@ function ConfigOps({
   const tagNames = useMemo(() => sortedKeys(draft?.tag_policies), [draft]);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedTag, setSelectedTag] = useState("");
+  const [createMode, setCreateMode] = useState<"blank" | "copy" | null>(null);
+  const [createName, setCreateName] = useState("");
+  const [createModel, setCreateModel] = useState<EditableModelConfig | null>(null);
+  const [createTags, setCreateTags] = useState<string[]>([]);
+  const [createError, setCreateError] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteNameConfirmation, setDeleteNameConfirmation] = useState("");
 
   useEffect(() => {
     if (!selectedModel || !visibleModelNames.includes(selectedModel)) {
@@ -1132,9 +1162,54 @@ function ConfigOps({
     return <div className="empty">Loading config workspace...</div>;
   }
 
-  const selectedModelConfig = draft.models[selectedModel];
-  const selectedTagPolicy = draft.tag_policies[selectedTag];
+  const currentDraft = draft;
+  const selectedModelConfig = currentDraft.models[selectedModel];
+  const selectedTagPolicy = currentDraft.tag_policies[selectedTag];
   const liveModelMap = new Map((status?.models ?? []).map((model) => [model.name, model]));
+  const deleteBlockers: ModelDeleteBlockers | null = selectedModelConfig
+    ? modelDeleteBlockers(selectedModel, currentDraft.model_aliases, currentDraft.tag_policies, status?.workers ?? [])
+    : null;
+  const canDelete = Boolean(deleteBlockers
+    && deleteBlockers.aliases.length === 0
+    && deleteBlockers.tags.length === 0
+    && deleteBlockers.running.length === 0);
+
+  function startCreate(mode: "blank" | "copy") {
+    const source = currentDraft.models[selectedModel];
+    setCreateMode(mode);
+    setCreateName("");
+    setCreateModel(mode === "copy" && source ? copyEditableModel(source) : emptyEditableModel());
+    setCreateTags(mode === "copy" ? tagNames.filter((tag) => currentDraft.tag_policies[tag].allowed_models.includes(selectedModel)) : []);
+    setCreateError("");
+    setShowDeleteConfirm(false);
+  }
+
+  function cancelCreate() {
+    setCreateMode(null);
+    setCreateName("");
+    setCreateModel(null);
+    setCreateTags([]);
+    setCreateError("");
+  }
+
+  function saveCreatedModel() {
+    if (!createModel) return;
+    const validationError = validateNewModelName(createName, currentDraft.models, currentDraft.model_aliases);
+    setCreateError(validationError);
+    if (validationError) return;
+    const modelName = createName.trim();
+    onCreateModel(modelName, createModel, createTags);
+    setSelectedModel(modelName);
+    cancelCreate();
+  }
+
+  function deleteSelectedModel() {
+    if (!selectedModel || !canDelete || deleteNameConfirmation !== selectedModel) return;
+    onDeleteModel(selectedModel);
+    setSelectedModel(visibleModelNames.filter((modelName) => modelName !== selectedModel)[0] ?? "");
+    setShowDeleteConfirm(false);
+    setDeleteNameConfirmation("");
+  }
 
   return (
     <div className="config-ops">
@@ -1156,7 +1231,16 @@ function ConfigOps({
 
       <div className="config-grid">
         <div className="config-stack">
-          <ConfigListCard title="Models" subtitle="Select a model to edit its directory, artifact, runtime, push, and replica policy.">
+          <ConfigListCard
+            title="Models"
+            subtitle="Select a model to edit its directory, artifact, runtime, push, and replica policy."
+            actions={
+              <div className="model-card-actions">
+                <button type="button" onClick={() => startCreate("blank")}>New model</button>
+                <button type="button" disabled={!selectedModelConfig} onClick={() => startCreate("copy")}>Copy</button>
+              </div>
+            }
+          >
             <label className="checkbox-item compact-checkbox">
               <input
                 type="checkbox"
@@ -1191,14 +1275,106 @@ function ConfigOps({
             })}
           </ConfigListCard>
 
-          {selectedModelConfig ? (
+          {createMode && createModel ? (
+            <div className="model-create">
+              <ModelEditor
+                name="New model"
+                model={createModel}
+                editableName={{
+                  value: createName,
+                  onChange: (value) => {
+                    setCreateName(value);
+                    if (createError) setCreateError(validateNewModelName(value, currentDraft.models, currentDraft.model_aliases));
+                  },
+                  error: createError
+                }}
+                onChange={setCreateModel}
+              >
+                <div className="checkbox-block">
+                  <strong>Allowed tags</strong>
+                  <div className="tag-checkbox-list">
+                    {tagNames.map((tagName) => {
+                      const checked = createTags.includes(tagName);
+                      return (
+                        <label key={tagName} className="checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => setCreateTags((current) => checked
+                              ? current.filter((tag) => tag !== tagName)
+                              : [...current, tagName].sort())}
+                          />
+                          <span>{tagName}</span>
+                        </label>
+                      );
+                    })}
+                    {tagNames.length === 0 ? <div className="empty">No tag policies are configured.</div> : null}
+                  </div>
+                </div>
+                <div className="model-card-actions">
+                  <button type="button" className="primary" onClick={saveCreatedModel}>Save to draft</button>
+                  <button type="button" onClick={cancelCreate}>Cancel</button>
+                </div>
+              </ModelEditor>
+            </div>
+          ) : selectedModelConfig ? (
             <ModelEditor
               key={selectedModel}
               name={selectedModel}
               model={selectedModelConfig}
               liveStatus={liveModelMap.get(selectedModel)}
               onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
-            />
+              actions={
+                <div className="model-card-actions">
+                  <button type="button" onClick={() => startCreate("copy")}>Copy</button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      setShowDeleteConfirm((current) => !current);
+                      setDeleteNameConfirmation("");
+                    }}
+                  >
+                    Delete model
+                  </button>
+                </div>
+              }
+            >
+              {showDeleteConfirm && deleteBlockers ? (
+                <div className="delete-model-panel">
+                  <strong>Delete {selectedModel} from this draft?</strong>
+                  <p>Local worker files and model history are retained.</p>
+                  {!canDelete ? (
+                    <>
+                      <p>
+                        Remove every reference and unload every replica first. Use the <a href={pathForTab("models")}>Models page</a> to unload a replica; this action never unloads it automatically.
+                      </p>
+                      <ul className="delete-blocker-list">
+                        {deleteBlockers.aliases.map((alias) => <li key={`alias-${alias}`}>Alias: {alias}</li>)}
+                        {deleteBlockers.tags.map((tag) => <li key={`tag-${tag}`}>Tag: {tag}</li>)}
+                        {deleteBlockers.running.map((running) => <li key={`running-${running.workerID}-${running.state}`}>Running: {running.workerID}: {running.state}</li>)}
+                      </ul>
+                    </>
+                  ) : (
+                    <label>
+                      <span>Type the canonical name to confirm</span>
+                      <input value={deleteNameConfirmation} onChange={(event) => setDeleteNameConfirmation(event.target.value)} />
+                    </label>
+                  )}
+                  <div className="model-card-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={!canDelete || deleteNameConfirmation !== selectedModel}
+                      onClick={deleteSelectedModel}
+                    >
+                      Delete from draft
+                    </button>
+                    <button type="button" onClick={() => setShowDeleteConfirm(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+            </ModelEditor>
           ) : null}
 
           <ModelAliasesEditor
@@ -1288,10 +1464,12 @@ function AdvancedConfig({
 function ConfigListCard({
   title,
   subtitle,
+  actions,
   children
 }: {
   title: string;
   subtitle: string;
+  actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -1301,6 +1479,7 @@ function ConfigListCard({
           <h3>{title}</h3>
           <p>{subtitle}</p>
         </div>
+        {actions}
       </div>
       <div className="picker-list">{children}</div>
     </div>
@@ -1311,15 +1490,22 @@ function ModelEditor({
   name,
   model,
   liveStatus,
+  editableName,
+  actions,
+  children,
   onChange
 }: {
   name: string;
   model: EditableModelConfig;
   liveStatus?: ModelStatus;
+  editableName?: { value: string; onChange: (value: string) => void; error: string };
+  actions?: React.ReactNode;
+  children?: React.ReactNode;
   onChange: (nextModel: EditableModelConfig) => void;
 }) {
   const isRawRunModel = Boolean(model.run && !model.runtime);
   const runtimeArgsValue = model.runtime_args.join("\n");
+  const canonicalName = editableName?.value.trim() || name;
   const [runtimeArgsText, setRuntimeArgsText] = useState(runtimeArgsValue);
   const lastRuntimeArgsValue = useRef(runtimeArgsValue);
 
@@ -1337,15 +1523,28 @@ function ModelEditor({
           <h3>{name}</h3>
           <p>Push policy, runtime, and artifact settings.</p>
         </div>
-        <div className="config-card-state">
+        {actions}
+        {liveStatus ? <div className="config-card-state">
           <Badge tone={liveStatus?.available ? "good" : "warn"}>{liveStatus?.available ? "ready" : "draft only"}</Badge>
-          <span>{liveStatus ? `${liveStatus.ready_workers} ready / ${liveStatus.running_workers} running` : "not active"}</span>
-        </div>
+          <span>{`${liveStatus.ready_workers} ready / ${liveStatus.running_workers} running`}</span>
+        </div> : null}
       </div>
 
       {isRawRunModel ? <div className="notice">This model uses a raw `run` command. Runtime command text stays read-only in Ops.</div> : null}
 
       <div className="detail-grid">
+        {editableName ? (
+          <label className="field-span">
+            <span>Canonical model name</span>
+            <input
+              value={editableName.value}
+              required
+              onChange={(event) => editableName.onChange(event.target.value)}
+            />
+            <small>Required. Canonical names cannot be renamed after creation.</small>
+            {editableName.error ? <span className="field-error">{editableName.error}</span> : null}
+          </label>
+        ) : null}
         <label className="checkbox-item field-span">
           <input
             type="checkbox"
@@ -1358,10 +1557,10 @@ function ModelEditor({
           <span>Model directory</span>
           <input
             value={model.model_dir ?? ""}
-            placeholder={name}
+            placeholder={canonicalName}
             onChange={(event) => onChange({ ...model, model_dir: event.target.value })}
           />
-          <small>Empty uses the concrete model name: {name}.</small>
+          <small>Empty uses the concrete model name: {canonicalName}.</small>
         </label>
         <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
         <NumberField label="Min loaded" value={model.min_loaded} onChange={(value) => onChange({ ...model, min_loaded: value })} />
@@ -1442,6 +1641,7 @@ function ModelEditor({
           />
         </label>
       </div>
+      {children}
     </div>
   );
 }

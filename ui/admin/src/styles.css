@@ -36,6 +36,16 @@ button.primary {
   color: #ffffff;
 }
 
+button.danger {
+  background: #b42318;
+  border-color: #b42318;
+  color: #ffffff;
+}
+
+button.danger:hover {
+  background: #8f1c13;
+}
+
 .app {
   max-width: 1680px;
   margin: 0 auto;
@@ -729,6 +739,16 @@ textarea {
   justify-items: end;
 }
 
+.model-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-create {
+  display: grid;
+}
+
 .picker-list {
   display: grid;
   gap: 8px;
@@ -888,6 +908,12 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.field-error {
+  color: #9b2118;
+  font-size: 12px;
+  text-transform: none;
+}
+
 .checkbox-block {
   border-top: 1px solid #e5ebf0;
   display: grid;
@@ -900,6 +926,12 @@ textarea {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.tag-checkbox-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .checkbox-item {
@@ -920,6 +952,37 @@ textarea {
 .compact-checkbox {
   background: #fff;
   padding: 8px 10px;
+}
+
+.delete-model-panel {
+  background: #fff7f5;
+  border: 1px solid #f3bbb4;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.delete-model-panel p,
+.delete-model-panel label {
+  color: #6f332d;
+  font-size: 13px;
+}
+
+.delete-model-panel label {
+  display: grid;
+  font-weight: 700;
+  gap: 6px;
+  text-transform: uppercase;
+}
+
+.delete-blocker-list {
+  color: #6f332d;
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 20px;
 }
 
 .advanced-readonly textarea {
@@ -955,6 +1018,7 @@ textarea {
   }
 
   .config-toolbar-actions,
+  .model-card-actions,
   .config-card-state,
   .picker-meta {
     justify-items: start;
@@ -971,5 +1035,17 @@ textarea {
 
   .alias-validation {
     grid-column: auto;
+  }
+
+  .config-card-head {
+    flex-direction: column;
+  }
+
+  .model-card-actions {
+    width: 100%;
+  }
+
+  .model-card-actions button {
+    flex: 1 1 140px;
   }
 }
