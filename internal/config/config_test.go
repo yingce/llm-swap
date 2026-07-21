@@ -68,6 +68,15 @@ func TestLoadGatewayRejectsInvalidModelIdentity(t *testing.T) {
 	}
 }
 
+func TestLoadGatewayRejectsTagReferenceToUndefinedModel(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "allowed_models: [qwen]", "allowed_models: [missing]", 1)
+
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil || !strings.Contains(err.Error(), "tag gpu-4090 allowed model missing is not defined") {
+		t.Fatalf("error = %v, want undefined allowed model", err)
+	}
+}
+
 func TestLoadGatewayRejectsDuplicateModelDirectories(t *testing.T) {
 	raw := strings.Replace(validGatewayYAML(""), "  qwen:\n", "  qwen:\n    model_dir: shared-model\n", 1)
 	raw = strings.Replace(raw, "tag_policies:\n", `  llama:

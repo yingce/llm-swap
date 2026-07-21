@@ -196,6 +196,64 @@ func TestUIConfigApplyRejectsInvalidYAMLWithoutMutatingCurrentConfig(t *testing.
 	}
 }
 
+func TestUIConfigDryRunReportsLoadedWorkerImpactForRemovedModel(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:       "worker-1",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker-1:6006",
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(testGatewayYAMLWithModels("other")))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var resp uiConfigDryRunResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !hasConfigChange(resp.Changes, "models.qwen", "removed") {
+		t.Fatalf("changes = %+v, want removed qwen", resp.Changes)
+	}
+	impact, ok := findConfigImpact(resp.Impacts, "qwen", "worker-1")
+	if !ok || !impact.RequiresWorkerRestart {
+		t.Fatalf("impacts = %+v, want qwen worker restart", resp.Impacts)
+	}
+}
+
+func TestUIConfigApplyRejectsRemovalWithDanglingTagReference(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	raw := strings.Replace(testGatewayYAMLWithModels("other"), "      - other", "      - qwen", 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/apply", strings.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+	agentReq := httptest.NewRequest(http.MethodGet, "/internal/agent/config?tags=gpu-4090", nil)
+	agentReq.Header.Set("Authorization", "Bearer agent-secret")
+	agentRR := httptest.NewRecorder()
+	srv.ServeHTTP(agentRR, agentReq)
+	if agentRR.Code != http.StatusOK {
+		t.Fatalf("agent config status = %d, want 200: %s", agentRR.Code, agentRR.Body.String())
+	}
+	var agentResp protocol.AgentConfigResponse
+	if err := json.NewDecoder(agentRR.Body).Decode(&agentResp); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := agentResp.Models["qwen"]; !ok {
+		t.Fatalf("agent models = %+v, want unchanged qwen", agentResp.Models)
+	}
+}
+
 func TestUIConfigReturnsOriginalYAMLWithoutMaterializingAutomaticMaxLoaded(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	raw := testGatewayYAMLWithModels("qwen")
