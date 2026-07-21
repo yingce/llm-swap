@@ -14,14 +14,18 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain('className="model-disabled-toggle"');
   });
 
-  it("manages focus inside the modal and keeps Config Ops inert while it is open", () => {
+  it("manages focus inside a portaled modal while the complete app background is inert", () => {
     expect(source).toContain("canonicalNameInputRef.current?.focus()");
     expect(source).toContain("discardChoiceRef.current?.focus()");
     expect(source).toContain('event.key !== "Tab"');
     expect(source).toContain("modalFocusableElements(dialog)");
     expect(source).toContain("onKeyDown={handleKeyDown}");
-    expect(source).toContain("configOpsContentRef.current");
-    expect(source).toContain("content.inert = Boolean(createMode)");
+    expect(source).toContain('import { createPortal } from "react-dom"');
+    expect(source).toContain('ref={appContentRef}');
+    expect(source).toContain("appContentRef.current");
+    expect(source).toContain("app.inert = Boolean(createMode)");
+    expect(source).toContain("createPortal(");
+    expect(source).toContain("document.body");
     expect(source).toContain("createTriggerRef.current");
     expect(source).toContain("data-model-create-trigger");
   });

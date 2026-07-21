@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import YAML from "yaml";
 import {
@@ -65,6 +66,7 @@ const tabs: Array<{ id: Tab; label: string }> = [
 ];
 
 function App() {
+  const appContentRef = useRef<HTMLElement>(null);
   const [tab, setTab] = useState<Tab>(() => tabFromPath(window.location.pathname));
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [events, setEvents] = useState<WorkerEvent[]>([]);
@@ -319,7 +321,7 @@ function App() {
   }
 
   return (
-    <main className="app">
+    <main ref={appContentRef} className="app">
       <header className="topbar">
         <div>
           <h1>LLM Swap Admin</h1>
@@ -394,6 +396,7 @@ function App() {
               onDeleteModel={deleteModel}
               onAliasesChange={replaceModelAliases}
               onTagChange={replaceTagPolicy}
+              appContentRef={appContentRef}
             />
           )}
           {tab === "advanced" && (
@@ -1112,7 +1115,8 @@ function ConfigOps({
   onCreateModel,
   onDeleteModel,
   onAliasesChange,
-  onTagChange
+  onTagChange,
+  appContentRef
 }: {
   status: StatusResponse | null;
   configResponse: ConfigResponse | null;
@@ -1131,6 +1135,7 @@ function ConfigOps({
   onDeleteModel: (modelName: string) => void;
   onAliasesChange: (nextAliases: Record<string, string>) => void;
   onTagChange: (tagName: string, nextPolicy: TagPolicyConfig) => void;
+  appContentRef: React.RefObject<HTMLElement | null>;
 }) {
   const modelNames = useMemo(() => sortedKeys(draft?.models), [draft]);
   const [showDisabledModels, setShowDisabledModels] = useState(false);
@@ -1165,13 +1170,13 @@ function ConfigOps({
   }, [draft, selectedTag, tagNames]);
 
   useEffect(() => {
-    const content = configOpsContentRef.current;
-    if (!content) return;
-    content.inert = Boolean(createMode);
+    const app = appContentRef.current;
+    if (!app) return;
+    app.inert = Boolean(createMode);
     return () => {
-      content.inert = false;
+      app.inert = false;
     };
-  }, [createMode]);
+  }, [appContentRef, createMode]);
 
   useEffect(() => {
     if (createMode !== null) return;
@@ -1589,7 +1594,7 @@ function ModelCreateModal({
     }
   }
 
-  return (
+  return createPortal(
     <div
       className="modal-backdrop"
       onMouseDown={(event) => {
@@ -1662,7 +1667,8 @@ function ModelCreateModal({
           </ModelEditor>
         </div>
       </section>
-    </div>
+    </div>,
+    document.body
   );
 }
 
