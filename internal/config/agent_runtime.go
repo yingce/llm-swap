@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -56,8 +57,7 @@ func (defaultAgentIdentityProvider) NewID() (string, error) {
 	}
 	value[6] = value[6]&0x0f | 0x40
 	value[8] = value[8]&0x3f | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+	return formatUUID(value[:]), nil
 }
 
 func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfig, error) {
@@ -169,13 +169,18 @@ func resolveAgentID(root, configuredID string, provider AgentIdentityProvider) (
 	}
 
 	path := filepath.Join(root, "agent-id")
-	if id, found, err := persistedAgentID(path); err != nil {
+	persisted, err := readPersistedAgentID(path)
+	if err != nil {
 		return "", err
-	} else if found {
+	}
+	if persisted.Valid {
 		if err := os.Chmod(path, 0o600); err != nil {
 			return "", err
 		}
-		return id, nil
+		return persisted.ID, nil
+	}
+	if persisted.Exists {
+		return recoverInvalidPersistedAgentID(path, persisted.Raw)
 	}
 	if hostname, err := provider.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
 		return strings.TrimSpace(hostname), nil
@@ -186,25 +191,61 @@ func resolveAgentID(root, configuredID string, provider AgentIdentityProvider) (
 		return "", err
 	}
 	id = strings.TrimSpace(id)
-	if id == "" {
-		return "", fmt.Errorf("agent identity provider generated an empty ID")
+	if !validAgentID(id) {
+		return "", fmt.Errorf("agent identity provider generated an invalid ID")
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	return publishNewAgentID(path, id)
+}
+
+type persistedAgentID struct {
+	ID     string
+	Raw    string
+	Exists bool
+	Valid  bool
+}
+
+func readPersistedAgentID(path string) (persistedAgentID, error) {
+	contents, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return persistedAgentID{}, nil
+	}
 	if err != nil {
+		return persistedAgentID{}, err
+	}
+	id := strings.TrimSpace(string(contents))
+	return persistedAgentID{ID: id, Raw: string(contents), Exists: true, Valid: validAgentID(id)}, nil
+}
+
+func waitForPersistedAgentID(path string) (string, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		persisted, err := readPersistedAgentID(path)
+		if err != nil {
+			return "", err
+		}
+		if persisted.Valid {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return "", err
+			}
+			return persisted.ID, nil
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return "", fmt.Errorf("persisted agent identity was not initialized")
+}
+
+func publishNewAgentID(path, id string) (string, error) {
+	tempPath, err := writeAgentIDTemp(path, id)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tempPath)
+	if err := os.Link(tempPath, path); err != nil {
 		if os.IsExist(err) {
 			return waitForPersistedAgentID(path)
 		}
-		return "", err
-	}
-	if _, err := io.WriteString(file, id+"\n"); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
 		return "", err
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
@@ -213,31 +254,77 @@ func resolveAgentID(root, configuredID string, provider AgentIdentityProvider) (
 	return id, nil
 }
 
-func persistedAgentID(path string) (string, bool, error) {
-	contents, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", false, nil
-	}
+func recoverInvalidPersistedAgentID(path, raw string) (string, error) {
+	id := deterministicRecoveredAgentID(path, raw)
+	tempPath, err := writeAgentIDTemp(path, id)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	id := strings.TrimSpace(string(contents))
-	return id, id != "", nil
+	defer os.Remove(tempPath)
+	if err := os.Rename(tempPath, path); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
-func waitForPersistedAgentID(path string) (string, error) {
-	for attempt := 0; attempt < 100; attempt++ {
-		if id, found, err := persistedAgentID(path); err != nil {
-			return "", err
-		} else if found {
-			if err := os.Chmod(path, 0o600); err != nil {
-				return "", err
-			}
-			return id, nil
-		}
-		time.Sleep(time.Millisecond)
+func writeAgentIDTemp(path, id string) (string, error) {
+	directory := filepath.Dir(path)
+	temp, err := os.CreateTemp(directory, "."+filepath.Base(path)+"-")
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("persisted agent identity was not initialized")
+	tempPath := temp.Name()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if _, err := io.WriteString(temp, id+"\n"); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	return tempPath, nil
+}
+
+func deterministicRecoveredAgentID(path, raw string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(path) + "\n" + raw))
+	value := sum[:16]
+	value[6] = value[6]&0x0f | 0x50
+	value[8] = value[8]&0x3f | 0x80
+	return formatUUID(value)
+}
+
+func formatUUID(value []byte) string {
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
+}
+
+func validAgentID(id string) bool {
+	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' {
+		return false
+	}
+	for i := range id {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !(id[i] >= '0' && id[i] <= '9' || id[i] >= 'a' && id[i] <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func AgentRuntimeUsage(opts AgentRuntimeOptions) string {

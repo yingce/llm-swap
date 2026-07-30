@@ -44,7 +44,7 @@ func (p *pairedFallbackIdentityProvider) NewID() (string, error) {
 		p.once.Do(func() { close(p.release) })
 	}
 	<-p.release
-	return fmt.Sprintf("fallback-%d", sequence), nil
+	return fmt.Sprintf("00000000-0000-4000-8000-%012d", sequence), nil
 }
 
 func TestLoadAgentRuntimeUsesHostnameWithLegacyDerivedURL(t *testing.T) {
@@ -213,6 +213,217 @@ func TestLoadAgentRuntimeCreatesFallbackIdentityAtomically(t *testing.T) {
 	if strings.TrimSpace(string(contents)) != got[0] {
 		t.Fatalf("persisted identity = %q, want %q", strings.TrimSpace(string(contents)), got[0])
 	}
+}
+
+func TestLoadAgentRuntimeRecoversEmptyPersistedIdentity(t *testing.T) {
+	root := t.TempDir()
+	identityPath := filepath.Join(root, "agent-id")
+	if err := os.WriteFile(identityPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadAgentRuntime(context.Background(), fallbackIdentityRuntimeOptions(root, fakeAgentIdentityProvider{
+		hostnameErr: errors.New("hostname unavailable"),
+		generated:   "7b2a9e8c-c760-4a5f-bb08-38adfd1e6496",
+	}))
+	if err != nil {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	if !isCanonicalUUID(cfg.Agent.ID) {
+		t.Fatalf("agent.id = %q, want recovered UUID", cfg.Agent.ID)
+	}
+	contents, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(contents)) != cfg.Agent.ID {
+		t.Fatalf("persisted identity = %q, want %q", strings.TrimSpace(string(contents)), cfg.Agent.ID)
+	}
+}
+
+func TestLoadAgentRuntimeRecoversPartialPersistedIdentity(t *testing.T) {
+	root := t.TempDir()
+	identityPath := filepath.Join(root, "agent-id")
+	if err := os.WriteFile(identityPath, []byte("7b2a9e8c-c760-4a5f"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadAgentRuntime(context.Background(), fallbackIdentityRuntimeOptions(root, fakeAgentIdentityProvider{
+		hostnameErr: errors.New("hostname unavailable"),
+		generated:   "7b2a9e8c-c760-4a5f-bb08-38adfd1e6496",
+	}))
+	if err != nil {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	if !isCanonicalUUID(cfg.Agent.ID) {
+		t.Fatalf("agent.id = %q, want recovered UUID", cfg.Agent.ID)
+	}
+	if cfg.Agent.ID == "7b2a9e8c-c760-4a5f" {
+		t.Fatalf("agent.id = partial persisted value")
+	}
+}
+
+func TestLoadAgentRuntimePublishesOnlyCompleteIdentityUnderConcurrentStarts(t *testing.T) {
+	root := t.TempDir()
+	identityPath := filepath.Join(root, "agent-id")
+	opts := fallbackIdentityRuntimeOptions(root, &pairedFallbackIdentityProvider{release: make(chan struct{})})
+	start := make(chan struct{})
+	results := make(chan string, 2)
+	errs := make(chan error, 2)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			cfg, err := LoadAgentRuntime(context.Background(), opts)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- cfg.Agent.ID
+		}()
+	}
+
+	readerDone := make(chan struct{})
+	readerExited := make(chan struct{})
+	partial := make(chan string, 1)
+	go func() {
+		defer close(readerExited)
+		for {
+			select {
+			case <-readerDone:
+				return
+			default:
+			}
+			contents, err := os.ReadFile(identityPath)
+			if err == nil && !isCanonicalUUID(strings.TrimSpace(string(contents))) {
+				select {
+				case partial <- string(contents):
+				default:
+				}
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	close(start)
+	workers.Wait()
+	close(readerDone)
+	<-readerExited
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	var ids []string
+	for id := range results {
+		ids = append(ids, id)
+	}
+	if len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatalf("concurrent identities = %v, want one winner", ids)
+	}
+	select {
+	case observed := <-partial:
+		t.Fatalf("published partial identity %q", observed)
+	default:
+	}
+}
+
+func TestLoadAgentRuntimeUsesExplicitIdentityOverPersistedIdentity(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "agent-id"), []byte("7b2a9e8c-c760-4a5f-bb08-38adfd1e6496\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := fallbackIdentityRuntimeOptions(root, fakeAgentIdentityProvider{hostname: "ignored-host", generated: "ignored"})
+	opts.Args = append(opts.Args, "--id", "explicit-agent-id")
+	cfg, err := LoadAgentRuntime(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	if cfg.Agent.ID != "explicit-agent-id" {
+		t.Fatalf("agent.id = %q, want explicit-agent-id", cfg.Agent.ID)
+	}
+}
+
+func TestLoadAgentRuntimeConcurrentlyRecoversInvalidIdentityToOneStableID(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "agent-id"), []byte("partial-agent-id"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := fallbackIdentityRuntimeOptions(root, fakeAgentIdentityProvider{
+		hostnameErr: errors.New("hostname unavailable"),
+		generated:   "7b2a9e8c-c760-4a5f-bb08-38adfd1e6496",
+	})
+	start := make(chan struct{})
+	results := make(chan string, 2)
+	errs := make(chan error, 2)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			cfg, err := LoadAgentRuntime(context.Background(), opts)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- cfg.Agent.ID
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	var ids []string
+	for id := range results {
+		ids = append(ids, id)
+	}
+	if len(ids) != 2 || !isCanonicalUUID(ids[0]) || ids[0] != ids[1] {
+		t.Fatalf("recovered identities = %v, want one valid ID", ids)
+	}
+
+	opts.Identity = fakeAgentIdentityProvider{hostname: "recovered-host", generated: "must-not-replace-persisted-id"}
+	stable, err := LoadAgentRuntime(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("stable LoadAgentRuntime returned error: %v", err)
+	}
+	if stable.Agent.ID != ids[0] {
+		t.Fatalf("stable identity = %q, want %q", stable.Agent.ID, ids[0])
+	}
+}
+
+func fallbackIdentityRuntimeOptions(root string, identity AgentIdentityProvider) AgentRuntimeOptions {
+	return AgentRuntimeOptions{
+		ConfigPath: filepath.Join(root, "missing-agent.yaml"),
+		Root:       root,
+		Args: []string{
+			"--tags", "gpu-4090",
+			"--gateway-url", "http://gateway",
+			"--token", "agent-token",
+		},
+		Identity:    identity,
+		TailscaleIP: func(context.Context) (string, bool) { return "100.64.0.80", true },
+		LocalIP:     func() (string, error) { return "10.0.0.80", nil },
+	}
+}
+
+func isCanonicalUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !(value[i] >= '0' && value[i] <= '9' || value[i] >= 'a' && value[i] <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func TestResolveSwapURLPrefersExplicitValue(t *testing.T) {
