@@ -48,6 +48,9 @@ func TestAdminWarmModelCallsLlamaSwapAndRecordsEvent(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-secret" {
+			t.Errorf("authorization = %q, want effective llama-swap bearer token", got)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -78,6 +81,9 @@ func TestAdminUnloadRejectsActiveWorkerAndUnloadsIdleReplica(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-secret" {
+			t.Errorf("authorization = %q, want effective llama-swap bearer token", got)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()

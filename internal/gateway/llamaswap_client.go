@@ -14,7 +14,6 @@ import (
 type LlamaSwapClient struct {
 	BearerToken string
 	HTTPClient  *http.Client
-	Tunnel      *AgentTunnel
 }
 
 type HTTPStatusError struct {
@@ -81,9 +80,6 @@ func (c LlamaSwapClient) do(req *http.Request) error {
 }
 
 func (c LlamaSwapClient) doRequest(req *http.Request) (*http.Response, error) {
-	if c.Tunnel != nil {
-		return c.Tunnel.RoundTripHTTP(req.Context(), "", req, nil)
-	}
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient

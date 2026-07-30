@@ -337,7 +337,7 @@ func (s *Server) RunLoadedReconciler(ctx context.Context, interval time.Duration
 			Workers: s.workers,
 			Client:  LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap},
 			ClientForWorker: func(worker Worker) LlamaSwapClient {
-				return s.llamaSwapClientForWorker(worker, cfg)
+				return LlamaSwapClient{BearerToken: cfg.Tokens.LlamaSwap}
 			},
 			Access:           s.access,
 			Pressure:         s.pressure,

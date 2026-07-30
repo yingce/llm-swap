@@ -631,12 +631,6 @@ func upstreamRetryExhaustedFailure(status int) *proxyDispatchFailure {
 }
 
 func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker, llamaSwapToken string) (bool, *proxyDispatchFailure, error, int, RequestLogEntry) {
-	if s.tunnels != nil {
-		if tunnel, ok := s.tunnels.Get(worker.ID); ok {
-			return s.proxyAttemptViaTunnel(w, r, body, model, worker, llamaSwapToken, tunnel)
-		}
-	}
-
 	upstreamURL, err := upstreamRequestURL(worker.LlamaSwapURL, r.URL)
 	if err != nil {
 		marked := s.recordReverseAccessResult(worker.ID, err, time.Now())
@@ -691,49 +685,6 @@ func (s *Server) proxyAttempt(w http.ResponseWriter, r *http.Request, body []byt
 		return false, nil, nil, resp.StatusCode, entry
 	}
 
-	copyResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	respBody, err := copyResponseBody(w, resp.Body)
-	if err != nil {
-		return false, nil, nil, resp.StatusCode, entry
-	}
-	entry.ResponseBytes = int64(len(respBody))
-	parseOpenAIResponseLog(respBody, &entry)
-	return false, nil, nil, resp.StatusCode, entry
-}
-
-func (s *Server) proxyAttemptViaTunnel(w http.ResponseWriter, r *http.Request, body []byte, model string, worker Worker, llamaSwapToken string, tunnel *AgentTunnel) (bool, *proxyDispatchFailure, error, int, RequestLogEntry) {
-	entry := RequestLogEntry{UpstreamURL: "tunnel://" + worker.ID + r.URL.RequestURI()}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, r.URL.RequestURI(), bytes.NewReader(body))
-	if err != nil {
-		return true, workerUnavailableFailure(true), err, 0, entry
-	}
-	copyRequestHeaders(req.Header, r.Header)
-	req.Header.Set("X-Request-Id", requestIDFromHeader(r))
-	req.Header.Set("X-Gateway-Model", model)
-	req.Header.Set("X-Gateway-Worker", worker.ID)
-	if llamaSwapToken != "" {
-		req.Header.Set("Authorization", "Bearer "+llamaSwapToken)
-	} else {
-		req.Header.Del("Authorization")
-	}
-	req.ContentLength = int64(len(body))
-
-	resp, err := tunnel.RoundTripHTTP(r.Context(), requestIDFromHeader(r), req, body)
-	if err != nil {
-		marked := s.recordReverseAccessResult(worker.ID, err, time.Now())
-		if retryableProxyError(err, r.Context()) || errors.Is(err, errTunnelClosed) {
-			return true, workerUnavailableFailure(marked), err, 0, entry
-		}
-		return false, nil, err, 0, entry
-	}
-	defer resp.Body.Close()
-	s.recordReverseAccessResult(worker.ID, nil, time.Now())
-
-	if retryableUpstreamStatus(resp.StatusCode) {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return true, upstreamRetryExhaustedFailure(resp.StatusCode), nil, resp.StatusCode, entry
-	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	respBody, err := copyResponseBody(w, resp.Body)

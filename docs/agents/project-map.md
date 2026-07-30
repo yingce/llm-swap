@@ -1,6 +1,6 @@
 # LLM Swap Project Map
 
-Last updated: 2026-07-21.
+Last updated: 2026-07-31.
 
 This document is the current high-level map for future agents. It reflects the
 code state after the gateway UI, token unification, worker event persistence,
@@ -17,8 +17,8 @@ client
   -> gateway /v1/chat/completions
     -> placement chooses a worker by model, tag, artifact readiness, running
        model state, active request count, and replica policy
-    -> gateway proxies request to worker llama-swap directly, or through an
-       agent-owned WebSocket tunnel when the worker has no inbound route
+    -> gateway proxies request directly to the worker's advertised llama-swap
+       URL, normally an FRP TCP endpoint leased by the gateway
       -> llama-swap starts/switches local runtime command from rendered config
         -> vLLM, SGLang, or llama.cpp runtime wrapper
 
@@ -27,8 +27,8 @@ worker agent
   -> downloads model artifacts
   -> renders llama-swap config
   -> reads local llama-swap /running from 127.0.0.1:swap_port
-  -> keeps a reverse WebSocket tunnel to gateway for proxied llama-swap HTTP
-     requests
+  -> runs an embedded FRP TCP client and advertises its gateway-leased endpoint
+     only after that proxy is ready
   -> heartbeats worker state, GPU device stats, artifacts, running models, and
      events to gateway
 ```
@@ -113,20 +113,8 @@ disabled the gateway still runs with no external database.
   - `top_k: 0` is normalized to `-1` for SGLang-backed models.
   - Transformers-style `image`, `video`, and `audio` content parts are converted
     to OpenAI-style URL objects for SGLang compatibility.
-  - Prefers an active agent tunnel for the selected worker, falling back to the
-    advertised worker `llama_swap_url` when no tunnel is connected.
-
-- `internal/gateway/tunnel.go`
-  - Gateway side of the agent reverse tunnel.
-  - Agents connect to `/internal/agent/tunnel?agent_id=<worker>` with the agent
-    bearer token.
-  - Maintains one active tunnel per worker and multiplexes request/response
-    pairs by request ID.
-  - Uses WebSocket ping/pong read deadlines to detect idle half-open tunnel
-    connections and let the agent reconnect instead of waiting for the next
-    proxied request to fail.
-  - Sends `http_cancel` when the client-side request context is canceled so the
-    agent can cancel the local llama-swap HTTP request.
+  - Builds upstream requests only from the worker's advertised
+    `llama_swap_url`. There is no gateway-to-agent tunnel fallback.
 
 - `internal/gateway/placement.go`
   - Owns request placement and async control-action planning.
@@ -312,17 +300,16 @@ disabled the gateway still runs with no external database.
 
 - `cmd/agent/main.go`
   - Loads runtime config through `config.LoadAgentRuntime`.
-  - Uses the advertised public swap URL for gateway heartbeat.
+  - Starts the FRP transport manager and advertises its leased public swap URL
+    only while the local FRP proxy is ready.
   - Uses local `127.0.0.1:swap_port` for local llama-swap `/running` and health.
-  - Starts the reverse tunnel client in the background.
 
-- `internal/agent/tunnel.go`
-  - Agent side of the reverse tunnel.
-  - Connects to the gateway over WebSocket, receives proxied llama-swap HTTP
-    requests, and forwards them to the local llama-swap URL.
-  - Tracks in-flight local requests by tunnel request ID and cancels them when
-    the gateway sends `http_cancel`.
-  - Reconnects with bounded backoff; request routing remains gateway-owned.
+- `internal/agent/transport_manager.go` and `frp_client.go`
+  - Fetch encrypted gateway transport bootstrap configuration, acquire and
+    renew a gateway-owned TCP port lease, and run the embedded FRP client.
+  - Publish the direct worker URL only after FRP reports the proxy ready; clear
+    it before replacement or shutdown so the gateway never routes to an
+    unready transport.
 
 - `internal/agent/reconcile.go`
   - Main worker reconcile loop.

@@ -43,6 +43,31 @@ func TestHealthzEndpointReturnsNoContent(t *testing.T) {
 	}
 }
 
+func TestRemovedWorkerWebSocketRouteReturnsNotFound(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	for _, upgrade := range []bool{false, true} {
+		name := "plain_get"
+		if upgrade {
+			name = "websocket_upgrade"
+		}
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/agent/"+"tunnel?agent_id=worker-a", nil)
+			req.Header.Set("Authorization", "Bearer "+testGatewayConfig().Tokens.Agent)
+			if upgrade {
+				req.Header.Set("Connection", "Upgrade")
+				req.Header.Set("Upgrade", "websocket")
+			}
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+			}
+		})
+	}
+}
+
 func TestInstallWorkerScriptEndpointServesShellScriptWithoutAuth(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	req := httptest.NewRequest(http.MethodGet, "/install-worker.sh", nil)

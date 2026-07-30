@@ -37,15 +37,15 @@ func TestRunAgentTokenFileHexReportsGenericErrors(t *testing.T) {
 	}
 }
 
-func TestAgentMainDoesNotStartWebSocketTunnel(t *testing.T) {
+func TestAgentMainDoesNotStartRemovedWorkerTransport(t *testing.T) {
 	data, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, obsolete := range []string{"TunnelClient", "tunnel.Run", "advertised_swap_url"} {
+	for _, obsolete := range []string{"Tunnel" + "Client", "tunnel" + ".Run", "advertised_swap_url"} {
 		if strings.Contains(text, obsolete) {
-			t.Fatalf("agent main still contains obsolete tunnel startup %q", obsolete)
+			t.Fatalf("agent main still contains obsolete transport startup %q", obsolete)
 		}
 	}
 }

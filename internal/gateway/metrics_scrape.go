@@ -67,14 +67,6 @@ func newMetricsScraperWithMaxSeenAndToken(maxSeenKeys int, token string) *Metric
 }
 
 func (s *MetricsScraper) PullActivity(workerID string, baseURL string) (ActivityStats, error) {
-	return s.pullActivity(workerID, baseURL, nil)
-}
-
-func (s *MetricsScraper) PullActivityViaTunnel(workerID string, baseURL string, tunnel *AgentTunnel) (ActivityStats, error) {
-	return s.pullActivity(workerID, baseURL, tunnel)
-}
-
-func (s *MetricsScraper) pullActivity(workerID string, baseURL string, tunnel *AgentTunnel) (ActivityStats, error) {
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/metrics", nil)
 	if err != nil {
 		return ActivityStats{}, err
@@ -83,7 +75,7 @@ func (s *MetricsScraper) pullActivity(workerID string, baseURL string, tunnel *A
 		req.Header.Set("Authorization", "Bearer "+s.bearerToken)
 	}
 
-	resp, err := s.do(req, tunnel)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return ActivityStats{}, err
 	}
@@ -120,14 +112,6 @@ func (s *MetricsScraper) pullActivity(workerID string, baseURL string, tunnel *A
 }
 
 func (s *MetricsScraper) PullPerformance(workerID string, baseURL string) (int, error) {
-	return s.pullPerformance(workerID, baseURL, nil)
-}
-
-func (s *MetricsScraper) PullPerformanceViaTunnel(workerID string, baseURL string, tunnel *AgentTunnel) (int, error) {
-	return s.pullPerformance(workerID, baseURL, tunnel)
-}
-
-func (s *MetricsScraper) pullPerformance(workerID string, baseURL string, tunnel *AgentTunnel) (int, error) {
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/performance", nil)
 	if err != nil {
 		return 0, err
@@ -136,7 +120,7 @@ func (s *MetricsScraper) pullPerformance(workerID string, baseURL string, tunnel
 		req.Header.Set("Authorization", "Bearer "+s.bearerToken)
 	}
 
-	resp, err := s.do(req, tunnel)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -169,13 +153,6 @@ func (s *MetricsScraper) pullPerformance(workerID string, baseURL string, tunnel
 		newRows++
 	}
 	return newRows, nil
-}
-
-func (s *MetricsScraper) do(req *http.Request, tunnel *AgentTunnel) (*http.Response, error) {
-	if tunnel != nil {
-		return tunnel.RoundTripHTTP(req.Context(), "", req, nil)
-	}
-	return s.client.Do(req)
 }
 
 func (s *MetricsScraper) rememberActivityKey(key string) {

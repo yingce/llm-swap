@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
@@ -512,139 +509,6 @@ func TestProxyRecordsXRequestHeaders(t *testing.T) {
 	}
 }
 
-func TestProxyUsesAgentTunnelWhenConnected(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
-	srv := NewServerWithGatewayPersistence(testProxyConfig(), logPath)
-	registerProxyWorker(t, srv, "worker-a", "http://127.0.0.1:1", true)
-	httpServer := httptest.NewServer(srv)
-	defer httpServer.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/internal/agent/tunnel?agent_id=worker-a"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": []string{"Bearer agent-secret"}})
-	if err != nil {
-		t.Fatalf("dial tunnel: %v", err)
-	}
-	defer conn.Close()
-
-	tunnelDone := make(chan map[string]any, 1)
-	go func() {
-		var req map[string]any
-		if err := conn.ReadJSON(&req); err != nil {
-			tunnelDone <- map[string]any{"error": err.Error()}
-			return
-		}
-		tunnelDone <- req
-		resp := map[string]any{
-			"type":        "http_response",
-			"id":          req["id"],
-			"status_code": http.StatusOK,
-			"headers":     map[string][]string{"Content-Type": {"application/json"}},
-			"body_base64": "eyJpZCI6ImNoYXRjbXBsLXR1bm5lbCIsIm9iamVjdCI6ImNoYXQuY29tcGxldGlvbiIsImNob2ljZXMiOlt7Im1lc3NhZ2UiOnsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJ0dW5uZWwgb2sifX1dLCJ1c2FnZSI6eyJ0b3RhbF90b2tlbnMiOjN9fQ==",
-		}
-		_ = conn.WriteJSON(resp)
-	}()
-
-	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
-	}
-	select {
-	case tunneled := <-tunnelDone:
-		if tunneled["type"] != "http_request" {
-			t.Fatalf("tunnel message type = %v, want http_request; message=%v", tunneled["type"], tunneled)
-		}
-		if tunneled["method"] != http.MethodPost || tunneled["path"] != "/v1/chat/completions" {
-			t.Fatalf("tunnel request = %v %v, want POST /v1/chat/completions", tunneled["method"], tunneled["path"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("gateway did not send request through tunnel")
-	}
-	entry := readSingleRequestLogEntry(t, logPath)
-	if entry.WorkerID != "worker-a" || entry.StatusCode != http.StatusOK || entry.TotalTokens != 3 {
-		t.Fatalf("request log entry = %+v, want tunneled worker status and usage", entry)
-	}
-}
-
-func TestProxyStreamsAgentTunnelChunksToClient(t *testing.T) {
-	srv := NewServer(testProxyConfig())
-	registerProxyWorker(t, srv, "worker-a", "http://127.0.0.1:1", true)
-	httpServer := httptest.NewServer(srv)
-	defer httpServer.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/internal/agent/tunnel?agent_id=worker-a"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": []string{"Bearer agent-secret"}})
-	if err != nil {
-		t.Fatalf("dial tunnel: %v", err)
-	}
-	defer conn.Close()
-
-	releaseSecondChunk := make(chan struct{})
-	go func() {
-		var req map[string]any
-		if err := conn.ReadJSON(&req); err != nil {
-			return
-		}
-		_ = conn.WriteJSON(map[string]any{
-			"type":        "http_response_start",
-			"id":          req["id"],
-			"status_code": http.StatusOK,
-			"headers":     map[string][]string{"Content-Type": {"text/event-stream"}},
-		})
-		_ = conn.WriteJSON(map[string]any{
-			"type":        "http_response_body",
-			"id":          req["id"],
-			"body_base64": "ZGF0YTogb25lCgo=",
-		})
-		<-releaseSecondChunk
-		_ = conn.WriteJSON(map[string]any{
-			"type":        "http_response_body",
-			"id":          req["id"],
-			"body_base64": "ZGF0YTogdHdvCgo=",
-		})
-		_ = conn.WriteJSON(map[string]any{
-			"type": "http_response_end",
-			"id":   req["id"],
-		})
-	}()
-
-	req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/v1/chat/completions", strings.NewReader(`{"model":"qwen","messages":[],"stream":true}`))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer client-secret")
-	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("client do: %v", err)
-	}
-	defer resp.Body.Close()
-
-	first := make(chan string, 1)
-	go func() {
-		buf := make([]byte, len("data: one\n\n"))
-		_, _ = io.ReadFull(resp.Body, buf)
-		first <- string(buf)
-	}()
-	select {
-	case got := <-first:
-		if got != "data: one\n\n" {
-			t.Fatalf("first chunk = %q, want data: one", got)
-		}
-	case <-time.After(300 * time.Millisecond):
-		t.Fatal("first tunnel chunk was not flushed before response end")
-	}
-	close(releaseSecondChunk)
-	rest, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read rest: %v", err)
-	}
-	if string(rest) != "data: two\n\n" {
-		t.Fatalf("rest = %q, want second chunk", string(rest))
-	}
-}
-
 func TestProxyRecordsQueueAndRequestPressure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -1099,6 +963,19 @@ func TestProxyMalformedWorkerURLReportsWorkerUnavailableAfterRepeatedFailures(t 
 	if srv.workers.Healthy("broken", time.Now()) {
 		t.Fatal("worker with repeated malformed reverse URL failures should be marked unavailable")
 	}
+}
+
+func TestProxyWorkerWithoutAdvertisedURLCannotBeCalled(t *testing.T) {
+	srv := NewServer(testProxyConfig())
+	registerProxyWorker(t, srv, "not-ready", "", true)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "no_healthy_worker")
 }
 
 func TestProxySuccessfulReverseAccessClearsWorkerBackoff(t *testing.T) {
