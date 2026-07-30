@@ -1,0 +1,176 @@
+x-worker-common: &worker-common
+  image: ${WORKER_IMAGE:-llmswap-agent:frp-cu128}
+  build:
+    context: ../..
+    dockerfile: Dockerfile.agent
+    args:
+      LLMSWAP_RUNTIME: all
+      LLMSWAP_INSTALL_TAILSCALE: "0"
+  environment:
+    LLMSWAP_GATEWAY_URL: ${LLMSWAP_GATEWAY_URL:?set LLMSWAP_GATEWAY_URL}
+    LLMSWAP_AGENT_TOKEN_FILE: /run/secrets/agent_token
+    LLMSWAP_AGENT_TAGS: gpu-4090
+  secrets:
+    - source: agent_token
+      target: agent_token
+      mode: 0400
+  extra_hosts:
+    - gateway-host:host-gateway
+  networks:
+    - worker-private
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 45s
+
+services:
+  worker-gpu0:
+    <<: *worker-common
+    hostname: worker-gpu0
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu0/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+  worker-gpu1:
+    <<: *worker-common
+    hostname: worker-gpu1
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu1/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+  worker-gpu2:
+    <<: *worker-common
+    hostname: worker-gpu2
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu2/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+
+  worker-gpu3:
+    <<: *worker-common
+    hostname: worker-gpu3
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu3/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+
+  worker-gpu4:
+    <<: *worker-common
+    hostname: worker-gpu4
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu4/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+
+  worker-gpu5:
+    <<: *worker-common
+    hostname: worker-gpu5
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu5/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["5"]
+              capabilities: [gpu]
+
+  worker-gpu6:
+    <<: *worker-common
+    hostname: worker-gpu6
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu6/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+
+  worker-gpu7:
+    <<: *worker-common
+    hostname: worker-gpu7
+    volumes:
+      - type: bind
+        source: ${WORKER_STATE_ROOT:?set WORKER_STATE_ROOT}/worker-gpu7/logs
+        target: /opt/llmswap/logs
+      - type: bind
+        source: ${MODEL_ROOT:?set MODEL_ROOT}
+        target: /opt/llmswap/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+
+networks:
+  worker-private:
+    driver: bridge
+
+secrets:
+  agent_token:
+    file: ${AGENT_TOKEN_FILE:?set AGENT_TOKEN_FILE}

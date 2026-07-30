@@ -808,6 +808,14 @@ Deployment helpers:
 - `Dockerfile.gateway`
 - `deploy/production/docker-compose.yaml`
 - `deploy/production/vmagent/promscrape.yml`
+- `deploy/worker-frp/compose.yaml` and `deploy/worker-frp/verify.sh`
+  - Build one shared agent image and run `worker-gpu0` through `worker-gpu7`,
+    each pinned to one physical NVIDIA device with no published worker ports.
+  - Runtime environment is limited to the gateway URL, `gpu-4090` tag, and a
+    file-backed agent token. FRPS settings and leases come from the gateway's
+    encrypted bootstrap response; FRPC runs inside the agent process.
+  - Per-worker log binds and one shared models bind preserve mutable data
+    without hiding the image-owned `/opt/llmswap` runtime tree.
 
 vmagent scrapes gateway `/metrics` and remote-writes to VictoriaMetrics. The
 default scrape target is `gateway:8080`; adjust it when gateway runs outside the

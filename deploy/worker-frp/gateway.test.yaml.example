@@ -1,0 +1,45 @@
+gateway:
+  listen_addr: :8080
+  proxy_attempts: 3
+
+transport:
+  type: frp_tcp
+  frp:
+    server_addr: frps.example.test
+    server_port: 7000
+    auth_token: replace-me
+    port_start: 2000
+    port_end: 2007
+    lease_ttl_seconds: 180
+
+oss:
+  base_url: https://objects.example.test/llm-swap
+
+tokens:
+  client: replace-client-token
+  agent: replace-agent-token
+
+models:
+  replace-with-authorized-model:
+    disabled: true
+    priority: 0
+    min_loaded: 0
+    max_concurrency: 1
+    max_queue: 0
+    queue_timeout_ms: 0
+    ttl: 600
+    artifact:
+      object: replace/with/authorized-model.tar.gz
+      kind: tar_gz
+      crc64ecma: replace-me
+    runtime: vllm
+
+tag_policies:
+  gpu-4090:
+    max_concurrency: 8
+    max_queue: 0
+    worker_defaults:
+      max_concurrency: 1
+      max_queue: 0
+    allowed_models:
+      - replace-with-authorized-model
