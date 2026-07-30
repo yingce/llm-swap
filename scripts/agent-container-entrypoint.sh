@@ -140,6 +140,10 @@ read_agent_token_file() {
   last_index=$((${#token_bytes[@]} - 1))
   if [[ "${token_bytes[$last_index],,}" == "0a" ]]; then
     unset "token_bytes[$last_index]"
+    last_index=$((last_index - 1))
+    if (( last_index >= 0 )) && [[ "${token_bytes[$last_index],,}" == "0d" ]]; then
+      unset "token_bytes[$last_index]"
+    fi
   fi
   local escaped_token=""
   for byte in "${token_bytes[@]}"; do

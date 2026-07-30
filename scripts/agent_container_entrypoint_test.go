@@ -227,6 +227,41 @@ func TestAgentContainerEntrypointBootstrapsFRPConfigFromTokenFile(t *testing.T) 
 	}
 }
 
+func TestAgentContainerEntrypointAcceptsCRLFTerminatedFRPTokenFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+	tokenPath := filepath.Join(root, "agent-token")
+	if err := os.WriteFile(tokenPath, []byte("crlf-token\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                      binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":       "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN_FILE": tokenPath,
+		"LLMSWAP_AGENT_TAGS":       "gpu-4090",
+	})
+	if strings.Contains(out, "crlf-token") {
+		t.Fatalf("entrypoint output leaked token: %q", out)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "agent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "token: 'crlf-token'") {
+		t.Fatalf("CRLF token was not normalized:\n%s", data)
+	}
+}
+
 func TestAgentContainerEntrypointRejectsAmbiguousOrInvalidFRPTokenFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
@@ -240,6 +275,9 @@ func TestAgentContainerEntrypointRejectsAmbiguousOrInvalidFRPTokenFile(t *testin
 		{name: "ambiguous", file: "file-token\n", envToken: "env-token", wantOutput: "ambiguous agent token input"},
 		{name: "empty", file: " \n", wantOutput: "invalid agent token file"},
 		{name: "multiline", file: "first\nsecond\n", wantOutput: "invalid agent token file"},
+		{name: "bare_carriage_return", file: "first\r", wantOutput: "invalid agent token file"},
+		{name: "internal_carriage_return", file: "fir\rst\n", wantOutput: "invalid agent token file"},
+		{name: "multiple_crlf_lines", file: "first\r\n\r\n", wantOutput: "invalid agent token file"},
 		{name: "nul", file: "first\x00second", wantOutput: "invalid agent token file"},
 		{name: "trailing_nul", file: "first\x00", wantOutput: "invalid agent token file"},
 		{name: "oversized", file: strings.Repeat("x", 16385), wantOutput: "invalid agent token file"},
