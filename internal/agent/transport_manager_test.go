@@ -133,6 +133,101 @@ func TestTransportManagerConfigChangeClosesReleasesThenStartsFreshLease(t *testi
 	eventually(t, func() bool { return manager.Snapshot().Generation == 8 && manager.Snapshot().Ready })
 }
 
+func TestTransportManagerNonCooperativeConfigChangeParksWithoutReleaseOrReplacement(t *testing.T) {
+	manager, gateway, factory, first, waiter, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
+	manager.ShutdownTimeout = 10 * time.Millisecond
+	first.runExitBlock = make(chan struct{})
+	first.closeBlock = make(chan struct{})
+	logs := make(chan string, 8)
+	manager.Logf = func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) }
+	second := newFRPClientFake()
+	factory.addClient(second)
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "lease-8", Slot: 4, RemotePort: 2004, Generation: 8})
+	gateway.setConfig(sealedTransportConfig(t, manager.AgentToken, manager.AgentID, 8, testTransportBootstrap("frps-next.example.test")))
+	waiter.advance(t)
+
+	receiveLogContaining(t, logs, "transport client shutdown timed out")
+	select {
+	case release := <-gateway.releaseCalls:
+		t.Fatalf("non-cooperative lease released: %+v", release)
+	case replacement := <-factory.created:
+		t.Fatalf("replacement client created: %+v", replacement)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if snapshot := manager.Snapshot(); snapshot.Ready || snapshot.LeaseID != "" {
+		t.Fatalf("non-cooperative state = %+v, want not ready", snapshot)
+	}
+	if got := gateway.acquireCount(); got != 1 {
+		t.Fatalf("lease acquire calls = %d, want initial call only", got)
+	}
+	if got := first.closeCalls.Load(); got != 1 {
+		t.Fatalf("Close calls = %d, want 1", got)
+	}
+	if got := gateway.acquireCount(); got != 1 {
+		t.Fatalf("lease acquire calls = %d, want initial call only", got)
+	}
+
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	select {
+	case release := <-gateway.releaseCalls:
+		t.Fatalf("shutdown released retained lease: %+v", release)
+	default:
+	}
+	close(first.runExitBlock)
+	close(first.closeBlock)
+	eventually(t, func() bool { return first.activeCalls.Load() == 0 })
+}
+
+func TestTransportManagerNonCooperativeStartupFailureParksWithoutRetryOrRelease(t *testing.T) {
+	const agentID, agentToken = "worker-gpu0", "agent-secret"
+	gateway := newTransportGatewayFake(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "retained", Slot: 2, RemotePort: 2002, Generation: 7})
+	first := newFRPClientFake()
+	first.runExitBlock = make(chan struct{})
+	first.closeBlock = make(chan struct{})
+	factory := newTransportFactoryFake(first)
+	waiter := newManualTransportWaiter()
+	logs := make(chan string, 8)
+	manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
+		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second,
+		ShutdownTimeout: 10 * time.Millisecond, ReleaseTimeout: time.Second, Wait: waiter.Wait,
+		Logf: func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+	receiveWithTimeout(t, factory.created)
+	first.ready <- errors.New("registration failed")
+	receiveLogContaining(t, logs, "transport client shutdown timed out")
+
+	select {
+	case call := <-waiter.calls:
+		t.Fatalf("non-cooperative client entered retry loop: delay=%s", call.delay)
+	case replacement := <-factory.created:
+		t.Fatalf("replacement client created: %+v", replacement)
+	case release := <-gateway.releaseCalls:
+		t.Fatalf("non-cooperative lease released: %+v", release)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := first.closeCalls.Load(); got != 1 {
+		t.Fatalf("Close calls = %d, want 1", got)
+	}
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	select {
+	case release := <-gateway.releaseCalls:
+		t.Fatalf("shutdown released retained lease: %+v", release)
+	default:
+	}
+	close(first.runExitBlock)
+	close(first.closeBlock)
+	eventually(t, func() bool { return first.activeCalls.Load() == 0 })
+}
+
 func TestTransportManagerBootstrapChangeWithinGenerationRestartsTransport(t *testing.T) {
 	manager, gateway, factory, first, waiter, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
 	defer stopTransportManager(t, cancel, done)
@@ -858,6 +953,7 @@ type frpClientFake struct {
 	closeBlock   chan struct{}
 	runExitBlock chan struct{}
 	activeCalls  atomic.Int32
+	closeCalls   atomic.Int32
 }
 
 type transportWaitCall struct {
@@ -931,6 +1027,7 @@ func (c *frpClientFake) WaitReady(ctx context.Context) error {
 }
 
 func (c *frpClientFake) Close() error {
+	c.closeCalls.Add(1)
 	c.once.Do(func() {
 		if c.closeInspect != nil {
 			c.closeInspect()
@@ -958,6 +1055,16 @@ func receiveWithTimeout[T any](t *testing.T, channel <-chan T) T {
 		t.Fatal("timed out waiting for test event")
 		var zero T
 		return zero
+	}
+}
+
+func receiveLogContaining(t *testing.T, logs <-chan string, want string) string {
+	t.Helper()
+	for {
+		message := receiveWithTimeout(t, logs)
+		if strings.Contains(message, want) {
+			return message
+		}
 	}
 }
 

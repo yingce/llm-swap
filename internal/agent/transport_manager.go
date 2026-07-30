@@ -133,11 +133,14 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				replacement = nil
 				retryDelay = m.retryMin()
 			case transportStartShutdown:
-				m.stopClient(started)
-				m.releaseLease(lease)
+				if m.stopClient(started) {
+					m.releaseLease(lease)
+				}
 				return nil
 			default:
-				m.stopClient(started)
+				if !m.stopClient(started) {
+					return m.parkUnconverged(ctx)
+				}
 				replacement = &transportReplacement{leaseID: lease.LeaseID, slot: lease.Slot, generation: lease.Generation}
 				m.log("transport client unavailable")
 				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
@@ -154,13 +157,16 @@ func (m *TransportManager) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			cancelCycle()
-			m.stopClient(active)
-			m.releaseLease(active.lease)
+			if m.stopClient(active) {
+				m.releaseLease(active.lease)
+			}
 			return nil
 		case <-active.runDone:
 			cancelCycle()
 			lease := active.lease
-			m.stopClient(active)
+			if !m.stopClient(active) {
+				return m.parkUnconverged(ctx)
+			}
 			replacement = &transportReplacement{leaseID: lease.LeaseID, slot: lease.Slot, generation: lease.Generation}
 			active = nil
 			m.log("transport client stopped")
@@ -172,8 +178,9 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			cancelCycle()
 			if err != nil {
 				if ctx.Err() != nil {
-					m.stopClient(active)
-					m.releaseLease(active.lease)
+					if m.stopClient(active) {
+						m.releaseLease(active.lease)
+					}
 					return nil
 				}
 				continue
@@ -186,7 +193,9 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			if active.desired == desired {
 				continue
 			}
-			m.stopClient(active)
+			if !m.stopClient(active) {
+				return m.parkUnconverged(ctx)
+			}
 			m.releaseLease(active.lease)
 			active = nil
 			replacement = nil
@@ -343,10 +352,10 @@ func (m *TransportManager) start(ctx context.Context, desired desiredTransport, 
 	return active, transportStartReady
 }
 
-func (m *TransportManager) stopClient(active *activeTransport) {
+func (m *TransportManager) stopClient(active *activeTransport) bool {
 	m.state.clear()
 	if active == nil {
-		return
+		return true
 	}
 	active.cancel()
 	closeDone := make(chan struct{})
@@ -362,17 +371,25 @@ func (m *TransportManager) stopClient(active *activeTransport) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeout)
 	defer shutdownCancel()
 	workersDone := active.workersDone
+	workersConverged := false
 	for workersDone != nil || closeDone != nil {
 		select {
 		case <-workersDone:
 			workersDone = nil
+			workersConverged = true
 		case <-closeDone:
 			closeDone = nil
 		case <-shutdownCtx.Done():
 			m.log("transport client shutdown timed out")
-			return
+			return workersConverged
 		}
 	}
+	return true
+}
+
+func (m *TransportManager) parkUnconverged(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
 }
 
 func (m *TransportManager) releaseLease(lease protocol.TransportLeaseResponse) {
