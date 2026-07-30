@@ -42,9 +42,14 @@ For the initial simulation, the test gateway uses the public FRPS address.
 For a later real-gateway migration, FRPS may join the gateway Compose network
 and the worker URL can use its private `frps:remote_port` service address.
 
-Each agent is identified by `<instance-id, gpu-index>`. `gpu-index` is local
-to the host; the gateway assigns a separate globally reusable `transport_slot`.
-With `port_start: 2000`, a lease for slot `n` has
+Each agent is identified by its stable `agent_id`. An explicit agent ID takes
+precedence; otherwise the agent uses the container hostname. A generated UUID
+persisted beneath the agent root is the final fallback only when hostname
+lookup fails. The Compose services use unique hostnames `worker-gpu0` through
+`worker-gpu7`, so no explicit agent-ID environment variable is required.
+
+The gateway assigns a separate globally reusable `transport_slot`. With
+`port_start: 2000`, a lease for slot `n` has
 `remote_port = 2000 + n`.
 
 ## Direct FRP Transport
@@ -127,19 +132,22 @@ matching active lease and FRPC registration exist.
 
 The worker project lives under `/data0/images/llm-swap-8x4090`.
 
-- `worker-gpu0` through `worker-gpu7` use the same locally built agent image
-  and each set `NVIDIA_VISIBLE_DEVICES` to one distinct GPU index.
+- `worker-gpu0` through `worker-gpu7` use the same locally built agent image.
+  Docker assigns one physical GPU to each service using an NVIDIA GPU device
+  request equivalent to `docker run --runtime=nvidia --gpus '"device=N"'`.
+  Inside every worker container that assigned physical GPU is the only visible
+  GPU and is numbered `0`. The Compose project does not set
+  `NVIDIA_VISIBLE_DEVICES` itself.
 - The agent image is built on this GPU worker host from `Dockerfile.agent` with
   the required runtimes and `LLMSWAP_INSTALL_TAILSCALE=0`. The eight services
   reuse that image.
 - All workers expose container port `6006` only on the private Compose network;
   no worker port is published on the worker host and no FRPC sidecar exists.
-- Worker IDs use the supplied deployment ID with a stable `-gpu0` through
-  `-gpu7` suffix.
-- Every worker uses the existing `gpu-4090` tag and its existing agent
-  credential. The static credential lives only in a host-local, mode-0600
-  environment file and never in Git or the Compose file. FRP credentials come
-  from the encrypted gateway transport payload.
+- Every worker uses the existing `gpu-4090` tag. Its only required local
+  control-plane inputs are gateway URL and agent credential, stored in a
+  host-local, mode-0600 secret file rather than Git or the Compose file.
+  Llama-swap and FRP credentials come from the encrypted gateway transport
+  payload. Root, config path, log path, and swap port use image defaults.
 - `/data0/images/llm-swap-8x4090/models` is shared between workers. The agent's
   artifact locks make shared installation safe, while each container keeps its
   rendered config, logs, and llama-swap state in a separate host directory.
