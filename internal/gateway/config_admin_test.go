@@ -12,6 +12,8 @@ import (
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestUIConfigRedactsFRPAuthTokenFromStructuredConfigAndYAML(t *testing.T) {
@@ -181,6 +183,126 @@ func TestUIConfigDryRunAndValidateRedactedFRPAuthTokenDoNotLeak(t *testing.T) {
 	_, candidate := srv.configManager.DryRun([]byte(redacted))
 	if got := candidate.Transport.FRP.AuthToken; got != secret {
 		t.Fatalf("dry-run candidate auth token = %q, want existing secret restored", got)
+	}
+}
+
+func TestUIConfigRedactsFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
+	const secret = "frp-aliased-secret"
+	for _, shape := range []string{"transport_alias", "frp_alias", "scalar_alias", "merge_map", "merge_sequence", "merge_direct_override"} {
+		t.Run(shape, func(t *testing.T) {
+			raw := testGatewayYAMLWithFRPShape(secret, shape, "qwen")
+			cfg, err := config.LoadGateway(strings.NewReader(raw))
+			if err != nil {
+				t.Fatalf("load fixture: %v\n%s", err, raw)
+			}
+			configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+			if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			srv := NewServerWithGatewayConfigPath(cfg, configPath)
+			req := httptest.NewRequest(http.MethodGet, "/ui/api/config", nil)
+			req.Header.Set("Authorization", "Bearer agent-secret")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), secret) {
+				t.Fatalf("config response leaked aliased FRP auth token: %s", rr.Body.String())
+			}
+			var resp uiConfigResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Config.Transport.FRP.AuthToken; got != uiConfigRedactedSecret {
+				t.Fatalf("structured auth token = %q, want marker", got)
+			}
+			if !strings.Contains(resp.YAML, uiConfigRedactedSecret) {
+				t.Fatalf("redacted YAML does not contain marker:\n%s", resp.YAML)
+			}
+		})
+	}
+}
+
+func TestUIConfigApplyRoundTripRestoresFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
+	const secret = "frp-aliased-secret"
+	for _, shape := range []string{"transport_alias", "frp_alias", "scalar_alias", "merge_map", "merge_sequence", "merge_direct_override"} {
+		t.Run(shape, func(t *testing.T) {
+			raw := testGatewayYAMLWithFRPShape(secret, shape, "qwen")
+			cfg, err := config.LoadGateway(strings.NewReader(raw))
+			if err != nil {
+				t.Fatalf("load fixture: %v\n%s", err, raw)
+			}
+			configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+			if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			srv := NewServerWithGatewayConfigPath(cfg, configPath)
+
+			getReq := httptest.NewRequest(http.MethodGet, "/ui/api/config", nil)
+			getReq.Header.Set("Authorization", "Bearer agent-secret")
+			getRR := httptest.NewRecorder()
+			srv.ServeHTTP(getRR, getReq)
+			if getRR.Code != http.StatusOK {
+				t.Fatalf("GET status = %d, want 200: %s", getRR.Code, getRR.Body.String())
+			}
+			var configResp uiConfigResponse
+			if err := json.NewDecoder(getRR.Body).Decode(&configResp); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(configResp.YAML, secret) || !strings.Contains(configResp.YAML, uiConfigRedactedSecret) {
+				t.Fatalf("GET YAML is not safely redacted:\n%s", configResp.YAML)
+			}
+
+			applyReq := httptest.NewRequest(http.MethodPost, "/ui/api/config/apply", strings.NewReader(configResp.YAML))
+			applyReq.Header.Set("Authorization", "Bearer agent-secret")
+			applyRR := httptest.NewRecorder()
+			srv.ServeHTTP(applyRR, applyReq)
+			if applyRR.Code != http.StatusOK {
+				t.Fatalf("apply status = %d, want 200: %s", applyRR.Code, applyRR.Body.String())
+			}
+			if strings.Contains(applyRR.Body.String(), secret) {
+				t.Fatalf("apply response leaked FRP auth token: %s", applyRR.Body.String())
+			}
+			persisted, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(persisted), uiConfigRedactedSecret) {
+				t.Fatalf("persisted YAML still contains marker:\n%s", persisted)
+			}
+			persistedCfg, err := config.LoadGateway(bytes.NewReader(persisted))
+			if err != nil {
+				t.Fatalf("load persisted config: %v\n%s", err, persisted)
+			}
+			if got := persistedCfg.Transport.FRP.AuthToken; got != secret {
+				t.Fatalf("persisted auth token = %q, want restored secret", got)
+			}
+		})
+	}
+}
+
+func TestYAMLMappingValueFollowsMergeAliasesWithoutLoopingOnCycles(t *testing.T) {
+	mapA := &yaml.Node{Kind: yaml.MappingNode}
+	mapB := &yaml.Node{Kind: yaml.MappingNode}
+	aliasA := &yaml.Node{Kind: yaml.AliasNode, Alias: mapA}
+	aliasB := &yaml.Node{Kind: yaml.AliasNode, Alias: mapB}
+	mergeKeyA := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!merge", Value: "<<"}
+	mergeKeyB := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!merge", Value: "<<"}
+	secret := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "secret"}
+	mapA.Content = []*yaml.Node{mergeKeyA, aliasB}
+	mapB.Content = []*yaml.Node{
+		mergeKeyB, aliasA,
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "auth_token"}, secret,
+	}
+
+	if got := yamlMappingValue(mapA, "auth_token"); got != secret {
+		t.Fatalf("auth_token node = %p, want direct value reachable through cyclic merge %p", got, secret)
+	}
+	if got := yamlMappingValue(mapA, "missing"); got != nil {
+		t.Fatalf("missing node = %+v, want nil without looping", got)
 	}
 }
 
@@ -837,5 +959,74 @@ func testGatewayYAMLWithFRPSecret(secret string, models ...string) string {
 		"    port_start: 2000\n" +
 		"    port_end: 3000\n" +
 		"    lease_ttl_seconds: 180\n"
+	return strings.Replace(raw, "oss:\n", transport+"oss:\n", 1)
+}
+
+func testGatewayYAMLWithFRPShape(secret string, shape string, models ...string) string {
+	raw := testGatewayYAMLWithModels(models...)
+	frpFields := "    server_addr: frps.example.com\n" +
+		"    server_port: 7000\n" +
+		"    auth_token: " + secret + "\n" +
+		"    port_start: 2000\n" +
+		"    port_end: 3000\n" +
+		"    lease_ttl_seconds: 180\n"
+	var transport string
+	switch shape {
+	case "transport_alias":
+		transport = "transport_defaults: &transport_defaults\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" + frpFields +
+			"transport: *transport_defaults\n"
+	case "frp_alias":
+		transport = "frp_defaults: &frp_defaults\n" + strings.ReplaceAll(frpFields, "    ", "  ") +
+			"transport:\n" +
+			"  type: frp_tcp\n" +
+			"  frp: *frp_defaults\n"
+	case "scalar_alias":
+		transport = "frp_secret: &frp_secret " + secret + "\n" +
+			"transport:\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" +
+			"    server_addr: frps.example.com\n" +
+			"    server_port: 7000\n" +
+			"    auth_token: *frp_secret\n" +
+			"    port_start: 2000\n" +
+			"    port_end: 3000\n" +
+			"    lease_ttl_seconds: 180\n"
+	case "merge_map":
+		transport = "frp_defaults: &frp_defaults\n" + strings.ReplaceAll(frpFields, "    ", "  ") +
+			"transport:\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" +
+			"    <<: *frp_defaults\n"
+	case "merge_sequence":
+		transport = "frp_auth: &frp_auth\n" +
+			"  auth_token: " + secret + "\n" +
+			"frp_network: &frp_network\n" +
+			"  server_addr: frps.example.com\n" +
+			"  server_port: 7000\n" +
+			"  port_start: 2000\n" +
+			"  port_end: 3000\n" +
+			"  lease_ttl_seconds: 180\n" +
+			"transport:\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" +
+			"    <<: [*frp_auth, *frp_network]\n"
+	case "merge_direct_override":
+		transport = "frp_defaults: &frp_defaults\n" +
+			"  server_addr: frps.example.com\n" +
+			"  server_port: 7000\n" +
+			"  auth_token: inactive-default-secret\n" +
+			"  port_start: 2000\n" +
+			"  port_end: 3000\n" +
+			"  lease_ttl_seconds: 180\n" +
+			"transport:\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" +
+			"    <<: *frp_defaults\n" +
+			"    auth_token: " + secret + "\n"
+	default:
+		panic("unknown FRP YAML shape: " + shape)
+	}
 	return strings.Replace(raw, "oss:\n", transport+"oss:\n", 1)
 }

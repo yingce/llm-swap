@@ -284,32 +284,103 @@ func replaceFRPAuthTokenYAML(raw []byte, match string, replacement string) ([]by
 }
 
 func yamlMappingValue(node *yaml.Node, path ...string) *yaml.Node {
+	for _, key := range path {
+		node = yamlLookupMappingKey(node, key, make(map[*yaml.Node]bool))
+		if node == nil {
+			return nil
+		}
+	}
+	return yamlResolveAlias(node)
+}
+
+func yamlLookupMappingKey(node *yaml.Node, key string, visiting map[*yaml.Node]bool) *yaml.Node {
+	node = yamlDocumentRoot(node)
 	if node == nil {
 		return nil
 	}
-	if node.Kind == yaml.DocumentNode {
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil || visiting[node] {
+			return nil
+		}
+		visiting[node] = true
+		defer delete(visiting, node)
+		return yamlLookupMappingKey(node.Alias, key, visiting)
+	}
+	if node.Kind != yaml.MappingNode || visiting[node] {
+		return nil
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
+	// YAML merge keys only supply defaults. An explicit key on the mapping
+	// always wins, regardless of where the merge key appears.
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if isYAMLMergeKey(node.Content[i]) {
+			continue
+		}
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if !isYAMLMergeKey(node.Content[i]) {
+			continue
+		}
+		if value := yamlLookupMergedKey(node.Content[i+1], key, visiting); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func yamlLookupMergedKey(node *yaml.Node, key string, visiting map[*yaml.Node]bool) *yaml.Node {
+	node = yamlDocumentRoot(node)
+	if node == nil {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.AliasNode, yaml.MappingNode:
+		return yamlLookupMappingKey(node, key, visiting)
+	case yaml.SequenceNode:
+		if visiting[node] {
+			return nil
+		}
+		visiting[node] = true
+		defer delete(visiting, node)
+		for _, candidate := range node.Content {
+			if value := yamlLookupMergedKey(candidate, key, visiting); value != nil {
+				return value
+			}
+		}
+	}
+	return nil
+}
+
+func yamlDocumentRoot(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.DocumentNode {
 		if len(node.Content) == 0 {
 			return nil
 		}
 		node = node.Content[0]
 	}
-	for _, key := range path {
-		if node.Kind != yaml.MappingNode {
+	return node
+}
+
+func yamlResolveAlias(node *yaml.Node) *yaml.Node {
+	visited := make(map[*yaml.Node]bool)
+	node = yamlDocumentRoot(node)
+	for node != nil && node.Kind == yaml.AliasNode {
+		if node.Alias == nil || visited[node] {
 			return nil
 		}
-		var next *yaml.Node
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			if node.Content[i].Value == key {
-				next = node.Content[i+1]
-				break
-			}
-		}
-		if next == nil {
-			return nil
-		}
-		node = next
+		visited[node] = true
+		node = yamlDocumentRoot(node.Alias)
 	}
 	return node
+}
+
+func isYAMLMergeKey(node *yaml.Node) bool {
+	return node != nil && (node.Tag == "!!merge" || node.Value == "<<")
 }
 
 func (m *ConfigManager) applyRuntimePins(cfg config.GatewayConfig) config.GatewayConfig {
