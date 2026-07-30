@@ -86,3 +86,29 @@ func TestLlamaSwapStateClientReadsTokenSourceForEveryRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestLlamaSwapStateClientExplicitTokenDoesNotReadTokenSource(t *testing.T) {
+	var authorizations []string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		if r.URL.Path == "/running" {
+			_, _ = w.Write([]byte(`{"running":[]}`))
+		}
+	}))
+	defer worker.Close()
+	client := LlamaSwapStateClient{
+		BaseURL: worker.URL, HTTP: worker.Client(),
+		TokenSource: func() string { t.Fatal("explicit token request read TokenSource"); return "" },
+	}
+	if _, err := client.RunningModelsContextWithToken(context.Background(), "cycle-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.HealthContextWithToken(context.Background(), "cycle-token"); err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range authorizations {
+		if got != "Bearer cycle-token" {
+			t.Fatalf("authorization[%d] = %q", i, got)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +21,9 @@ import (
 
 func main() {
 	build := buildinfo.Current(protocol.AgentProtocolVersion)
+	if len(os.Args) > 1 && os.Args[1] == "internal-agent-token-file-hex" {
+		os.Exit(runAgentTokenFileHex(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
 		fmt.Print(agentVersionText(build))
 		return
@@ -54,6 +58,20 @@ func main() {
 	if err := runtime.reconciler.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+}
+
+func runAgentTokenFileHex(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "invalid agent token file")
+		return 1
+	}
+	tokenHex, err := agent.ReadAgentTokenFileHex(args[0])
+	if err != nil {
+		fmt.Fprintln(stderr, "invalid agent token file")
+		return 1
+	}
+	fmt.Fprintln(stdout, tokenHex)
+	return 0
 }
 
 type builtAgentRuntime struct {

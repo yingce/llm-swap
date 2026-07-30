@@ -39,6 +39,14 @@ type TransportState interface {
 	Snapshot() RuntimeTransportSnapshot
 }
 
+type tokenAwareRunningModelsClient interface {
+	RunningModelsContextWithToken(context.Context, string) ([]protocol.RunningModel, error)
+}
+
+type tokenAwareHealthClient interface {
+	HealthContextWithToken(context.Context, string) error
+}
+
 type Reconciler struct {
 	AgentID         string
 	Tags            []string
@@ -146,9 +154,13 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	r.drainInstallResults(installs, installDone)
 	artifactStatus, _, err := r.installAllowedArtifactsAsync(ctx, cfg, installs, installDone)
 	reconcileErr = errors.Join(reconcileErr, err)
-	runningModels, err := r.fetchRunningModels(ctx)
-	reconcileErr = errors.Join(reconcileErr, err)
-	runningStateKnown := err == nil
+	var runningModels []protocol.RunningModel
+	runningStateKnown := false
+	if transport.ready {
+		runningModels, err = r.fetchRunningModels(ctx, transport.llamaSwapToken)
+		reconcileErr = errors.Join(reconcileErr, err)
+		runningStateKnown = err == nil
+	}
 	if runningStateKnown {
 		r.observeRunningModelChanges(runningModels)
 	}
@@ -217,7 +229,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 			r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
 			return resp, errors.Join(reconcileErr, err)
 		}
-		if err := r.verifyRestart(ctx); err != nil {
+		if err := r.verifyRestart(ctx, transport.llamaSwapToken); err != nil {
 			r.recordEvent(protocol.AgentEvent{Event: "llama_swap_restart_error", Error: err.Error()})
 			return resp, errors.Join(reconcileErr, err)
 		}
@@ -488,9 +500,13 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	artifactStatus, err := r.installAllowedArtifacts(ctx, cfg)
 	reconcileErr = errors.Join(reconcileErr, err)
-	runningModels, err := r.fetchRunningModels(ctx)
-	reconcileErr = errors.Join(reconcileErr, err)
-	runningStateKnown := err == nil
+	var runningModels []protocol.RunningModel
+	runningStateKnown := false
+	if transport.ready {
+		runningModels, err = r.fetchRunningModels(ctx, transport.llamaSwapToken)
+		reconcileErr = errors.Join(reconcileErr, err)
+		runningStateKnown = err == nil
+	}
 	if runningStateKnown {
 		r.observeRunningModelChanges(runningModels)
 	}
@@ -549,7 +565,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		if err := r.restart(ctx); err != nil {
 			return resp, errors.Join(reconcileErr, err)
 		}
-		if err := r.verifyRestart(ctx); err != nil {
+		if err := r.verifyRestart(ctx, transport.llamaSwapToken); err != nil {
 			return resp, errors.Join(reconcileErr, err)
 		}
 		if err := r.clearPendingRestart(); err != nil {
@@ -589,11 +605,17 @@ func (r *Reconciler) installAllowedArtifacts(ctx context.Context, cfg protocol.A
 	return status, outErr
 }
 
-func (r *Reconciler) fetchRunningModels(ctx context.Context) ([]protocol.RunningModel, error) {
+func (r *Reconciler) fetchRunningModels(ctx context.Context, token string) ([]protocol.RunningModel, error) {
 	if r.RunningModels == nil {
 		return nil, nil
 	}
-	models, err := r.RunningModels.RunningModelsContext(ctx)
+	var models []protocol.RunningModel
+	var err error
+	if client, ok := r.RunningModels.(tokenAwareRunningModelsClient); ok {
+		models, err = client.RunningModelsContextWithToken(ctx, token)
+	} else {
+		models, err = r.RunningModels.RunningModelsContext(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetch llama-swap running models: %w", err)
 	}
@@ -683,14 +705,21 @@ func (r *Reconciler) restart(ctx context.Context) error {
 	return r.Service.Restart(ctx)
 }
 
-func (r *Reconciler) verifyRestart(ctx context.Context) error {
+func (r *Reconciler) verifyRestart(ctx context.Context, token string) error {
 	if r.Health != nil {
-		if err := r.Health.HealthContext(ctx); err != nil {
+		var err error
+		if client, ok := r.Health.(tokenAwareHealthClient); ok {
+			err = client.HealthContextWithToken(ctx, token)
+		} else {
+			err = r.Health.HealthContext(ctx)
+		}
+		if err != nil {
 			return fmt.Errorf("verify llama-swap health: %w", err)
 		}
 	}
 	if r.RunningModels != nil {
-		if _, err := r.RunningModels.RunningModelsContext(ctx); err != nil {
+		_, err := r.fetchRunningModels(ctx, token)
+		if err != nil {
 			return fmt.Errorf("verify llama-swap running models: %w", err)
 		}
 	}

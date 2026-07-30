@@ -26,11 +26,15 @@ type LlamaSwapStateClient struct {
 }
 
 func (c LlamaSwapStateClient) HealthContext(ctx context.Context) error {
+	return c.HealthContextWithToken(ctx, c.token())
+}
+
+func (c LlamaSwapStateClient) HealthContextWithToken(ctx context.Context, token string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+"/health", nil)
 	if err != nil {
 		return err
 	}
-	if token := c.token(); token != "" {
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
@@ -50,11 +54,15 @@ func (c LlamaSwapStateClient) HealthContext(ctx context.Context) error {
 }
 
 func (c LlamaSwapStateClient) RunningModelsContext(ctx context.Context) ([]protocol.RunningModel, error) {
+	return c.RunningModelsContextWithToken(ctx, c.token())
+}
+
+func (c LlamaSwapStateClient) RunningModelsContextWithToken(ctx context.Context, token string) ([]protocol.RunningModel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+"/running", nil)
 	if err != nil {
 		return nil, err
 	}
-	if token := c.token(); token != "" {
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 

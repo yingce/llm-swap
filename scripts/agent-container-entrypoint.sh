@@ -17,6 +17,8 @@ LLMSWAP_SWAP_PORT="${LLMSWAP_SWAP_PORT:-6006}"
 LLMSWAP_GATEWAY_URL="${LLMSWAP_GATEWAY_URL:-}"
 LLMSWAP_AGENT_TOKEN="${LLMSWAP_AGENT_TOKEN:-}"
 LLMSWAP_AGENT_TOKEN_FILE="${LLMSWAP_AGENT_TOKEN_FILE:-}"
+LLMSWAP_AGENT_TOKEN_READER="${LLMSWAP_AGENT_TOKEN_READER:-$LLMSWAP_AGENT_BIN}"
+LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE="${LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE:-$LLMSWAP_ROOT/.agent-bootstrap-mode}"
 LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-$LLMSWAP_AGENT_TOKEN}"
 LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_ENABLE_TAILSCALE="${LLMSWAP_ENABLE_TAILSCALE:-0}"
@@ -76,15 +78,29 @@ render_tags_yaml() {
 }
 
 write_agent_config() {
-	local mode="$1"
-	local agent_token="$2"
+  local mode="$1"
+  local agent_token="$2"
   local swap_url
   swap_url="$(first_non_empty "${LLMSWAP_SWAP_URL:-}" || true)"
   local tags_yaml
   tags_yaml="$(render_tags_yaml "$LLMSWAP_AGENT_TAGS")"
 
-  install -d "$(dirname "$LLMSWAP_AGENT_CONFIG")" "$LLMSWAP_MODEL_ROOT" "$LLMSWAP_LOG_DIR"
-  {
+  local config_dir config_name temporary old_umask
+  config_dir="$(dirname "$LLMSWAP_AGENT_CONFIG")"
+  config_name="$(basename "$LLMSWAP_AGENT_CONFIG")"
+  install -d "$config_dir" "$LLMSWAP_MODEL_ROOT" "$LLMSWAP_LOG_DIR"
+  old_umask="$(umask)"
+  umask 077
+  if ! temporary="$(mktemp "$config_dir/.${config_name}.XXXXXX")"; then
+    umask "$old_umask"
+    return 1
+  fi
+  umask "$old_umask"
+  if ! chmod 0600 "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! {
     printf 'agent:\n'
     if [[ "$mode" == "legacy" ]]; then
       printf '  id: %s\n' "$LLMSWAP_AGENT_ID"
@@ -106,63 +122,54 @@ write_agent_config() {
       printf '  token: %s\n' "$agent_token"
       printf '  llama_swap_token: %s\n' "$LLMSWAP_LLAMA_SWAP_TOKEN"
     fi
-  } > "$LLMSWAP_AGENT_CONFIG"
-  chmod 0600 "$LLMSWAP_AGENT_CONFIG"
+  } > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! chmod 0600 "$temporary" || ! mv "$temporary" "$LLMSWAP_AGENT_CONFIG"; then
+    rm -f "$temporary"
+    return 1
+  fi
 }
 
 read_agent_token_file() {
   local token_file="$1"
-  if [[ ! -f "$token_file" || -L "$token_file" || ! -r "$token_file" ]]; then
-    printf 'invalid agent token file\n' >&2
-    return 1
-  fi
   local token_hex
-  if ! token_hex="$(LC_ALL=C od -An -v -tx1 -- "$token_file" 2>/dev/null)"; then
-    printf 'invalid agent token file\n' >&2
+  if ! token_hex="$("$LLMSWAP_AGENT_TOKEN_READER" internal-agent-token-file-hex "$token_file")"; then
     return 1
   fi
-  token_hex="${token_hex//$'\n'/ }"
-  local -a token_bytes=()
-  read -r -a token_bytes <<< "$token_hex"
-  unset token_hex
-  if (( ${#token_bytes[@]} < 1 || ${#token_bytes[@]} > 16384 )); then
+  if [[ ! "$token_hex" =~ ^[0-9a-f]+$ ]] || (( ${#token_hex} < 2 || ${#token_hex} > 32768 || ${#token_hex} % 2 != 0 )); then
     printf 'invalid agent token file\n' >&2
     return 1
-  fi
-  local byte
-  for byte in "${token_bytes[@]}"; do
-    if [[ ! "$byte" =~ ^[0-9a-f]{2}$ || "$byte" == "00" ]]; then
-      printf 'invalid agent token file\n' >&2
-      return 1
-    fi
-  done
-  local last_index
-  last_index=$((${#token_bytes[@]} - 1))
-  if [[ "${token_bytes[$last_index],,}" == "0a" ]]; then
-    unset "token_bytes[$last_index]"
-    last_index=$((last_index - 1))
-    if (( last_index >= 0 )) && [[ "${token_bytes[$last_index],,}" == "0d" ]]; then
-      unset "token_bytes[$last_index]"
-    fi
   fi
   local escaped_token=""
-  for byte in "${token_bytes[@]}"; do
-    byte="${byte,,}"
-    if [[ "$byte" == "0a" || "$byte" == "0d" ]]; then
-      printf 'invalid agent token file\n' >&2
-      return 1
-    fi
+  local offset
+  for ((offset = 0; offset < ${#token_hex}; offset += 2)); do
+    local byte="${token_hex:offset:2}"
     escaped_token+="\\x$byte"
   done
   local token
   printf -v token '%b' "$escaped_token"
-  unset escaped_token token_bytes
-  token="$(trim "$token")"
-  if [[ -z "$token" ]]; then
-    printf 'invalid agent token file\n' >&2
+  unset escaped_token token_hex
+  printf '%s' "$token"
+}
+
+write_bootstrap_mode_marker() {
+  local marker_dir marker_name temporary old_umask
+  marker_dir="$(dirname "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE")"
+  marker_name="$(basename "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE")"
+  install -d "$marker_dir"
+  old_umask="$(umask)"
+  umask 077
+  if ! temporary="$(mktemp "$marker_dir/.${marker_name}.XXXXXX")"; then
+    umask "$old_umask"
     return 1
   fi
-  printf '%s' "$token"
+  umask "$old_umask"
+  if ! chmod 0600 "$temporary" || ! printf 'frp\n' > "$temporary" || ! mv "$temporary" "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE"; then
+    rm -f "$temporary"
+    return 1
+  fi
 }
 
 write_frp_agent_supervisor() {
@@ -377,11 +384,10 @@ main() {
   fi
 
   local bootstrap_mode="legacy"
-  if [[ -n "${LLMSWAP_AGENT_TOKEN_FILE// }" ]]; then
-    bootstrap_mode="frp"
-  fi
-
   if [[ "$LLMSWAP_FORCE_CONFIG" == "1" || ! -f "$LLMSWAP_AGENT_CONFIG" ]]; then
+    if [[ -n "${LLMSWAP_AGENT_TOKEN_FILE// }" ]]; then
+      bootstrap_mode="frp"
+    fi
     require_env_when_bootstrapping LLMSWAP_GATEWAY_URL "$LLMSWAP_GATEWAY_URL"
     if [[ "$bootstrap_mode" == "frp" ]]; then
       if [[ -n "${LLMSWAP_AGENT_TOKEN// }" ]]; then
@@ -391,11 +397,15 @@ main() {
       local file_agent_token
       file_agent_token="$(read_agent_token_file "$LLMSWAP_AGENT_TOKEN_FILE")"
       write_agent_config frp "$file_agent_token"
+      write_bootstrap_mode_marker
       unset file_agent_token
     else
       require_env_when_bootstrapping LLMSWAP_AGENT_TOKEN "$LLMSWAP_AGENT_TOKEN"
       write_agent_config legacy "$LLMSWAP_AGENT_TOKEN"
+      rm -f "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE"
     fi
+  elif [[ -f "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE" && ! -L "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE" ]] && [[ "$(<"$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE")" == "frp" ]]; then
+    bootstrap_mode="frp"
   fi
 
   if [[ "$bootstrap_mode" == "frp" ]]; then

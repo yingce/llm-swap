@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,10 +14,17 @@ import (
 )
 
 type mutableTransportState struct {
-	snapshot RuntimeTransportSnapshot
+	snapshot      RuntimeTransportSnapshot
+	afterSnapshot func()
 }
 
-func (s *mutableTransportState) Snapshot() RuntimeTransportSnapshot { return s.snapshot }
+func (s *mutableTransportState) Snapshot() RuntimeTransportSnapshot {
+	snapshot := s.snapshot
+	if s.afterSnapshot != nil {
+		s.afterSnapshot()
+	}
+	return snapshot
+}
 
 func TestReconcileUsesOneDynamicTransportSnapshotPerCycle(t *testing.T) {
 	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
@@ -144,6 +153,96 @@ func TestReconcileRunOnceDoesNotRenderWhileTransportNotReady(t *testing.T) {
 		t.Fatalf("not-ready reconcileRunOnce created config: %v", err)
 	}
 	assertNotReadyTransportHeartbeat(t, heartbeats[0])
+}
+
+func TestReconcileNotReadySkipsLocalLlamaSwapRequests(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatal(err)
+	}
+	var localRequests int
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		localRequests++
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer local.Close()
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, reconcileConfigWithArtifact("https://oss.invalid", artifact), &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+	stateClient := LlamaSwapStateClient{BaseURL: local.URL, TokenSource: func() string { return "must-not-read" }, HTTP: local.Client()}
+	rec := Reconciler{
+		AgentID: "gpu-01", Tags: []string{"gpu-4090"}, ModelRoot: modelRoot,
+		LlamaSwapConfig: filepath.Join(t.TempDir(), "llama-swap.yaml"), TransportState: &mutableTransportState{},
+		Gateway:    ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient: gateway.Client(), Service: &FakeService{}, Health: stateClient, RunningModels: stateClient,
+	}
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if localRequests != 0 {
+		t.Fatalf("not-ready reconcile made %d local llama-swap requests, want 0", localRequests)
+	}
+	if heartbeats[0].LastError != "" {
+		t.Fatalf("not-ready heartbeat last_error = %q", heartbeats[0].LastError)
+	}
+}
+
+func TestReconcileUsesCapturedTransportTokenForLocalStateRenderAndHeartbeat(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123456789"}
+	modelRoot := t.TempDir()
+	if err := WriteMarker(filepath.Join(modelRoot, "qwen"), "qwen", artifact); err != nil {
+		t.Fatal(err)
+	}
+	state := &mutableTransportState{snapshot: RuntimeTransportSnapshot{
+		ModeResolved: true, Managed: true, Ready: true,
+		LlamaSwapURL: "http://frps.example.test:2000", LlamaSwapToken: "cycle-token",
+		LeaseID: "cycle-lease", Generation: 7,
+	}}
+	state.afterSnapshot = func() {
+		state.afterSnapshot = nil
+		state.snapshot = RuntimeTransportSnapshot{
+			ModeResolved: true, Managed: true, Ready: true,
+			LlamaSwapURL: "http://frps.example.test:2001", LlamaSwapToken: "next-token",
+			LeaseID: "next-lease", Generation: 8,
+		}
+	}
+	var authorization string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"running":[]}`))
+	}))
+	defer local.Close()
+	stateClient := LlamaSwapStateClient{
+		BaseURL: local.URL, HTTP: local.Client(),
+		TokenSource: func() string { return state.snapshot.LlamaSwapToken },
+	}
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, reconcileConfigWithArtifact("https://oss.invalid", artifact), &heartbeats, protocol.HeartbeatResponse{})
+	defer gateway.Close()
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	rec := Reconciler{
+		AgentID: "gpu-01", Tags: []string{"gpu-4090"}, ModelRoot: modelRoot, LlamaSwapConfig: configPath,
+		TransportState: state, Gateway: ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		HTTPClient: gateway.Client(), Service: &FakeService{}, Health: stateClient, RunningModels: stateClient,
+	}
+	if _, err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if authorization != "Bearer cycle-token" {
+		t.Fatalf("local authorization = %q, want captured cycle token", authorization)
+	}
+	rendered, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rendered), "apiKeys:\n    - cycle-token") || strings.Contains(string(rendered), "next-token") {
+		t.Fatalf("rendered config did not use captured token:\n%s", rendered)
+	}
+	hb := heartbeats[0]
+	if hb.LlamaSwapURL != "http://frps.example.test:2000" || hb.TransportLeaseID != "cycle-lease" || hb.TransportGeneration != 7 {
+		t.Fatalf("heartbeat did not use captured snapshot: %+v", hb)
+	}
 }
 
 func assertNotReadyTransportHeartbeat(t *testing.T, hb protocol.HeartbeatRequest) {

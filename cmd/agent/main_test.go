@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,6 +20,20 @@ func TestAgentVersionTextIncludesSourceVersionAndProtocol(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("version text %q missing %q", text, want)
 		}
+	}
+}
+
+func TestRunAgentTokenFileHexReportsGenericErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "sensitive-token-name")
+	var stdout, stderr bytes.Buffer
+	if code := runAgentTokenFileHex([]string{missing}, &stdout, &stderr); code == 0 {
+		t.Fatal("missing token file succeeded")
+	}
+	if stdout.Len() != 0 || stderr.String() != "invalid agent token file\n" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stderr.String(), missing) {
+		t.Fatal("generic token file error leaked path")
 	}
 }
 
