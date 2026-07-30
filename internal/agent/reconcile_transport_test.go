@@ -30,13 +30,29 @@ type preparationBarrierRunningClient struct {
 	release chan struct{}
 }
 
+type classifiedProbeRunningClient struct {
+	correctToken string
+	wrongErr     error
+}
+
+func (c classifiedProbeRunningClient) RunningModelsContext(context.Context) ([]protocol.RunningModel, error) {
+	return nil, nil
+}
+
+func (c classifiedProbeRunningClient) RunningModelsContextWithToken(_ context.Context, token string) ([]protocol.RunningModel, error) {
+	if token == c.correctToken {
+		return nil, nil
+	}
+	return nil, c.wrongErr
+}
+
 func (c *preparationBarrierRunningClient) RunningModelsContext(context.Context) ([]protocol.RunningModel, error) {
 	return nil, nil
 }
 
 func (c *preparationBarrierRunningClient) RunningModelsContextWithToken(ctx context.Context, token string) ([]protocol.RunningModel, error) {
 	if token != "new-bootstrap-token" {
-		return nil, errors.New("unauthorized")
+		return nil, &LlamaSwapHTTPStatusError{StatusCode: http.StatusUnauthorized}
 	}
 	select {
 	case c.started <- struct{}{}:
@@ -346,6 +362,56 @@ func TestPrepareManagedTransportAuthorizedRestartCanActivatePreviouslyUnenforced
 	}
 	if len(heartbeats) != 1 || !heartbeats[0].NeedsRestart || heartbeats[0].LlamaSwapURL != "" {
 		t.Fatalf("restart authorization heartbeats = %+v, want one not-ready restart request", heartbeats)
+	}
+}
+
+func TestPrepareManagedTransportDoesNotTreatProbeNetworkOrServerFailureAsAuthenticationRejection(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		wrongErr error
+	}{
+		{name: "network error", wrongErr: errors.New("temporary dial failure")},
+		{name: "server error", wrongErr: &LlamaSwapHTTPStatusError{StatusCode: http.StatusInternalServerError}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+			if err := os.WriteFile(configPath, []byte("models: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := protocol.AgentConfigResponse{Models: map[string]config.Model{}, TagPolicy: protocol.AgentTagPolicy{Tag: "gpu-4090"}}
+			var heartbeats []protocol.HeartbeatRequest
+			gateway := reconcileGatewayWithConfig(t, cfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+			defer gateway.Close()
+			service := &transportRestartService{}
+			verifier := classifiedProbeRunningClient{correctToken: "bootstrap-token", wrongErr: test.wrongErr}
+			reconciler := Reconciler{
+				AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, ModelRoot: t.TempDir(), LlamaSwapConfig: configPath,
+				Gateway:       ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+				RunningModels: verifier, Service: service,
+			}
+
+			if err := reconciler.PrepareManagedTransport(context.Background(), "bootstrap-token"); err == nil {
+				t.Fatal("managed preparation passed when wrong-token probe had no explicit authentication rejection")
+			}
+			if service.restarts != 1 {
+				t.Fatalf("authorized restarts = %d, want one retry before fail-closed", service.restarts)
+			}
+			if len(heartbeats) != 1 || !heartbeats[0].NeedsRestart {
+				t.Fatalf("restart authorization heartbeats = %+v, want one", heartbeats)
+			}
+		})
+	}
+}
+
+func TestVerifyLlamaSwapTokenEnforcementAcceptsOnlyExplicitUnauthorizedStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		verifier := classifiedProbeRunningClient{
+			correctToken: "bootstrap-token",
+			wrongErr:     &LlamaSwapHTTPStatusError{StatusCode: status},
+		}
+		if err := verifyLlamaSwapTokenEnforcement(context.Background(), verifier, "bootstrap-token"); err != nil {
+			t.Fatalf("status %d did not prove token enforcement: %v", status, err)
+		}
 	}
 }
 

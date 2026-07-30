@@ -134,8 +134,13 @@ func verifyLlamaSwapTokenEnforcement(ctx context.Context, verifier tokenAwareRun
 	if probe == token {
 		probe += "-probe"
 	}
-	if _, err := verifier.RunningModelsContextWithToken(ctx, probe); err == nil {
+	_, probeErr := verifier.RunningModelsContextWithToken(ctx, probe)
+	if probeErr == nil {
 		return errLlamaSwapTokenNotEnforced
+	}
+	var statusErr *LlamaSwapHTTPStatusError
+	if !errors.As(probeErr, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized && statusErr.StatusCode != http.StatusForbidden {
+		return errors.New("llama-swap authentication probe was inconclusive")
 	}
 	if _, err := verifier.RunningModelsContextWithToken(ctx, token); err != nil {
 		return errors.New("llama-swap running endpoint rejected configured api key")

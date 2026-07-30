@@ -25,6 +25,16 @@ type LlamaSwapStateClient struct {
 	HTTP        *http.Client
 }
 
+// LlamaSwapHTTPStatusError classifies an HTTP response without retaining its
+// body, request token, or URL.
+type LlamaSwapHTTPStatusError struct {
+	StatusCode int
+}
+
+func (e *LlamaSwapHTTPStatusError) Error() string {
+	return fmt.Sprintf("llama-swap request returned HTTP %d", e.StatusCode)
+}
+
 func (c LlamaSwapStateClient) HealthContext(ctx context.Context) error {
 	return c.HealthContextWithToken(ctx, c.token())
 }
@@ -48,7 +58,7 @@ func (c LlamaSwapStateClient) HealthContextWithToken(ctx context.Context, token 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("llama-swap /health returned HTTP %d", resp.StatusCode)
+		return &LlamaSwapHTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	return nil
 }
@@ -76,7 +86,7 @@ func (c LlamaSwapStateClient) RunningModelsContextWithToken(ctx context.Context,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("llama-swap /running returned HTTP %d", resp.StatusCode)
+		return nil, &LlamaSwapHTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	var raw any

@@ -2220,6 +2220,27 @@ func TestConfigClientHeartbeatConflictReturnsTypedSecretFreeError(t *testing.T) 
 	}
 }
 
+func TestLlamaSwapRunningHTTPStatusErrorIsTypedAndDoesNotLeakBodyOrToken(t *testing.T) {
+	const bodySecret = "upstream-body-secret"
+	const requestToken = "request-token-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, bodySecret, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := (LlamaSwapStateClient{BaseURL: srv.URL, HTTP: srv.Client()}).RunningModelsContextWithToken(context.Background(), requestToken)
+	if err == nil {
+		t.Fatal("running request returned nil error for HTTP 500")
+	}
+	var statusErr *LlamaSwapHTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("running error = %T %v, want typed status 500", err, err)
+	}
+	if strings.Contains(err.Error(), bodySecret) || strings.Contains(err.Error(), requestToken) {
+		t.Fatalf("typed llama-swap error leaked credential or body: %q", err)
+	}
+}
+
 func TestConfigClientReturnsErrorOnNon2xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)
