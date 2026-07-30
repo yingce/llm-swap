@@ -41,11 +41,17 @@ transport:
 		want string
 	}{
 		{name: "valid", raw: validTransport},
+		{name: "unsupported transport type", raw: strings.Replace(validTransport, "  type: frp_tcp", "  type: frp-tcp", 1), want: "transport.type"},
+		{name: "near match transport type", raw: strings.Replace(validTransport, "  type: frp_tcp", "  type: frp_tcp_v2", 1), want: "transport.type"},
 		{name: "missing address", raw: strings.Replace(validTransport, "    server_addr: frps.example.invalid\n", "", 1), want: "transport.frp.server_addr"},
 		{name: "missing auth token", raw: strings.Replace(validTransport, "    auth_token: transport-token\n", "", 1), want: "transport.frp.auth_token"},
 		{name: "invalid frps port", raw: strings.Replace(validTransport, "    server_port: 7000", "    server_port: 0", 1), want: "transport.frp.server_port"},
+		{name: "frps port above range", raw: strings.Replace(validTransport, "    server_port: 7000", "    server_port: 65536", 1), want: "transport.frp.server_port"},
 		{name: "reversed port range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 1999", 1), want: "transport.frp.port_start"},
+		{name: "port start below range", raw: strings.Replace(validTransport, "    port_start: 2000", "    port_start: 0", 1), want: "transport.frp.port_start"},
 		{name: "out of range port", raw: strings.Replace(validTransport, "    port_start: 2000", "    port_start: 65536", 1), want: "transport.frp.port_start"},
+		{name: "port end below range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 0", 1), want: "transport.frp.port_end"},
+		{name: "port end above range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 65536", 1), want: "transport.frp.port_end"},
 		{name: "zero ttl", raw: strings.Replace(validTransport, "    lease_ttl_seconds: 180", "    lease_ttl_seconds: 0", 1), want: "transport.frp.lease_ttl_seconds"},
 	}
 
@@ -75,6 +81,9 @@ func TestLoadGatewayAcceptsLegacyConfigWithoutTransport(t *testing.T) {
 	}
 	if cfg.Transport.Type != "" {
 		t.Fatalf("transport.type = %q, want empty legacy mode", cfg.Transport.Type)
+	}
+	if cfg.Transport.FRP.LeaseTTLSeconds != 0 {
+		t.Fatalf("legacy lease_ttl_seconds = %d, want 0", cfg.Transport.FRP.LeaseTTLSeconds)
 	}
 }
 
