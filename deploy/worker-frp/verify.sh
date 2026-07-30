@@ -21,14 +21,16 @@ command -v python3 >/dev/null 2>&1 || {
 umask 077
 config_json="$(mktemp)"
 gpu_list="$(mktemp)"
+image_mode_file="$(mktemp)"
+image_ref_file="$(mktemp)"
 cleanup() {
-  rm -f -- "$config_json" "$gpu_list"
+  rm -f -- "$config_json" "$gpu_list" "$image_mode_file" "$image_ref_file"
 }
 trap cleanup EXIT
 
 docker compose --env-file "$env_file" -f "$compose_file" config --format json >"$config_json"
 
-python3 - "$config_json" "$env_file" <<'PY'
+python3 - "$config_json" "$env_file" "$image_mode_file" "$image_ref_file" <<'PY'
 import json
 import os
 import re
@@ -255,6 +257,15 @@ if token_content.endswith(b"\n"):
 if b"\n" in token_content or b"\r" in token_content or not token_content.strip():
     raise SystemExit("AGENT_TOKEN_FILE contains invalid token data")
 
+image_mode = "digest" if "@sha256:" in image else "commit_tag"
+try:
+    with open(sys.argv[3], "w", encoding="ascii") as stream:
+        stream.write(image_mode)
+    with open(sys.argv[4], "w", encoding="utf-8") as stream:
+        stream.write(image)
+except OSError:
+    raise SystemExit("could not record verified image mode")
+
 for name, service in services.items():
     if name.lower().startswith("frpc"):
         raise SystemExit("FRPC must be embedded; sidecar service found")
@@ -270,6 +281,23 @@ for name, service in services.items():
 
 print("Compose validation passed: 8 workers, physical GPUs 0..7, no published worker ports.")
 PY
+
+image_mode="$(<"$image_mode_file")"
+if [[ "$image_mode" == "digest" ]]; then
+  image_ref="$(<"$image_ref_file")"
+  if ! docker image inspect "$image_ref" >/dev/null 2>&1; then
+    printf '%s\n' 'digest image is not pulled or preloaded on this host' >&2
+    exit 1
+  fi
+  unset image_ref
+  printf '%s\n' 'Image mode: preloaded digest deployment path.'
+elif [[ "$image_mode" == "commit_tag" ]]; then
+  printf '%s\n' 'Image mode: commit-tag build path.'
+else
+  printf '%s\n' 'invalid verified image mode' >&2
+  exit 1
+fi
+unset image_mode
 
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >"$gpu_list" 2>/dev/null; then
   gpu_count="$(grep -c '^GPU [0-9][0-9]*:' "$gpu_list" || true)"

@@ -235,6 +235,13 @@ func TestRunbookCoversImmutableRollbackAndTokenRotation(t *testing.T) {
 	for _, required := range []string{
 		"never rebuild or overwrite an older",
 		"docker image inspect \"$OLD_WORKER_IMAGE\"",
+		"Commit-tag build path",
+		"Digest deployment path",
+		"must not run `docker compose build`",
+		"docker pull \"$WORKER_IMAGE\"",
+		"recorded_image_id",
+		"resolved_image_id",
+		`[[ "$resolved_image_id" == "$recorded_image_id" ]]`,
 		"no dual-token overlap",
 		"mv -f -- \"$new_token_file\" \"$AGENT_TOKEN_FILE\"",
 		"up -d --force-recreate --no-build",

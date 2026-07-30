@@ -97,13 +97,20 @@ Omit `LLMSWAP_VERIFY_REQUIRE_8_GPUS=1` only when validating the artifacts on a
 non-deployment machine; the Compose checks still run, but the host GPU count is
 reported rather than enforced.
 
-Build the shared image once on the GPU host. All eight services use that exact
-image tag, so start the group with `--no-build`. For every source commit, first
-put a new commit-suffixed tag in `.env`; never rebuild or overwrite an older
-deployment tag:
+All eight services use one immutable image reference, but commit tags and image
+digests have different preparation paths.
+
+### Commit-tag build path
+
+For a tag ending in the current Git commit, build the shared image once on the
+GPU host. First put a new commit-suffixed tag in `.env`; never rebuild or
+overwrite an older deployment tag. `docker compose build` can assign this tag
+to its output:
 
 ```bash
+LLMSWAP_VERIFY_REQUIRE_8_GPUS=1 bash ./verify.sh ./.env
 docker compose --env-file ./.env -f ./compose.yaml build worker-gpu0
+docker image inspect "$(sed -n 's/^WORKER_IMAGE=//p' ./.env)" >/dev/null
 docker compose --env-file ./.env -f ./compose.yaml up -d --no-build
 docker compose --env-file ./.env -f ./compose.yaml ps
 ```
@@ -112,6 +119,31 @@ The image build uses `LLMSWAP_RUNTIME=all` and
 `LLMSWAP_INSTALL_TAILSCALE=0`. If the build host requires network proxying or
 package mirrors, provide standard Docker build configuration outside this
 credential-free Compose file.
+
+### Digest deployment path
+
+For `WORKER_IMAGE=registry/path@sha256:...`, Compose cannot assign that digest
+to a local build result. Pull the exact published digest, or preload it through
+an approved offline image-transfer process that makes the exact digest
+reference inspectable, before verification. A digest deployment must not run
+`docker compose build`; it only starts the already available image with
+`--no-build`:
+
+```bash
+set -a
+. ./.env
+set +a
+docker pull "$WORKER_IMAGE"
+docker image inspect "$WORKER_IMAGE" >/dev/null
+LLMSWAP_VERIFY_REQUIRE_8_GPUS=1 bash ./verify.sh ./.env
+docker compose --env-file ./.env -f ./compose.yaml up -d --no-build
+docker compose --env-file ./.env -f ./compose.yaml ps
+unset WORKER_IMAGE
+```
+
+`verify.sh` prints either `commit-tag build path` or `preloaded digest
+deployment path`. In digest mode it fails unless `docker image inspect` can
+resolve the exact digest locally.
 
 Before changing `WORKER_IMAGE`, record the currently running reference and
 digest in a private rollback file. This record is not a secret, but mode `0600`
@@ -228,12 +260,33 @@ Stop the workers without deleting bind-mounted logs or models:
 docker compose --env-file ./.env -f ./compose.yaml down --timeout 45
 ```
 
-For image rollback, read the old reference from
-`$WORKER_STATE_ROOT/rollback/worker-image.env` and first require
-`docker image inspect "$OLD_WORKER_IMAGE"` to succeed. Put that exact old
-reference back into `.env`, rerun `verify.sh`, and start with
-`up -d --force-recreate --no-build`; do not rebuild the old tag. Restore the
-matching previous gateway configuration when the release changed gateway
-behavior. Preserve the gateway lease-store directory during a test or rollback
-so active/quarantined port ownership is not forgotten. The shared model root
-and per-worker logs are not removed by `docker compose down`.
+For image rollback, do not trust the old tag name alone: a registry or local
+retag could make it resolve to different bytes. Validate the recorded reference
+against its recorded image ID before editing `.env` or recreating workers. The
+helper performs this check without printing the reference:
+
+```bash
+set -a
+. ./.env
+set +a
+rollback_record="$WORKER_STATE_ROOT/rollback/worker-image.env"
+bash ./verify_image_rollback.sh "$rollback_record"
+
+OLD_WORKER_IMAGE="$(sed -n 's/^WORKER_IMAGE=//p' "$rollback_record")"
+recorded_image_id="$(sed -n 's/^WORKER_IMAGE_ID=//p' "$rollback_record")"
+docker image inspect "$OLD_WORKER_IMAGE" >/dev/null
+resolved_image_id="$(docker image inspect --format '{{.Id}}' "$OLD_WORKER_IMAGE")"
+if [[ "$resolved_image_id" != "$recorded_image_id" ]]; then
+  printf '%s\n' 'rollback image identity mismatch; refusing rollback' >&2
+  exit 1
+fi
+```
+
+Only after `[[ "$resolved_image_id" == "$recorded_image_id" ]]` is true, put
+`OLD_WORKER_IMAGE` back into `.env`, rerun `verify.sh`, and start with
+`up -d --force-recreate --no-build`; do not rebuild or pull the old reference
+during rollback. Restore the matching previous gateway configuration when the
+release changed gateway behavior. Preserve the gateway lease-store directory
+during a test or rollback so active/quarantined port ownership is not
+forgotten. The shared model root and per-worker logs are not removed by
+`docker compose down`.

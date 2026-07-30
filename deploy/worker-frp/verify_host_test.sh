@@ -3,8 +3,28 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 verify="$script_dir/verify.sh"
+verify_rollback="$script_dir/verify_image_rollback.sh"
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
+real_docker="$(command -v docker)"
+original_path="$PATH"
+fake_bin="$test_root/bin"
+mkdir -p -- "$fake_bin"
+cat >"$fake_bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" && "${3:-}" == *@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" && "${*: -1}" == "registry.local:5000/llmswap/agent:frp-deadbeef" ]]; then
+  if [[ " $* " == *" --format "* ]]; then
+    printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  fi
+  exit 0
+fi
+exec "$DOCKER_REAL" "$@"
+EOF
+chmod 0755 "$fake_bin/docker"
 
 new_fixture() {
   local name="$1"
@@ -44,11 +64,25 @@ expect_fail() {
   fi
 }
 
+expect_output_contains() {
+  local name="$1"
+  local expected="$2"
+  if ! grep -Fq -- "$expected" "$test_root/$name.output"; then
+    printf 'expected output marker missing: %s\n' "$name" >&2
+    exit 1
+  fi
+}
+
 new_fixture valid
 expect_pass valid "$verify" "$fixture/.env"
+expect_output_contains valid 'Image mode: commit-tag build path.'
 
 new_fixture digest registry.local:5000/llmswap/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-expect_pass digest "$verify" "$fixture/.env"
+expect_pass digest env PATH="$fake_bin:$original_path" DOCKER_REAL="$real_docker" "$verify" "$fixture/.env"
+expect_output_contains digest 'Image mode: preloaded digest deployment path.'
+
+new_fixture digest-not-loaded registry.local:5000/llmswap/agent@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+expect_fail digest-not-loaded "$verify" "$fixture/.env"
 
 new_fixture missing-log
 rm -rf -- "$fixture/state/worker-gpu7/logs"
@@ -114,5 +148,20 @@ expect_fail short-commit-tag "$verify" "$fixture/.env"
 
 expect_fail missing-default-env "$verify"
 expect_fail placeholder-example "$verify" "$script_dir/.env.example"
+
+rollback_record="$test_root/rollback-image.env"
+cat >"$rollback_record" <<'EOF'
+WORKER_IMAGE=registry.local:5000/llmswap/agent:frp-deadbeef
+WORKER_IMAGE_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+EOF
+chmod 0600 "$rollback_record"
+expect_pass rollback-match env PATH="$fake_bin:$original_path" DOCKER_REAL="$real_docker" "$verify_rollback" "$rollback_record"
+
+cat >"$rollback_record" <<'EOF'
+WORKER_IMAGE=registry.local:5000/llmswap/agent:frp-deadbeef
+WORKER_IMAGE_ID=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+EOF
+chmod 0600 "$rollback_record"
+expect_fail rollback-moved-tag env PATH="$fake_bin:$original_path" DOCKER_REAL="$real_docker" "$verify_rollback" "$rollback_record"
 
 printf '%s\n' 'verify host safety tests passed'
