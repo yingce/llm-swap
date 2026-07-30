@@ -145,6 +145,141 @@ func TestTransportLeaseAcquireRejectsStaleIDWithoutCurrentLease(t *testing.T) {
 	}
 }
 
+func TestTransportLeaseAcquireRecoversExpiredOwnedLeaseID(t *testing.T) {
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	manager := newTestTransportLeaseManager(t, NewMemoryTransportLeaseStore(), func() time.Time { return now }, leaseIDSequence("old", "fresh"))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2000, TTL: time.Minute}
+	old, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = old.ExpiresAt
+	fresh, err := manager.Acquire(policy, TransportLeaseAcquireRequest{
+		AgentID: "worker-a", Generation: 2, CurrentLeaseID: old.LeaseID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.LeaseID != "fresh" || fresh.Generation != 2 || fresh.RemotePort != old.RemotePort {
+		t.Fatalf("fresh lease = %#v, expired = %#v", fresh, old)
+	}
+}
+
+func TestTransportLeaseExpiredIDRecoveryRejectsUnownedOrObsoleteIDs(t *testing.T) {
+	t.Run("unknown id", func(t *testing.T) {
+		now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+		store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+		manager := newTestTransportLeaseManager(t, store, func() time.Time { return now }, leaseIDSequence("old"))
+		policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2000, TTL: time.Minute}
+		old, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = old.ExpiresAt
+		saves := store.saves
+		if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 2, CurrentLeaseID: "unknown"}); !errors.Is(err, ErrTransportLeaseConflict) {
+			t.Fatalf("unknown expired id error = %v", err)
+		}
+		if store.saves != saves {
+			t.Fatalf("unknown id saved state: %d -> %d", saves, store.saves)
+		}
+	})
+
+	t.Run("other agent expired id", func(t *testing.T) {
+		now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+		manager := newTestTransportLeaseManager(t, NewMemoryTransportLeaseStore(), func() time.Time { return now }, leaseIDSequence("old"))
+		policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2000, TTL: time.Minute}
+		old, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = old.ExpiresAt
+		if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-b", Generation: 1, CurrentLeaseID: old.LeaseID}); !errors.Is(err, ErrTransportLeaseConflict) {
+			t.Fatalf("other-agent expired id error = %v", err)
+		}
+	})
+
+	t.Run("released id", func(t *testing.T) {
+		manager := newTestTransportLeaseManager(t, NewMemoryTransportLeaseStore(), fixedClock(time.Now()), leaseIDSequence("released"))
+		policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2000, TTL: time.Minute}
+		lease, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if released, err := manager.Release(lease.AgentID, lease.LeaseID, lease.Generation); err != nil || !released {
+			t.Fatalf("release = %v, %v", released, err)
+		}
+		if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 2, CurrentLeaseID: lease.LeaseID}); !errors.Is(err, ErrTransportLeaseConflict) {
+			t.Fatalf("released id error = %v", err)
+		}
+	})
+
+	t.Run("expired id cannot bypass newer current", func(t *testing.T) {
+		now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+		manager := newTestTransportLeaseManager(t, NewMemoryTransportLeaseStore(), func() time.Time { return now }, leaseIDSequence("old", "current"))
+		policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2001, TTL: time.Minute}
+		old, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = old.ExpiresAt
+		current, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 2, CurrentLeaseID: old.LeaseID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 3, CurrentLeaseID: old.LeaseID}); !errors.Is(err, ErrTransportLeaseConflict) {
+			t.Fatalf("old id with newer current %#v error = %v", current, err)
+		}
+	})
+}
+
+func TestTransportLeaseIDCollisionRetriesThenUsesUniqueID(t *testing.T) {
+	manager := newTestTransportLeaseManager(t, NewMemoryTransportLeaseStore(), fixedClock(time.Now()), leaseIDSequence("lease-a", "lease-a", "lease-b"))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2001, TTL: time.Minute}
+	first, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-b", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.LeaseID != "lease-a" || second.LeaseID != "lease-b" {
+		t.Fatalf("leases = %#v, %#v", first, second)
+	}
+}
+
+func TestTransportLeaseIDRepeatedCollisionRollsBackAndReloads(t *testing.T) {
+	ids := []string{"lease-a"}
+	for i := 0; i < transportLeaseIDGenerationAttempts; i++ {
+		ids = append(ids, "lease-a")
+	}
+	store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+	manager := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence(ids...))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2001, TTL: time.Minute}
+	first, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saves := store.saves
+	if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-b", Generation: 1}); !errors.Is(err, ErrTransportLeaseIDCollision) {
+		t.Fatalf("repeated collision error = %v, want %v", err, ErrTransportLeaseIDCollision)
+	}
+	if store.saves != saves {
+		t.Fatalf("collision failure saved state: %d -> %d", saves, store.saves)
+	}
+
+	reloaded := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence("lease-b"))
+	sticky, err := reloaded.Acquire(policy, TransportLeaseAcquireRequest{AgentID: first.AgentID, Generation: first.Generation, CurrentLeaseID: first.LeaseID})
+	if err != nil || sticky.LeaseID != first.LeaseID {
+		t.Fatalf("reloaded sticky lease = %#v, %v", sticky, err)
+	}
+	second, err := reloaded.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-b", Generation: 1})
+	if err != nil || second.LeaseID != "lease-b" {
+		t.Fatalf("post-reload lease = %#v, %v", second, err)
+	}
+}
+
 func TestTransportLeaseAllocatesLowestLiveUniquePorts(t *testing.T) {
 	manager := newTestTransportLeaseManager(t, NewMemoryTransportLeaseStore(), fixedClock(time.Now()), leaseIDSequence("a", "b"))
 	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2001, TTL: time.Minute}

@@ -11,10 +11,13 @@ import (
 )
 
 var (
-	ErrTransportLeaseCapacity = errors.New("transport lease capacity exhausted")
-	ErrTransportLeaseConflict = errors.New("transport lease conflict")
-	ErrTransportLeaseNotFound = errors.New("transport lease not found")
+	ErrTransportLeaseCapacity    = errors.New("transport lease capacity exhausted")
+	ErrTransportLeaseConflict    = errors.New("transport lease conflict")
+	ErrTransportLeaseIDCollision = errors.New("transport lease id collision")
+	ErrTransportLeaseNotFound    = errors.New("transport lease not found")
 )
+
+const transportLeaseIDGenerationAttempts = 8
 
 type TransportLeasePolicy struct {
 	PortStart int
@@ -148,6 +151,15 @@ func (m *TransportLeaseManager) Acquire(policy TransportLeasePolicy, request Tra
 		}
 	}
 	now := m.now()
+	expiredOwnedLeaseID := false
+	if request.CurrentLeaseID != "" {
+		for _, lease := range m.leases {
+			if lease.AgentID == request.AgentID && lease.LeaseID == request.CurrentLeaseID && !lease.ExpiresAt.After(now) {
+				expiredOwnedLeaseID = true
+				break
+			}
+		}
+	}
 	candidate := pruneExpiredTransportLeases(m.leases, now)
 	currentIndex := -1
 	for i := range candidate {
@@ -157,7 +169,7 @@ func (m *TransportLeaseManager) Acquire(policy TransportLeasePolicy, request Tra
 		}
 	}
 	if currentIndex < 0 {
-		if request.CurrentLeaseID != "" {
+		if request.CurrentLeaseID != "" && !expiredOwnedLeaseID {
 			return TransportLease{}, ErrTransportLeaseConflict
 		}
 	} else {
@@ -203,12 +215,9 @@ func (m *TransportLeaseManager) Acquire(policy TransportLeasePolicy, request Tra
 	if remotePort == 0 {
 		return TransportLease{}, ErrTransportLeaseCapacity
 	}
-	leaseID, err := m.newID()
+	leaseID, err := m.generateUniqueLeaseID(candidate)
 	if err != nil {
-		return TransportLease{}, fmt.Errorf("generate transport lease id: %w", err)
-	}
-	if strings.TrimSpace(leaseID) == "" {
-		return TransportLease{}, fmt.Errorf("generate transport lease id: empty id")
+		return TransportLease{}, err
 	}
 	for i := range candidate {
 		if candidate[i].Current && candidate[i].AgentID == request.AgentID {
@@ -227,6 +236,26 @@ func (m *TransportLeaseManager) Acquire(policy TransportLeasePolicy, request Tra
 	}
 	m.leases = candidate
 	return lease, nil
+}
+
+func (m *TransportLeaseManager) generateUniqueLeaseID(leases []TransportLease) (string, error) {
+	used := make(map[string]struct{}, len(leases))
+	for _, lease := range leases {
+		used[lease.LeaseID] = struct{}{}
+	}
+	for attempt := 0; attempt < transportLeaseIDGenerationAttempts; attempt++ {
+		leaseID, err := m.newID()
+		if err != nil {
+			return "", fmt.Errorf("generate transport lease id: %w", err)
+		}
+		if strings.TrimSpace(leaseID) == "" {
+			continue
+		}
+		if _, exists := used[leaseID]; !exists {
+			return leaseID, nil
+		}
+	}
+	return "", ErrTransportLeaseIDCollision
 }
 
 func validateTransportLeasePolicy(policy TransportLeasePolicy) error {
