@@ -188,7 +188,7 @@ func TestUIConfigDryRunAndValidateRedactedFRPAuthTokenDoNotLeak(t *testing.T) {
 
 func TestUIConfigRedactsFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
 	const secret = "frp-aliased-secret"
-	for _, shape := range []string{"transport_alias", "frp_alias", "scalar_alias", "merge_map", "merge_sequence", "merge_direct_override"} {
+	for _, shape := range []string{"transport_alias", "frp_alias", "scalar_alias", "merge_map", "merge_sequence", "merge_direct_override", "root_merge_shadow", "frp_parent_merge_shadow"} {
 		t.Run(shape, func(t *testing.T) {
 			raw := testGatewayYAMLWithFRPShape(secret, shape, "qwen")
 			cfg, err := config.LoadGateway(strings.NewReader(raw))
@@ -224,7 +224,7 @@ func TestUIConfigRedactsFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
 			if !strings.Contains(resp.YAML, uiConfigRedactedSecret) {
 				t.Fatalf("redacted YAML does not contain marker:\n%s", resp.YAML)
 			}
-			if shape == "merge_direct_override" && !strings.Contains(resp.YAML, "unrelated-auth-token") {
+			if !strings.Contains(resp.YAML, "unrelated-auth-token") {
 				t.Fatalf("redaction changed an unrelated auth_token path:\n%s", resp.YAML)
 			}
 		})
@@ -233,7 +233,7 @@ func TestUIConfigRedactsFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
 
 func TestUIConfigApplyRoundTripRestoresFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
 	const secret = "frp-aliased-secret"
-	for _, shape := range []string{"transport_alias", "frp_alias", "scalar_alias", "merge_map", "merge_sequence", "merge_direct_override"} {
+	for _, shape := range []string{"transport_alias", "frp_alias", "scalar_alias", "merge_map", "merge_sequence", "merge_direct_override", "root_merge_shadow", "frp_parent_merge_shadow"} {
 		t.Run(shape, func(t *testing.T) {
 			raw := testGatewayYAMLWithFRPShape(secret, shape, "qwen")
 			cfg, err := config.LoadGateway(strings.NewReader(raw))
@@ -281,7 +281,7 @@ func TestUIConfigApplyRoundTripRestoresFRPAuthTokenThroughYAMLAliasesAndMerges(t
 			if strings.Contains(string(persisted), "inactive-default-secret") {
 				t.Fatalf("persisted YAML retained a shadowed credential:\n%s", persisted)
 			}
-			if shape == "merge_direct_override" && !strings.Contains(string(persisted), "unrelated-auth-token") {
+			if !strings.Contains(string(persisted), "unrelated-auth-token") {
 				t.Fatalf("persisted YAML changed an unrelated auth_token path:\n%s", persisted)
 			}
 			persistedCfg, err := config.LoadGateway(bytes.NewReader(persisted))
@@ -1027,9 +1027,7 @@ func testGatewayYAMLWithFRPShape(secret string, shape string, models ...string) 
 			"  frp:\n" +
 			"    <<: [*frp_auth, *frp_network]\n"
 	case "merge_direct_override":
-		transport = "unrelated_credentials:\n" +
-			"  auth_token: unrelated-auth-token\n" +
-			"frp_defaults: &frp_defaults\n" +
+		transport = "frp_defaults: &frp_defaults\n" +
 			"  server_addr: frps.example.com\n" +
 			"  server_port: 7000\n" +
 			"  auth_token: inactive-default-secret\n" +
@@ -1041,8 +1039,37 @@ func testGatewayYAMLWithFRPShape(secret string, shape string, models ...string) 
 			"  frp:\n" +
 			"    <<: *frp_defaults\n" +
 			"    auth_token: " + secret + "\n"
+	case "root_merge_shadow":
+		transport = "root_defaults: &root_defaults\n" +
+			"  transport:\n" +
+			"    type: frp_tcp\n" +
+			"    frp:\n" +
+			"      server_addr: frps.example.com\n" +
+			"      server_port: 7000\n" +
+			"      auth_token: inactive-default-secret\n" +
+			"      port_start: 2000\n" +
+			"      port_end: 3000\n" +
+			"      lease_ttl_seconds: 180\n" +
+			"<<: *root_defaults\n" +
+			"transport:\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" + frpFields
+	case "frp_parent_merge_shadow":
+		transport = "transport_defaults: &transport_defaults\n" +
+			"  frp:\n" +
+			"    server_addr: frps.example.com\n" +
+			"    server_port: 7000\n" +
+			"    auth_token: inactive-default-secret\n" +
+			"    port_start: 2000\n" +
+			"    port_end: 3000\n" +
+			"    lease_ttl_seconds: 180\n" +
+			"transport:\n" +
+			"  <<: *transport_defaults\n" +
+			"  type: frp_tcp\n" +
+			"  frp:\n" + frpFields
 	default:
 		panic("unknown FRP YAML shape: " + shape)
 	}
+	transport = "unrelated_credentials:\n  auth_token: unrelated-auth-token\n" + transport
 	return strings.Replace(raw, "oss:\n", transport+"oss:\n", 1)
 }

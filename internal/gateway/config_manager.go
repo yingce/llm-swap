@@ -266,8 +266,7 @@ func replaceFRPAuthTokenYAML(raw []byte, match string, replacement string) ([]by
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		return nil, err
 	}
-	frp := yamlMappingValue(&document, "transport", "frp")
-	authTokens := yamlMappingContributors(frp, "auth_token")
+	authTokens := yamlPathContributors(&document, "transport", "frp", "auth_token")
 	if len(authTokens) == 0 {
 		return append([]byte(nil), raw...), nil
 	}
@@ -368,6 +367,28 @@ func yamlMappingContributors(node *yaml.Node, key string) []*yaml.Node {
 	values := make([]*yaml.Node, 0, 1)
 	yamlCollectMappingContributors(node, key, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool), &values)
 	return values
+}
+
+func yamlPathContributors(node *yaml.Node, path ...string) []*yaml.Node {
+	current := []*yaml.Node{yamlDocumentRoot(node)}
+	for _, key := range path {
+		next := make([]*yaml.Node, 0, len(current))
+		seen := make(map[*yaml.Node]bool)
+		for _, parent := range current {
+			for _, value := range yamlMappingContributors(parent, key) {
+				if value == nil || seen[value] {
+					continue
+				}
+				seen[value] = true
+				next = append(next, value)
+			}
+		}
+		if len(next) == 0 {
+			return nil
+		}
+		current = next
+	}
+	return current
 }
 
 func yamlCollectMappingContributors(node *yaml.Node, key string, visiting map[*yaml.Node]bool, seen map[*yaml.Node]bool, values *[]*yaml.Node) {
