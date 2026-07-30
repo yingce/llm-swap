@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
 )
 
 func TestFRPProxyNameSanitizesAgentIdentityAndIncludesGeneration(t *testing.T) {
 	got := frpProxyName(" Worker/GPU 0 + ", 42)
-	if got != "llmswap-worker-gpu-0-g42" {
+	if !strings.HasPrefix(got, "llmswap-worker-gpu-0-") || !strings.HasSuffix(got, "-g42") {
 		t.Fatalf("proxy name = %q", got)
 	}
 	if second := frpProxyName(" Worker/GPU 0 + ", 42); second != got {
@@ -16,8 +18,30 @@ func TestFRPProxyNameSanitizesAgentIdentityAndIncludesGeneration(t *testing.T) {
 }
 
 func TestFRPProxyNameRestrictsIdentityToPortableASCII(t *testing.T) {
-	if got := frpProxyName("节点/GPU①", 3); got != "llmswap-gpu-g3" {
-		t.Fatalf("proxy name = %q", got)
+	got := frpProxyName("节点/GPU①", 3)
+	if !regexp.MustCompile(`^[a-z0-9_-]+$`).MatchString(got) {
+		t.Fatalf("proxy name is not portable ASCII: %q", got)
+	}
+}
+
+func TestFRPProxyNameHashPreventsLossySanitizeCollisions(t *testing.T) {
+	first := frpProxyName("gpu/0", 7)
+	second := frpProxyName("gpu 0", 7)
+	if first == second {
+		t.Fatalf("lossy identities collided: %q", first)
+	}
+	if first != frpProxyName("gpu/0", 7) {
+		t.Fatal("proxy name is not deterministic")
+	}
+	if first == frpProxyName("gpu/0", 8) {
+		t.Fatal("proxy name does not include generation")
+	}
+}
+
+func TestFRPProxyNameIsLengthBoundedForLongAgentIdentity(t *testing.T) {
+	got := frpProxyName(strings.Repeat("worker", 100), ^uint64(0))
+	if len(got) > 64 {
+		t.Fatalf("proxy name length = %d, want <= 64: %q", len(got), got)
 	}
 }
 

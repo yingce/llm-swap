@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 )
@@ -29,6 +30,10 @@ type FRPClientFactory interface {
 }
 
 func frpProxyName(agentID string, generation uint64) string {
+	const (
+		proxyNamePrefix = "llmswap-"
+		proxyNameLimit  = 64
+	)
 	var sanitized strings.Builder
 	separator := false
 	for _, r := range strings.ToLower(strings.TrimSpace(agentID)) {
@@ -46,5 +51,14 @@ func frpProxyName(agentID string, generation uint64) string {
 	if identity == "" {
 		identity = "agent"
 	}
-	return fmt.Sprintf("llmswap-%s-g%d", identity, generation)
+	digest := sha256.Sum256([]byte(agentID))
+	suffix := fmt.Sprintf("-%x-g%d", digest[:5], generation)
+	identityLimit := proxyNameLimit - len(proxyNamePrefix) - len(suffix)
+	if len(identity) > identityLimit {
+		identity = strings.TrimRight(identity[:identityLimit], "-")
+	}
+	if identity == "" {
+		identity = "agent"
+	}
+	return proxyNamePrefix + identity + suffix
 }

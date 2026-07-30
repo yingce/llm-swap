@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,12 +57,14 @@ type TransportManager struct {
 	Gateway    TransportGateway
 	Factory    FRPClientFactory
 
-	PollInterval   time.Duration
-	RetryMin       time.Duration
-	RetryMax       time.Duration
-	ReleaseTimeout time.Duration
-	Wait           func(context.Context, time.Duration) error
-	Logf           func(string, ...any)
+	PollInterval    time.Duration
+	RetryMin        time.Duration
+	RetryMax        time.Duration
+	ShutdownTimeout time.Duration
+	ReleaseTimeout  time.Duration
+	Wait            func(context.Context, time.Duration) error
+	Now             func() time.Time
+	Logf            func(string, ...any)
 
 	state RuntimeTransportState
 }
@@ -84,11 +87,18 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			desired, err := m.fetchDesired(ctx)
 			if err != nil {
 				m.log("transport configuration unavailable")
-				if !m.waitRetry(ctx, retryDelay) {
+				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
 					return nil
 				}
 				retryDelay = m.nextRetry(retryDelay)
 				continue
+			}
+			if replacement != nil && replacement.generation != desired.generation {
+				m.releaseReplacement(replacement)
+				replacement = nil
+				if ctx.Err() != nil {
+					return nil
+				}
 			}
 
 			leaseRequest := protocol.TransportLeaseRequest{
@@ -101,7 +111,15 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			lease, err := m.Gateway.RequestTransportLeaseContext(ctx, leaseRequest)
 			if err != nil {
 				m.log("transport lease unavailable")
-				if !m.waitRetry(ctx, retryDelay) {
+				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
+					return nil
+				}
+				retryDelay = m.nextRetry(retryDelay)
+				continue
+			}
+			if err := validateTransportLease(desired, lease, m.now()); err != nil {
+				m.log("transport lease unavailable")
+				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
 					return nil
 				}
 				retryDelay = m.nextRetry(retryDelay)
@@ -122,7 +140,7 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				m.stopClient(started)
 				replacement = &transportReplacement{leaseID: lease.LeaseID, slot: lease.Slot, generation: lease.Generation}
 				m.log("transport client unavailable")
-				if !m.waitRetry(ctx, retryDelay) {
+				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
 					return nil
 				}
 				retryDelay = m.nextRetry(retryDelay)
@@ -146,7 +164,7 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			replacement = &transportReplacement{leaseID: lease.LeaseID, slot: lease.Slot, generation: lease.Generation}
 			active = nil
 			m.log("transport client stopped")
-			if !m.waitRetry(ctx, retryDelay) {
+			if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
 				return nil
 			}
 			retryDelay = m.nextRetry(retryDelay)
@@ -183,11 +201,12 @@ type desiredTransport struct {
 }
 
 type activeTransport struct {
-	desired desiredTransport
-	lease   protocol.TransportLeaseResponse
-	client  FRPClient
-	cancel  context.CancelFunc
-	runDone <-chan error
+	desired     desiredTransport
+	lease       protocol.TransportLeaseResponse
+	client      FRPClient
+	cancel      context.CancelFunc
+	runDone     <-chan error
+	workersDone <-chan struct{}
 }
 
 type transportReplacement struct {
@@ -210,10 +229,63 @@ func (m *TransportManager) fetchDesired(ctx context.Context) (desiredTransport, 
 		return desiredTransport{}, errors.New("transport configuration unavailable")
 	}
 	bootstrap, err := transportcrypto.OpenBootstrap(m.AgentToken, m.AgentID, *response.Transport)
-	if err != nil || bootstrap.Type != "frp_tcp" || bootstrap.ServerAddr == "" || bootstrap.ServerPort <= 0 {
+	if err != nil || response.Transport.Generation == 0 || m.SwapPort <= 0 || m.SwapPort > 65535 {
+		return desiredTransport{}, errors.New("transport configuration unavailable")
+	}
+	bootstrap, err = normalizeTransportBootstrap(bootstrap)
+	if err != nil {
 		return desiredTransport{}, errors.New("transport configuration unavailable")
 	}
 	return desiredTransport{generation: response.Transport.Generation, bootstrap: bootstrap}, nil
+}
+
+func normalizeTransportBootstrap(bootstrap transportcrypto.Bootstrap) (transportcrypto.Bootstrap, error) {
+	serverAddr := strings.TrimSpace(bootstrap.ServerAddr)
+	if bootstrap.Type != "frp_tcp" || !validTransportServerAddr(serverAddr) || bootstrap.ServerPort <= 0 || bootstrap.ServerPort > 65535 ||
+		strings.TrimSpace(bootstrap.AuthToken) == "" || bootstrap.PortStart <= 0 || bootstrap.PortStart > 65535 ||
+		bootstrap.PortEnd < bootstrap.PortStart || bootstrap.PortEnd > 65535 || bootstrap.LeaseTTLSeconds <= 0 ||
+		strings.TrimSpace(bootstrap.LlamaSwapToken) == "" {
+		return transportcrypto.Bootstrap{}, errors.New("invalid transport bootstrap")
+	}
+	bootstrap.ServerAddr = serverAddr
+	return bootstrap, nil
+}
+
+func validTransportServerAddr(serverAddr string) bool {
+	if serverAddr == "" || strings.ContainsAny(serverAddr, " \t\r\n/\\[]") {
+		return false
+	}
+	if net.ParseIP(serverAddr) != nil {
+		return true
+	}
+	if strings.Contains(serverAddr, ":") || len(serverAddr) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(serverAddr, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func validateTransportLease(desired desiredTransport, lease protocol.TransportLeaseResponse, now time.Time) error {
+	if lease.Generation != desired.generation || strings.TrimSpace(lease.LeaseID) == "" || strings.TrimSpace(lease.LeaseID) != lease.LeaseID ||
+		lease.Slot < 0 || lease.Slot > desired.bootstrap.PortEnd-desired.bootstrap.PortStart ||
+		lease.RemotePort < desired.bootstrap.PortStart || lease.RemotePort > desired.bootstrap.PortEnd ||
+		lease.ExpiresAt.IsZero() || !lease.ExpiresAt.After(now) {
+		return errors.New("invalid transport lease")
+	}
+	if lease.RemotePort != desired.bootstrap.PortStart+lease.Slot {
+		return errors.New("invalid transport lease")
+	}
+	return nil
 }
 
 func (m *TransportManager) start(ctx context.Context, desired desiredTransport, lease protocol.TransportLeaseResponse) (*activeTransport, transportStartResult) {
@@ -227,10 +299,26 @@ func (m *TransportManager) start(ctx context.Context, desired desiredTransport, 
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	runDone := make(chan error, 1)
-	go func() { runDone <- client.Run(runCtx) }()
 	readyDone := make(chan error, 1)
-	go func() { readyDone <- client.WaitReady(runCtx) }()
-	active := &activeTransport{desired: desired, lease: lease, client: client, cancel: cancelRun, runDone: runDone}
+	workersDone := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		runDone <- client.Run(runCtx)
+	}()
+	go func() {
+		defer workers.Done()
+		readyDone <- client.WaitReady(runCtx)
+	}()
+	go func() {
+		workers.Wait()
+		close(workersDone)
+	}()
+	active := &activeTransport{
+		desired: desired, lease: lease, client: client, cancel: cancelRun,
+		runDone: runDone, workersDone: workersDone,
+	}
 
 	select {
 	case <-ctx.Done():
@@ -256,16 +344,48 @@ func (m *TransportManager) start(ctx context.Context, desired desiredTransport, 
 }
 
 func (m *TransportManager) stopClient(active *activeTransport) {
+	m.state.clear()
 	if active == nil {
-		m.state.clear()
 		return
 	}
 	active.cancel()
-	_ = active.client.Close()
-	m.state.clear()
+	closeDone := make(chan struct{})
+	go func() {
+		_ = active.client.Close()
+		close(closeDone)
+	}()
+
+	timeout := m.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeout)
+	defer shutdownCancel()
+	workersDone := active.workersDone
+	for workersDone != nil || closeDone != nil {
+		select {
+		case <-workersDone:
+			workersDone = nil
+		case <-closeDone:
+			closeDone = nil
+		case <-shutdownCtx.Done():
+			m.log("transport client shutdown timed out")
+			return
+		}
+	}
 }
 
 func (m *TransportManager) releaseLease(lease protocol.TransportLeaseResponse) {
+	m.releaseLeaseExact(lease.LeaseID, lease.Generation)
+}
+
+func (m *TransportManager) releaseReplacement(replacement *transportReplacement) {
+	if replacement != nil {
+		m.releaseLeaseExact(replacement.leaseID, replacement.generation)
+	}
+}
+
+func (m *TransportManager) releaseLeaseExact(leaseID string, generation uint64) {
 	timeout := m.ReleaseTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -273,7 +393,7 @@ func (m *TransportManager) releaseLease(lease protocol.TransportLeaseResponse) {
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), timeout)
 	defer releaseCancel()
 	if err := m.Gateway.ReleaseTransportLeaseContext(releaseCtx, protocol.TransportLeaseRequest{
-		AgentID: m.AgentID, Tags: append([]string(nil), m.Tags...), Generation: lease.Generation, LeaseID: lease.LeaseID,
+		AgentID: m.AgentID, Tags: append([]string(nil), m.Tags...), Generation: generation, LeaseID: leaseID,
 	}); err != nil {
 		m.log("transport lease release failed")
 	}
@@ -295,6 +415,23 @@ func (m *TransportManager) wait(ctx context.Context, delay time.Duration) error 
 
 func (m *TransportManager) waitRetry(ctx context.Context, delay time.Duration) bool {
 	return m.wait(ctx, delay) == nil
+}
+
+func (m *TransportManager) waitRetryWithReplacement(ctx context.Context, delay time.Duration, replacement *transportReplacement) bool {
+	if m.waitRetry(ctx, delay) {
+		return true
+	}
+	if ctx.Err() != nil {
+		m.releaseReplacement(replacement)
+	}
+	return false
+}
+
+func (m *TransportManager) now() time.Time {
+	if m.Now != nil {
+		return m.Now()
+	}
+	return time.Now()
 }
 
 func (m *TransportManager) pollInterval() time.Duration {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *tes
 	}
 	gateway := &transportGatewayFake{
 		config:       protocol.AgentConfigResponse{Transport: &envelope},
-		leases:       []protocol.TransportLeaseResponse{{LeaseID: "lease-7", Slot: 3, RemotePort: 2003, Generation: 7}},
+		leases:       []protocol.TransportLeaseResponse{{LeaseID: "lease-7", Slot: 3, RemotePort: 2003, Generation: 7, ExpiresAt: time.Now().Add(time.Minute)}},
 		acquireCalls: make(chan protocol.TransportLeaseRequest, 32),
 		releaseCalls: make(chan protocol.TransportLeaseRequest, 32),
 	}
@@ -62,7 +63,7 @@ func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *tes
 	if config.LocalAddr != net.JoinHostPort("127.0.0.1", strconv.Itoa(manager.SwapPort)) || config.RemotePort != 2003 {
 		t.Fatalf("FRP proxy endpoints = %+v", config)
 	}
-	if config.ProxyName != "llmswap-worker-gpu0-g7" {
+	if config.ProxyName != frpProxyName(agentID, 7) {
 		t.Fatalf("proxy name = %q", config.ProxyName)
 	}
 	request := receiveWithTimeout(t, gateway.acquireCalls)
@@ -222,6 +223,50 @@ func TestTransportManagerFatalExitClearsStateBeforeReplacement(t *testing.T) {
 	stopTransportManager(t, cancel, done)
 }
 
+func TestTransportManagerCancellationAfterClientFailureReleasesExactLease(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		ready bool
+		fail  func(*frpClientFake)
+	}{
+		{name: "run exits during startup", fail: func(client *frpClientFake) { client.runErr <- errors.New("run failed") }},
+		{name: "readiness fails", fail: func(client *frpClientFake) { client.ready <- errors.New("not ready") }},
+		{name: "fatal exit after ready", ready: true, fail: func(client *frpClientFake) { client.runErr <- errors.New("fatal") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const agentID, agentToken = "worker-gpu0", "agent-secret"
+			gateway := newTransportGatewayFake(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
+			gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "lease-exact", Slot: 2, RemotePort: 2002, Generation: 7, ExpiresAt: time.Now().Add(time.Minute)})
+			client := newFRPClientFake()
+			factory := newTransportFactoryFake(client)
+			manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
+				Gateway: gateway, Factory: factory, RetryMin: time.Hour, ReleaseTimeout: time.Second}
+			ctx, cancel := context.WithCancel(context.Background())
+			client.closeHook = cancel
+			done := make(chan error, 1)
+			go func() { done <- manager.Run(ctx) }()
+			receiveWithTimeout(t, factory.created)
+			if test.ready {
+				client.ready <- nil
+				eventually(t, func() bool { return manager.Snapshot().Ready })
+			}
+			test.fail(client)
+			if err := receiveWithTimeout(t, done); err != nil {
+				t.Fatalf("Run returned %v", err)
+			}
+			release := receiveWithTimeout(t, gateway.releaseCalls)
+			if release.AgentID != agentID || release.LeaseID != "lease-exact" || release.Generation != 7 {
+				t.Fatalf("release request = %+v", release)
+			}
+			select {
+			case duplicate := <-gateway.releaseCalls:
+				t.Fatalf("duplicate release = %+v", duplicate)
+			default:
+			}
+		})
+	}
+}
+
 func TestTransportURLUsesIPv6SafeHostFormatting(t *testing.T) {
 	if got := transportURL("2001:db8::8", 2003); got != "http://[2001:db8::8]:2003" {
 		t.Fatalf("IPv6 URL = %q", got)
@@ -250,6 +295,84 @@ func TestTransportManagerShutdownClosesClearsThenReleasesExactLease(t *testing.T
 	}
 	if err := receiveWithTimeout(t, done); err != nil {
 		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestTransportManagerClearsBeforeCloseAndBoundsBlockedClose(t *testing.T) {
+	manager, _, _, client, _, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
+	manager.ShutdownTimeout = 10 * time.Millisecond
+	client.closeBlock = make(chan struct{})
+	stateAtClose := make(chan RuntimeTransportSnapshot, 1)
+	client.closeInspect = func() { stateAtClose <- manager.Snapshot() }
+	var mu sync.Mutex
+	var logs []string
+	manager.Logf = func(format string, args ...any) {
+		mu.Lock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	cancel()
+	if snapshot := receiveWithTimeout(t, stateAtClose); snapshot.Ready || snapshot.LeaseID != "" || snapshot.LlamaSwapToken != "" {
+		t.Fatalf("state at Close = %+v, want cleared", snapshot)
+	}
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	close(client.closeBlock)
+	receiveWithTimeout(t, client.closed)
+	mu.Lock()
+	joined := strings.Join(logs, "\n")
+	mu.Unlock()
+	if !strings.Contains(joined, "transport client shutdown timed out") {
+		t.Fatalf("shutdown logs = %q", joined)
+	}
+}
+
+func TestNormalizeTransportBootstrapAcceptsTrimmedHostAndUnbracketedIP(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "  frps.example.test  ", want: "frps.example.test"},
+		{input: "198.51.100.8", want: "198.51.100.8"},
+		{input: "2001:db8::8", want: "2001:db8::8"},
+	} {
+		bootstrap := testTransportBootstrap(test.input)
+		got, err := normalizeTransportBootstrap(bootstrap)
+		if err != nil {
+			t.Fatalf("normalize %q: %v", test.input, err)
+		}
+		if got.ServerAddr != test.want {
+			t.Fatalf("normalized server = %q, want %q", got.ServerAddr, test.want)
+		}
+	}
+}
+
+func TestTransportManagerWaitsForCooperativeRunGoroutineToConverge(t *testing.T) {
+	manager, gateway, _, client, _, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
+	manager.ShutdownTimeout = time.Second
+	client.runExitBlock = make(chan struct{})
+	eventually(t, func() bool { return client.activeCalls.Load() == 1 })
+	if got := client.activeCalls.Load(); got != 1 {
+		t.Fatalf("active client calls before shutdown = %d, want 1", got)
+	}
+
+	cancel()
+	receiveWithTimeout(t, client.closed)
+	select {
+	case err := <-done:
+		close(client.runExitBlock)
+		t.Fatalf("manager returned before cooperative Run exited: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(client.runExitBlock)
+	receiveWithTimeout(t, gateway.releaseCalls)
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	if got := client.activeCalls.Load(); got != 0 {
+		t.Fatalf("active client calls after shutdown = %d, want 0", got)
 	}
 }
 
@@ -327,6 +450,157 @@ func TestTransportManagerTamperedOrWrongTokenStaysNotReadyWithoutLeakingSecrets(
 				}
 			}
 		})
+	}
+}
+
+func TestTransportManagerRejectsMalformedBootstrapBeforeLeaseOrClient(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*transportcrypto.Bootstrap)
+	}{
+		{name: "URL server", mutate: func(value *transportcrypto.Bootstrap) { value.ServerAddr = "https://frps.example.test" }},
+		{name: "host port", mutate: func(value *transportcrypto.Bootstrap) { value.ServerAddr = "frps.example.test:7000" }},
+		{name: "bracketed IPv6", mutate: func(value *transportcrypto.Bootstrap) { value.ServerAddr = "[2001:db8::8]" }},
+		{name: "path", mutate: func(value *transportcrypto.Bootstrap) { value.ServerAddr = "frps.example.test/path" }},
+		{name: "internal whitespace", mutate: func(value *transportcrypto.Bootstrap) { value.ServerAddr = "frps .example.test" }},
+		{name: "invalid hostname", mutate: func(value *transportcrypto.Bootstrap) { value.ServerAddr = "-frps.example.test" }},
+		{name: "empty FRP token", mutate: func(value *transportcrypto.Bootstrap) { value.AuthToken = "" }},
+		{name: "invalid remote range", mutate: func(value *transportcrypto.Bootstrap) { value.PortStart, value.PortEnd = 3000, 2000 }},
+		{name: "empty llama token", mutate: func(value *transportcrypto.Bootstrap) { value.LlamaSwapToken = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bootstrap := testTransportBootstrap("frps.example.test")
+			test.mutate(&bootstrap)
+			gateway := newTransportGatewayFake(sealedTransportConfig(t, "agent-secret", "worker-gpu0", 7, bootstrap))
+			gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "must-not-use", Slot: 2, RemotePort: 2002, Generation: 7})
+			client := newFRPClientFake()
+			client.ready <- errors.New("must not start")
+			factory := newTransportFactoryFake(client)
+			waiter := newManualTransportWaiter()
+			var mu sync.Mutex
+			var logs []string
+			manager := &TransportManager{AgentID: "worker-gpu0", AgentToken: "agent-secret", SwapPort: 6006,
+				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait,
+				Logf: func(format string, args ...any) {
+					mu.Lock()
+					logs = append(logs, fmt.Sprintf(format, args...))
+					mu.Unlock()
+				}}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- manager.Run(ctx) }()
+			receiveWithTimeout(t, waiter.calls)
+			cancel()
+			if err := receiveWithTimeout(t, done); err != nil {
+				t.Fatalf("Run returned %v", err)
+			}
+			if gateway.acquireCount() != 0 || factory.createCount() != 0 || manager.Snapshot().Ready {
+				t.Fatalf("invalid bootstrap acquired=%d clients=%d state=%+v", gateway.acquireCount(), factory.createCount(), manager.Snapshot())
+			}
+			assertNoTransportSecretOrValue(t, logs, bootstrap.ServerAddr, bootstrap.AuthToken, bootstrap.LlamaSwapToken, "must-not-use")
+		})
+	}
+}
+
+func TestTransportManagerRejectsMalformedLeaseWithoutClientPublishOrRelease(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name  string
+		lease protocol.TransportLeaseResponse
+	}{
+		{name: "generation mismatch", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: 2, RemotePort: 2002, Generation: 8, ExpiresAt: now.Add(time.Minute)}},
+		{name: "empty lease ID", lease: protocol.TransportLeaseResponse{Slot: 2, RemotePort: 2002, Generation: 7, ExpiresAt: now.Add(time.Minute)}},
+		{name: "negative slot", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: -1, RemotePort: 2000, Generation: 7, ExpiresAt: now.Add(time.Minute)}},
+		{name: "overflow slot", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: int(^uint(0) >> 1), RemotePort: 2002, Generation: 7, ExpiresAt: now.Add(time.Minute)}},
+		{name: "wrong derived port", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: 2, RemotePort: 2003, Generation: 7, ExpiresAt: now.Add(time.Minute)}},
+		{name: "port outside range", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: 1001, RemotePort: 3001, Generation: 7, ExpiresAt: now.Add(time.Minute)}},
+		{name: "expired", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: 2, RemotePort: 2002, Generation: 7, ExpiresAt: now.Add(-time.Minute)}},
+		{name: "missing expiry", lease: protocol.TransportLeaseResponse{LeaseID: "leaky-id", Slot: 2, RemotePort: 2002, Generation: 7}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gateway := newTransportGatewayFake(sealedTransportConfig(t, "agent-secret", "worker-gpu0", 7, testTransportBootstrap("frps.example.test")))
+			gateway.leases = []protocol.TransportLeaseResponse{test.lease}
+			client := newFRPClientFake()
+			client.ready <- errors.New("must not start")
+			factory := newTransportFactoryFake(client)
+			waiter := newManualTransportWaiter()
+			var mu sync.Mutex
+			var logs []string
+			manager := &TransportManager{AgentID: "worker-gpu0", AgentToken: "agent-secret", SwapPort: 6006,
+				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait,
+				Logf: func(format string, args ...any) {
+					mu.Lock()
+					logs = append(logs, fmt.Sprintf(format, args...))
+					mu.Unlock()
+				}}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- manager.Run(ctx) }()
+			receiveWithTimeout(t, waiter.calls)
+			cancel()
+			if err := receiveWithTimeout(t, done); err != nil {
+				t.Fatalf("Run returned %v", err)
+			}
+			if factory.createCount() != 0 || manager.Snapshot().Ready {
+				t.Fatalf("invalid lease clients=%d state=%+v", factory.createCount(), manager.Snapshot())
+			}
+			select {
+			case release := <-gateway.releaseCalls:
+				t.Fatalf("invalid lease released with untrusted fields: %+v", release)
+			default:
+			}
+			assertNoTransportSecretOrValue(t, logs, test.lease.LeaseID, strconv.Itoa(test.lease.RemotePort), "frp-secret", "llama-secret")
+		})
+	}
+}
+
+func TestTransportManagerMalformedReplacementKeepsKnownLeaseAndReleasesItOnShutdown(t *testing.T) {
+	const agentID, agentToken = "worker-gpu0", "agent-secret"
+	gateway := newTransportGatewayFake(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "known-suspect", Slot: 2, RemotePort: 2002, Generation: 7})
+	gateway.leases = append(gateway.leases, protocol.TransportLeaseResponse{
+		LeaseID: "untrusted-response", Slot: 99, RemotePort: 2999, Generation: 999, ExpiresAt: time.Now().Add(time.Minute),
+	})
+	client := newFRPClientFake()
+	factory := newTransportFactoryFake(client)
+	waiter := newManualTransportWaiter()
+	manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
+		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait, ReleaseTimeout: time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+
+	receiveWithTimeout(t, gateway.acquireCalls)
+	receiveWithTimeout(t, factory.created)
+	client.ready <- errors.New("not ready")
+	receiveWithTimeout(t, client.closed)
+	waiter.advance(t)
+	receiveWithTimeout(t, gateway.configCalls)
+	replacement := receiveWithTimeout(t, gateway.acquireCalls)
+	if replacement.LeaseID != "known-suspect" || replacement.Generation != 7 || len(replacement.ExcludeSlots) != 1 || replacement.ExcludeSlots[0] != 2 {
+		t.Fatalf("replacement request = %+v", replacement)
+	}
+	receiveWithTimeout(t, waiter.calls)
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	release := receiveWithTimeout(t, gateway.releaseCalls)
+	if release.LeaseID != "known-suspect" || release.Generation != 7 {
+		t.Fatalf("shutdown release = %+v", release)
+	}
+	if release.LeaseID == "untrusted-response" || release.Generation == 999 {
+		t.Fatalf("released untrusted response fields: %+v", release)
+	}
+}
+
+func assertNoTransportSecretOrValue(t *testing.T, logs []string, values ...string) {
+	t.Helper()
+	joined := strings.Join(logs, "\n")
+	for _, value := range values {
+		if value != "" && strings.Contains(joined, value) {
+			t.Fatalf("transport logs leak %q: %q", value, joined)
+		}
 	}
 }
 
@@ -507,6 +781,9 @@ func (g *transportGatewayFake) setConfig(config protocol.AgentConfigResponse) {
 
 func (g *transportGatewayFake) addLease(lease protocol.TransportLeaseResponse) {
 	g.mu.Lock()
+	if lease.ExpiresAt.IsZero() {
+		lease.ExpiresAt = time.Now().Add(time.Minute)
+	}
 	g.leases = append(g.leases, lease)
 	g.mu.Unlock()
 }
@@ -571,11 +848,16 @@ func (f *transportFactoryFake) createCount() int {
 }
 
 type frpClientFake struct {
-	ready  chan error
-	runErr chan error
-	closed chan struct{}
-	once   sync.Once
-	events chan string
+	ready        chan error
+	runErr       chan error
+	closed       chan struct{}
+	once         sync.Once
+	events       chan string
+	closeHook    func()
+	closeInspect func()
+	closeBlock   chan struct{}
+	runExitBlock chan struct{}
+	activeCalls  atomic.Int32
 }
 
 type transportWaitCall struct {
@@ -624,15 +906,22 @@ func newFRPClientFake() *frpClientFake {
 }
 
 func (c *frpClientFake) Run(ctx context.Context) error {
+	c.activeCalls.Add(1)
+	defer c.activeCalls.Add(-1)
 	select {
 	case err := <-c.runErr:
 		return err
 	case <-ctx.Done():
+		if c.runExitBlock != nil {
+			<-c.runExitBlock
+		}
 		return ctx.Err()
 	}
 }
 
 func (c *frpClientFake) WaitReady(ctx context.Context) error {
+	c.activeCalls.Add(1)
+	defer c.activeCalls.Add(-1)
 	select {
 	case err := <-c.ready:
 		return err
@@ -643,10 +932,19 @@ func (c *frpClientFake) WaitReady(ctx context.Context) error {
 
 func (c *frpClientFake) Close() error {
 	c.once.Do(func() {
+		if c.closeInspect != nil {
+			c.closeInspect()
+		}
+		if c.closeBlock != nil {
+			<-c.closeBlock
+		}
 		if c.events != nil {
 			c.events <- "close"
 		}
 		close(c.closed)
+		if c.closeHook != nil {
+			c.closeHook()
+		}
 	})
 	return nil
 }
