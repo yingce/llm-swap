@@ -43,6 +43,13 @@ func TestAgentConfigEndpointSealsFRPBootstrapForAgentIdentity(t *testing.T) {
 	if resp.Transport == nil {
 		t.Fatal("transport bootstrap is nil")
 	}
+	wantGeneration, err := transportConfigGeneration(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Transport.Generation != wantGeneration {
+		t.Fatalf("transport generation=%d, want %d", resp.Transport.Generation, wantGeneration)
+	}
 	bootstrap, err := transport.OpenBootstrap("agent-secret", "worker-gpu0", *resp.Transport)
 	if err != nil {
 		t.Fatalf("open transport bootstrap: %v", err)
@@ -97,7 +104,11 @@ func TestTransportLeaseEndpointAllocatesFirstConfiguredPort(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want %d", status, http.StatusOK)
 	}
-	if lease.LeaseID == "" || lease.Slot != 0 || lease.RemotePort != 2000 || lease.Generation != 1 || lease.ExpiresAt.IsZero() {
+	wantGeneration, err := transportConfigGeneration(testFRPGatewayConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.LeaseID == "" || lease.Slot != 0 || lease.RemotePort != 2000 || lease.Generation != wantGeneration || lease.ExpiresAt.IsZero() {
 		t.Fatalf("lease = %+v", lease)
 	}
 }
@@ -225,6 +236,74 @@ func TestServerReloadsTransportLeasesFromConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestTransportChangeAllowsOldGenerationReleaseToRecoverFullPool(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	oldConfig := testFRPGatewayConfig()
+	oldConfig.Transport.FRP.PortEnd = oldConfig.Transport.FRP.PortStart
+	oldServer := NewServerWithGatewayConfigPath(oldConfig, configPath)
+	status, oldLease := requestTransportLease(t, oldServer, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("old lease status=%d", status)
+	}
+
+	newConfig := oldConfig
+	newConfig.Tokens.LlamaSwap = "new-llama-secret"
+	newServer := NewServerWithGatewayConfigPath(newConfig, configPath)
+	if status := postFRPHeartbeatStatus(t, newServer, protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        "http://frps.example.test:2000",
+		TransportLeaseID:    oldLease.LeaseID,
+		TransportGeneration: oldLease.Generation,
+	}); status != http.StatusConflict {
+		t.Fatalf("old heartbeat status=%d, want 409", status)
+	}
+	status, _ = requestTransportLease(t, newServer, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu1", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("full new-generation acquire status=%d, want 503", status)
+	}
+	status, _ = requestTransportLease(t, newServer, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{}, Generation: oldLease.Generation, LeaseID: oldLease.LeaseID, Release: true,
+	})
+	if status != http.StatusNoContent {
+		t.Fatalf("old exact release status=%d, want 204", status)
+	}
+	status, fresh := requestTransportLease(t, newServer, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu1", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK || fresh.RemotePort != 2000 || fresh.Generation == oldLease.Generation {
+		t.Fatalf("fresh acquire status=%d lease=%+v old=%+v", status, fresh, oldLease)
+	}
+}
+
+func TestOldGenerationReleaseWorksAfterTransportDisabledAndTagRemoved(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	oldServer := NewServerWithGatewayConfigPath(testFRPGatewayConfig(), configPath)
+	status, oldLease := requestTransportLease(t, oldServer, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("old lease status=%d", status)
+	}
+	disabled := testFRPGatewayConfig()
+	disabled.Transport = config.TransportConfig{}
+	disabled.TagPolicies = nil
+	disabledServer := NewServerWithGatewayConfigPath(disabled, configPath)
+	status, _ = requestTransportLease(t, disabledServer, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{}, Generation: oldLease.Generation, LeaseID: oldLease.LeaseID, Release: true,
+	})
+	if status != http.StatusNoContent {
+		t.Fatalf("disabled transport release status=%d, want 204", status)
+	}
+	if _, err := disabledServer.transportLeases.LookupCurrent("worker-gpu0", oldLease.LeaseID, oldLease.Generation); !errors.Is(err, ErrTransportLeaseNotFound) {
+		t.Fatalf("released lease lookup error=%v", err)
+	}
+}
+
 func TestCorruptTransportLeaseStoreFailsFRPOperationsButPreservesLegacy(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "gateway.yaml")
@@ -285,15 +364,35 @@ func TestFRPHeartbeatRenewsExactLeaseBeforeRegisteringWorker(t *testing.T) {
 		t.Fatalf("heartbeat status=%d, want 200", status)
 	}
 
-	srv.transportLeases.mu.Lock()
-	stored := append([]TransportLease(nil), srv.transportLeases.leases...)
-	srv.transportLeases.mu.Unlock()
-	if len(stored) != 1 || !stored[0].RenewedAt.Equal(now) || !stored[0].ExpiresAt.Equal(now.Add(180*time.Second)) {
-		t.Fatalf("stored lease after heartbeat = %+v", stored)
+	stored, err := srv.transportLeases.LookupCurrent("worker-gpu0", lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.RenewedAt.Equal(lease.ExpiresAt.Add(-180*time.Second)) || !stored.ExpiresAt.Equal(lease.ExpiresAt) {
+		t.Fatalf("early heartbeat renewed lease: got %+v initial %+v", stored, lease)
 	}
 	workers := srv.workers.Snapshot(time.Now())
 	if len(workers) != 1 || workers[0].ID != "worker-gpu0" || workers[0].LlamaSwapURL != "http://frps.example.test:2000" {
 		t.Fatalf("workers = %+v", workers)
+	}
+
+	now = lease.ExpiresAt.Add(-90 * time.Second)
+	status = postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        "http://frps.example.test:2000",
+		TransportLeaseID:    lease.LeaseID,
+		TransportGeneration: lease.Generation,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("threshold heartbeat status=%d, want 200", status)
+	}
+	stored, err = srv.transportLeases.LookupCurrent("worker-gpu0", lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.RenewedAt.Equal(now) || !stored.ExpiresAt.Equal(now.Add(180*time.Second)) {
+		t.Fatalf("threshold heartbeat did not renew lease: %+v", stored)
 	}
 }
 
@@ -412,7 +511,7 @@ func TestFRPHeartbeatUsesHostSafeIPv6URL(t *testing.T) {
 		Tags:                []string{"gpu-4090"},
 		LlamaSwapURL:        "http://[2001:db8::1]:2000",
 		TransportLeaseID:    lease.LeaseID,
-		TransportGeneration: 1,
+		TransportGeneration: lease.Generation,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status=%d, want 200", status)
@@ -431,6 +530,113 @@ func TestTransportPersistenceErrorsReturnServiceUnavailable(t *testing.T) {
 	status, _ := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{AgentID: "worker-gpu0", Generation: 1})
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("persistence failure status=%d, want 503", status)
+	}
+}
+
+func TestHeartbeatPersistenceFailureOnlyBlocksWhenRenewalIsDue(t *testing.T) {
+	srv := NewServer(testFRPGatewayConfig())
+	now := time.Unix(3_000, 0)
+	store := &failingTransportLeaseStore{}
+	manager, err := NewTransportLeaseManager(store, func() time.Time { return now }, leaseIDSequence("lease-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.transportLeases = manager
+	srv.transportLeaseErr = nil
+	status, lease := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("lease status=%d", status)
+	}
+	store.failSave = true
+	now = now.Add(time.Minute)
+	heartbeat := protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        "http://frps.example.test:2000",
+		TransportLeaseID:    lease.LeaseID,
+		TransportGeneration: lease.Generation,
+	}
+	if status := postFRPHeartbeatStatus(t, srv, heartbeat); status != http.StatusOK {
+		t.Fatalf("early heartbeat status=%d, want 200 without persistence", status)
+	}
+	workers := srv.workers.Snapshot(time.Now())
+	if len(workers) != 1 {
+		t.Fatalf("workers after early heartbeat=%+v", workers)
+	}
+	lastHeartbeat := workers[0].LastHeartbeat
+	now = lease.ExpiresAt.Add(-90 * time.Second)
+	if status := postFRPHeartbeatStatus(t, srv, heartbeat); status != http.StatusServiceUnavailable {
+		t.Fatalf("due heartbeat status=%d, want 503", status)
+	}
+	workers = srv.workers.Snapshot(time.Now())
+	if len(workers) != 1 || !workers[0].LastHeartbeat.Equal(lastHeartbeat) {
+		t.Fatalf("failed renewal updated registry: %+v", workers)
+	}
+	stored, err := srv.transportLeases.LookupCurrent("worker-gpu0", lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.ExpiresAt.Equal(lease.ExpiresAt) {
+		t.Fatalf("failed renewal changed expiry: got %v want %v", stored.ExpiresAt, lease.ExpiresAt)
+	}
+}
+
+func TestTransportGenerationAndLeaseSurviveUnrelatedHotApplyAndRestart(t *testing.T) {
+	raw := testGatewayYAMLWithFRPSecret("frp-secret", "qwen")
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServerWithGatewayConfigPath(cfg, configPath)
+	_, versionBefore := srv.configManager.Snapshot()
+	status, lease := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("initial lease status=%d", status)
+	}
+
+	nextRaw := strings.Replace(raw, "tag_policies:\n", "model_aliases:\n  latest: qwen\ntag_policies:\n", 1)
+	apply, err := srv.configManager.Apply([]byte(nextRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apply.RequiresGatewayRestart {
+		t.Fatalf("unrelated alias apply requires restart: %+v", apply)
+	}
+	current, versionAfter := srv.configManager.Snapshot()
+	if versionAfter == versionBefore {
+		t.Fatal("admin config version did not advance")
+	}
+	generationAfter, err := transportConfigGeneration(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generationAfter != lease.Generation {
+		t.Fatalf("hot apply generation=%d, want lease generation %d", generationAfter, lease.Generation)
+	}
+	if status := postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        "http://frps.example.com:2000",
+		TransportLeaseID:    lease.LeaseID,
+		TransportGeneration: lease.Generation,
+	}); status != http.StatusOK {
+		t.Fatalf("post-apply heartbeat status=%d", status)
+	}
+
+	restarted := NewServerWithGatewayConfigPath(current, configPath)
+	status, reloaded := requestTransportLease(t, restarted, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: lease.Generation,
+	})
+	if status != http.StatusOK || reloaded.LeaseID != lease.LeaseID || reloaded.Generation != lease.Generation {
+		t.Fatalf("restart lease status=%d lease=%+v want=%+v", status, reloaded, lease)
 	}
 }
 
@@ -462,6 +668,15 @@ func requestTransportLease(t *testing.T, server http.Handler, token string, requ
 	t.Helper()
 	if request.Tags == nil {
 		request.Tags = []string{"gpu-4090"}
+	}
+	if request.Generation == 1 {
+		if gatewayServer, ok := server.(*Server); ok {
+			generation, err := transportConfigGeneration(gatewayServer.currentConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Generation = generation
+		}
 	}
 	body, err := json.Marshal(request)
 	if err != nil {

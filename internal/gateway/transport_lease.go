@@ -102,26 +102,28 @@ func (m *TransportLeaseManager) Renew(policy TransportLeasePolicy, agentID, leas
 		return TransportLease{}, err
 	}
 	now := m.now()
-	candidate := pruneExpiredTransportLeases(m.leases, now)
-	for i := range candidate {
-		lease := &candidate[i]
-		if lease.Current && lease.AgentID == agentID && lease.LeaseID == leaseID && lease.Generation == generation && transportLeaseMatchesPolicy(*lease, policy) {
-			lease.RenewedAt = now
-			lease.ExpiresAt = now.Add(policy.TTL)
-			if err := m.store.Save(candidate); err != nil {
-				return TransportLease{}, fmt.Errorf("save transport leases: %w", err)
+	match := -1
+	for i := range m.leases {
+		lease := m.leases[i]
+		if lease.Current && lease.AgentID == agentID && lease.LeaseID == leaseID && lease.Generation == generation && lease.ExpiresAt.After(now) && transportLeaseMatchesPolicy(lease, policy) {
+			match = i
+			if lease.ExpiresAt.Sub(now) > policy.TTL/2 {
+				return lease, nil
 			}
-			m.leases = candidate
-			return *lease, nil
+			break
 		}
 	}
-	if len(candidate) != len(m.leases) {
-		if err := m.store.Save(candidate); err != nil {
-			return TransportLease{}, fmt.Errorf("save transport leases: %w", err)
-		}
-		m.leases = candidate
+	if match < 0 {
+		return TransportLease{}, ErrTransportLeaseNotFound
 	}
-	return TransportLease{}, ErrTransportLeaseNotFound
+	candidate := cloneTransportLeases(m.leases)
+	candidate[match].RenewedAt = now
+	candidate[match].ExpiresAt = now.Add(policy.TTL)
+	if err := m.store.Save(candidate); err != nil {
+		return TransportLease{}, fmt.Errorf("save transport leases: %w", err)
+	}
+	m.leases = candidate
+	return candidate[match], nil
 }
 
 func (m *TransportLeaseManager) Release(agentID, leaseID string, generation uint64) (bool, error) {

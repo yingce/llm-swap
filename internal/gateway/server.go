@@ -367,7 +367,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, version := s.configManager.Snapshot()
+	cfg, _ := s.configManager.Snapshot()
 	cfg = activeGatewayConfig(cfg)
 	tag, policy, ok := s.matchedTagPolicy(cfg, r.URL.Query().Get("tags"))
 	if !ok {
@@ -401,11 +401,12 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "agent_id is required", http.StatusBadRequest)
 			return
 		}
-		if version <= 0 {
+		generation, err := transportConfigGeneration(cfg)
+		if err != nil {
 			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		bootstrap, err := transport.SealBootstrap(cfg.Tokens.Agent, agentID, uint64(version), transport.Bootstrap{
+		bootstrap, err := transport.SealBootstrap(cfg.Tokens.Agent, agentID, generation, transport.Bootstrap{
 			Type:            cfg.Transport.Type,
 			ServerAddr:      cfg.Transport.FRP.ServerAddr,
 			ServerPort:      cfg.Transport.FRP.ServerPort,
@@ -440,20 +441,6 @@ func (s *Server) handleTransportLease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid transport lease request", http.StatusBadRequest)
 		return
 	}
-	cfg, version := s.configManager.Snapshot()
-	if cfg.Transport.Type != "frp_tcp" {
-		http.Error(w, "transport lease unavailable", http.StatusBadRequest)
-		return
-	}
-	if _, _, ok := s.matchedTagPolicy(activeGatewayConfig(cfg), strings.Join(request.Tags, ",")); !ok {
-		http.Error(w, "invalid transport lease request", http.StatusBadRequest)
-		return
-	}
-	if version <= 0 || request.Generation != uint64(version) {
-		http.Error(w, "transport lease generation conflict", http.StatusConflict)
-		return
-	}
-	policy := transportLeasePolicy(cfg)
 	if request.Release {
 		if strings.TrimSpace(request.LeaseID) == "" {
 			http.Error(w, "invalid transport lease request", http.StatusBadRequest)
@@ -471,6 +458,25 @@ func (s *Server) handleTransportLease(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	cfg, _ := s.configManager.Snapshot()
+	if cfg.Transport.Type != "frp_tcp" {
+		http.Error(w, "transport lease unavailable", http.StatusBadRequest)
+		return
+	}
+	if _, _, ok := s.matchedTagPolicy(activeGatewayConfig(cfg), strings.Join(request.Tags, ",")); !ok {
+		http.Error(w, "invalid transport lease request", http.StatusBadRequest)
+		return
+	}
+	generation, err := transportConfigGeneration(cfg)
+	if err != nil {
+		http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if request.Generation != generation {
+		http.Error(w, "transport lease generation conflict", http.StatusConflict)
+		return
+	}
+	policy := transportLeasePolicy(cfg)
 	lease, err := s.transportLeases.Acquire(policy, TransportLeaseAcquireRequest{
 		AgentID:        request.AgentID,
 		Generation:     request.Generation,
@@ -541,7 +547,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent_id is required", http.StatusBadRequest)
 		return
 	}
-	cfg, version := s.configManager.Snapshot()
+	cfg, _ := s.configManager.Snapshot()
 	if cfg.Transport.Type == "frp_tcp" {
 		if s.transportLeases == nil || s.transportLeaseErr != nil {
 			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
@@ -551,7 +557,12 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid agent heartbeat", http.StatusBadRequest)
 			return
 		}
-		if version <= 0 || hb.TransportLeaseID == "" || hb.TransportGeneration != uint64(version) {
+		generation, err := transportConfigGeneration(cfg)
+		if err != nil {
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if hb.TransportLeaseID == "" || hb.TransportGeneration != generation {
 			http.Error(w, "transport lease conflict", http.StatusConflict)
 			return
 		}

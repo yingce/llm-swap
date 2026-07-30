@@ -406,7 +406,7 @@ func TestTransportLeaseExactRenewAndRelease(t *testing.T) {
 			t.Fatalf("Release(%q, %q, %d) = %v, %v", mismatch.agent, mismatch.lease, mismatch.generation, released, err)
 		}
 	}
-	now = now.Add(10 * time.Second)
+	now = now.Add(30 * time.Second)
 	renewed, err := manager.Renew(policy, lease.AgentID, lease.LeaseID, lease.Generation)
 	if err != nil {
 		t.Fatal(err)
@@ -416,6 +416,42 @@ func TestTransportLeaseExactRenewAndRelease(t *testing.T) {
 	}
 	if released, err := manager.Release(lease.AgentID, lease.LeaseID, lease.Generation); err != nil || !released {
 		t.Fatalf("release = %v, %v", released, err)
+	}
+}
+
+func TestTransportLeaseRenewPersistsOnlyAtHalfTTL(t *testing.T) {
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+	manager := newTestTransportLeaseManager(t, store, func() time.Time { return now }, leaseIDSequence("lease-a"))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2000, TTL: time.Minute}
+	lease, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saves := store.saves
+
+	now = now.Add(10 * time.Second)
+	immediate, err := manager.Renew(policy, lease.AgentID, lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if immediate != lease {
+		t.Fatalf("early renew changed lease: got %+v want %+v", immediate, lease)
+	}
+	if store.saves != saves {
+		t.Fatalf("early renew saves=%d, want %d", store.saves, saves)
+	}
+
+	now = lease.RenewedAt.Add(policy.TTL / 2)
+	renewed, err := manager.Renew(policy, lease.AgentID, lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.saves != saves+1 {
+		t.Fatalf("threshold renew saves=%d, want %d", store.saves, saves+1)
+	}
+	if !renewed.RenewedAt.Equal(now) || !renewed.ExpiresAt.Equal(now.Add(policy.TTL)) {
+		t.Fatalf("threshold renewed lease=%+v", renewed)
 	}
 }
 
