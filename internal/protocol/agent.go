@@ -29,11 +29,12 @@ type EncryptedTransportBootstrap struct {
 }
 
 type TransportLeaseRequest struct {
-	AgentID      string `json:"agent_id"`
-	Generation   uint64 `json:"generation"`
-	LeaseID      string `json:"lease_id,omitempty"`
-	Release      bool   `json:"release,omitempty"`
-	ExcludeSlots []int  `json:"exclude_slots,omitempty"`
+	AgentID      string   `json:"agent_id"`
+	Tags         []string `json:"tags,omitempty"`
+	Generation   uint64   `json:"generation"`
+	LeaseID      string   `json:"lease_id,omitempty"`
+	Release      bool     `json:"release,omitempty"`
+	ExcludeSlots []int    `json:"exclude_slots,omitempty"`
 }
 
 type TransportLeaseResponse struct {

@@ -445,6 +445,10 @@ func (s *Server) handleTransportLease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "transport lease unavailable", http.StatusBadRequest)
 		return
 	}
+	if _, _, ok := s.matchedTagPolicy(activeGatewayConfig(cfg), strings.Join(request.Tags, ",")); !ok {
+		http.Error(w, "invalid transport lease request", http.StatusBadRequest)
+		return
+	}
 	if version <= 0 || request.Generation != uint64(version) {
 		http.Error(w, "transport lease generation conflict", http.StatusConflict)
 		return
@@ -543,11 +547,15 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		if _, _, ok := s.matchedTagPolicy(activeGatewayConfig(cfg), strings.Join(hb.Tags, ",")); !ok {
+			http.Error(w, "invalid agent heartbeat", http.StatusBadRequest)
+			return
+		}
 		if version <= 0 || hb.TransportLeaseID == "" || hb.TransportGeneration != uint64(version) {
 			http.Error(w, "transport lease conflict", http.StatusConflict)
 			return
 		}
-		lease, err := s.transportLeases.Renew(transportLeasePolicy(cfg), hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration)
+		lease, err := s.transportLeases.LookupCurrent(hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration)
 		if err != nil {
 			if errors.Is(err, ErrTransportLeaseNotFound) {
 				http.Error(w, "transport lease conflict", http.StatusConflict)
@@ -558,6 +566,14 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 		if hb.LlamaSwapURL != expectedFRPLlamaSwapURL(cfg.Transport.FRP.ServerAddr, lease.RemotePort) {
 			http.Error(w, "transport lease conflict", http.StatusConflict)
+			return
+		}
+		if _, err := s.transportLeases.Renew(transportLeasePolicy(cfg), hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration); err != nil {
+			if errors.Is(err, ErrTransportLeaseNotFound) {
+				http.Error(w, "transport lease conflict", http.StatusConflict)
+			} else {
+				http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			}
 			return
 		}
 	}

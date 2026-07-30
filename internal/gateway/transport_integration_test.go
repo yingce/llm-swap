@@ -177,6 +177,34 @@ func TestTransportLeaseEndpointMapsAuthenticationValidationAndCapacity(t *testin
 	}
 }
 
+func TestTransportLeaseEndpointRejectsInvalidTagPolicyBeforeAllocation(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+	}{
+		{name: "missing", tags: []string{}},
+		{name: "unknown", tags: []string{"unknown"}},
+		{name: "multiple configured", tags: []string{"gpu-4090", "gpu-a100"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer(testFRPGatewayConfig())
+			status, _ := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+				AgentID: "worker-invalid", Tags: tt.tags, Generation: 1,
+			})
+			if status != http.StatusBadRequest {
+				t.Fatalf("invalid tag status=%d, want 400", status)
+			}
+			status, lease := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+				AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+			})
+			if status != http.StatusOK || lease.Slot != 0 || lease.RemotePort != 2000 {
+				t.Fatalf("post-rejection lease status=%d lease=%+v, want untouched slot 0", status, lease)
+			}
+		})
+	}
+}
+
 func TestServerReloadsTransportLeasesFromConfigDirectory(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "gateway.yaml")
@@ -304,6 +332,73 @@ func TestFRPHeartbeatRejectsInvalidLeaseOrURLWithoutRegisteringWorker(t *testing
 	}
 }
 
+func TestFRPHeartbeatWrongURLDoesNotRenewLease(t *testing.T) {
+	srv := NewServer(testFRPGatewayConfig())
+	now := time.Unix(2_000, 0)
+	srv.transportLeases.now = func() time.Time { return now }
+	status, lease := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("lease status=%d", status)
+	}
+	before, err := srv.transportLeases.LookupCurrent("worker-gpu0", lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatalf("lookup before heartbeat: %v", err)
+	}
+	now = now.Add(time.Minute)
+
+	status = postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        "http://frps.example.test:2001",
+		TransportLeaseID:    lease.LeaseID,
+		TransportGeneration: lease.Generation,
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("wrong URL status=%d, want 409", status)
+	}
+	after, err := srv.transportLeases.LookupCurrent("worker-gpu0", lease.LeaseID, lease.Generation)
+	if err != nil {
+		t.Fatalf("lookup after heartbeat: %v", err)
+	}
+	if !after.RenewedAt.Equal(before.RenewedAt) || !after.ExpiresAt.Equal(before.ExpiresAt) {
+		t.Fatalf("wrong URL renewed lease: before=%+v after=%+v", before, after)
+	}
+	if workers := srv.workers.Snapshot(time.Now()); len(workers) != 0 {
+		t.Fatalf("wrong URL registered worker: %+v", workers)
+	}
+}
+
+func TestFRPHeartbeatRejectsInvalidTagPolicyBeforeLeaseValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+	}{
+		{name: "missing"},
+		{name: "unknown", tags: []string{"unknown"}},
+		{name: "multiple configured", tags: []string{"gpu-4090", "gpu-a100"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer(testFRPGatewayConfig())
+			status := postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+				AgentID:             "worker-gpu0",
+				Tags:                tt.tags,
+				LlamaSwapURL:        "http://frps.example.test:2000",
+				TransportLeaseID:    "wrong",
+				TransportGeneration: 1,
+			})
+			if status != http.StatusBadRequest {
+				t.Fatalf("status=%d, want tag-policy 400 before lease conflict", status)
+			}
+			if workers := srv.workers.Snapshot(time.Now()); len(workers) != 0 {
+				t.Fatalf("rejected heartbeat registered workers: %+v", workers)
+			}
+		})
+	}
+}
+
 func TestFRPHeartbeatUsesHostSafeIPv6URL(t *testing.T) {
 	cfg := testFRPGatewayConfig()
 	cfg.Transport.FRP.ServerAddr = "2001:db8::1"
@@ -314,6 +409,7 @@ func TestFRPHeartbeatUsesHostSafeIPv6URL(t *testing.T) {
 	}
 	status = postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
 		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
 		LlamaSwapURL:        "http://[2001:db8::1]:2000",
 		TransportLeaseID:    lease.LeaseID,
 		TransportGeneration: 1,
@@ -364,6 +460,9 @@ func postFRPHeartbeatStatus(t *testing.T, server http.Handler, heartbeat protoco
 
 func requestTransportLease(t *testing.T, server http.Handler, token string, request protocol.TransportLeaseRequest) (int, protocol.TransportLeaseResponse) {
 	t.Helper()
+	if request.Tags == nil {
+		request.Tags = []string{"gpu-4090"}
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)

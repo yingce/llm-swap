@@ -81,6 +81,20 @@ func NewTransportLeaseManager(store TransportLeaseStore, now func() time.Time, n
 	return manager, nil
 }
 
+// LookupCurrent returns an exact, live lease without renewing or otherwise
+// mutating the manager or its persistent store.
+func (m *TransportLeaseManager) LookupCurrent(agentID, leaseID string, generation uint64) (TransportLease, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	for _, lease := range m.leases {
+		if lease.Current && lease.AgentID == agentID && lease.LeaseID == leaseID && lease.Generation == generation && lease.ExpiresAt.After(now) {
+			return lease, nil
+		}
+	}
+	return TransportLease{}, ErrTransportLeaseNotFound
+}
+
 func (m *TransportLeaseManager) Renew(policy TransportLeasePolicy, agentID, leaseID string, generation uint64) (TransportLease, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

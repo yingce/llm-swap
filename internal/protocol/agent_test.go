@@ -35,6 +35,7 @@ func TestTransportProtocolJSONContract(t *testing.T) {
 			name: "lease request",
 			value: TransportLeaseRequest{
 				AgentID:      "worker-gpu0",
+				Tags:         []string{"gpu-4090"},
 				Generation:   42,
 				LeaseID:      "lease-1",
 				Release:      true,
@@ -42,6 +43,7 @@ func TestTransportProtocolJSONContract(t *testing.T) {
 			},
 			want: map[string]any{
 				"agent_id":      "worker-gpu0",
+				"tags":          []any{"gpu-4090"},
 				"generation":    42.0,
 				"lease_id":      "lease-1",
 				"release":       true,

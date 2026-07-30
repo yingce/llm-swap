@@ -45,6 +45,32 @@ func TestTransportLeaseAcquireIsStickyAndRenews(t *testing.T) {
 	}
 }
 
+func TestTransportLeaseLookupCurrentIsReadOnlyAndRejectsExpiredLease(t *testing.T) {
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+	manager := newTestTransportLeaseManager(t, store, func() time.Time { return now }, leaseIDSequence("lease-a"))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2000, TTL: time.Minute}
+	lease, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saves := store.saves
+	got, err := manager.LookupCurrent(lease.AgentID, lease.LeaseID, lease.Generation)
+	if err != nil || got != lease {
+		t.Fatalf("lookup = %+v, %v; want %+v", got, err, lease)
+	}
+	if store.saves != saves {
+		t.Fatalf("lookup saved state: %d -> %d", saves, store.saves)
+	}
+	now = lease.ExpiresAt
+	if _, err := manager.LookupCurrent(lease.AgentID, lease.LeaseID, lease.Generation); !errors.Is(err, ErrTransportLeaseNotFound) {
+		t.Fatalf("expired lookup error=%v, want %v", err, ErrTransportLeaseNotFound)
+	}
+	if store.saves != saves {
+		t.Fatalf("expired lookup saved state: %d -> %d", saves, store.saves)
+	}
+}
+
 func TestTransportLeaseAcquireRejectsMismatchedCurrentLeaseID(t *testing.T) {
 	store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
 	manager := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence("lease-a"))

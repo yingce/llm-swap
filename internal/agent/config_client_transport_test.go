@@ -62,13 +62,13 @@ func TestConfigClientRequestsAndReleasesTransportLease(t *testing.T) {
 			t.Fatal(err)
 		}
 		if requests == 1 {
-			if request.AgentID != "worker-gpu0" || request.Generation != 7 || request.LeaseID != "current" || request.Release || len(request.ExcludeSlots) != 1 || request.ExcludeSlots[0] != 2 {
+			if request.AgentID != "worker-gpu0" || request.Generation != 7 || request.LeaseID != "current" || request.Release || len(request.ExcludeSlots) != 1 || request.ExcludeSlots[0] != 2 || len(request.Tags) != 1 || request.Tags[0] != "gpu-4090" {
 				t.Fatalf("acquire request=%+v", request)
 			}
 			_ = json.NewEncoder(w).Encode(protocol.TransportLeaseResponse{LeaseID: "next", Slot: 3, RemotePort: 2003, Generation: 7})
 			return
 		}
-		if !request.Release || request.LeaseID != "next" {
+		if !request.Release || request.LeaseID != "next" || len(request.Tags) != 1 || request.Tags[0] != "gpu-4090" {
 			t.Fatalf("release request=%+v", request)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -77,7 +77,7 @@ func TestConfigClientRequestsAndReleasesTransportLease(t *testing.T) {
 	client := ConfigClient{BaseURL: server.URL, Token: "agent-token", HTTP: server.Client()}
 
 	lease, err := client.RequestTransportLeaseContext(context.Background(), protocol.TransportLeaseRequest{
-		AgentID: "worker-gpu0", Generation: 7, LeaseID: "current", ExcludeSlots: []int{2},
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 7, LeaseID: "current", ExcludeSlots: []int{2},
 	})
 	if err != nil {
 		t.Fatalf("request lease: %v", err)
@@ -86,7 +86,7 @@ func TestConfigClientRequestsAndReleasesTransportLease(t *testing.T) {
 		t.Fatalf("lease=%+v", lease)
 	}
 	if err := client.ReleaseTransportLeaseContext(context.Background(), protocol.TransportLeaseRequest{
-		AgentID: "worker-gpu0", Generation: 7, LeaseID: "next",
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 7, LeaseID: "next",
 	}); err != nil {
 		t.Fatalf("release lease: %v", err)
 	}
