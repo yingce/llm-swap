@@ -31,6 +31,10 @@ type GatewayClient interface {
 	HeartbeatContext(context.Context, protocol.HeartbeatRequest) (protocol.HeartbeatResponse, error)
 }
 
+type identityAwareConfigClient interface {
+	GetConfigForAgentContext(context.Context, string, []string) (protocol.AgentConfigResponse, error)
+}
+
 type Reconciler struct {
 	AgentID         string
 	Tags            []string
@@ -126,7 +130,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 		r.needsRestart = true
 	}
 
-	cfg, err := r.Gateway.GetConfigContext(ctx, r.Tags)
+	cfg, err := r.getConfigContext(ctx)
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
@@ -411,7 +415,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		r.needsRestart = true
 	}
 
-	cfg, err := r.Gateway.GetConfigContext(ctx, r.Tags)
+	cfg, err := r.getConfigContext(ctx)
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
@@ -489,6 +493,13 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	}
 
 	return resp, reconcileErr
+}
+
+func (r *Reconciler) getConfigContext(ctx context.Context) (protocol.AgentConfigResponse, error) {
+	if client, ok := r.Gateway.(identityAwareConfigClient); ok {
+		return client.GetConfigForAgentContext(ctx, r.AgentID, r.Tags)
+	}
+	return r.Gateway.GetConfigContext(ctx, r.Tags)
 }
 
 func (r *Reconciler) installAllowedArtifacts(ctx context.Context, cfg protocol.AgentConfigResponse) (map[string]string, error) {

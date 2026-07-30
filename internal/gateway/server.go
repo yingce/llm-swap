@@ -9,13 +9,16 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
+	"llm-swap/internal/transport"
 )
 
 type Server struct {
@@ -29,6 +32,8 @@ type Server struct {
 	access             *AccessTracker
 	pressure           *PressureTracker
 	replicaCooldowns   *ReplicaCooldowns
+	transportLeases    *TransportLeaseManager
+	transportLeaseErr  error
 	tunnels            *AgentTunnelRegistry
 	exchangeRates      *ExchangeRateProvider
 	recordsStore       RecordsStore
@@ -112,6 +117,11 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 			recordsStore = store
 		}
 	}
+	var transportLeaseStore TransportLeaseStore = NewMemoryTransportLeaseStore()
+	if strings.TrimSpace(configPath) != "" {
+		transportLeaseStore = NewFileTransportLeaseStore(filepath.Join(filepath.Dir(configPath), "transport-leases.json"))
+	}
+	transportLeases, transportLeaseErr := NewTransportLeaseManager(transportLeaseStore, nil, nil)
 
 	s := &Server{
 		configManager:      NewConfigManagerWithOverrides(cfg, configPath, overrides),
@@ -124,6 +134,8 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 		access:             access,
 		pressure:           NewPressureTracker(defaultPressureWindow),
 		replicaCooldowns:   NewReplicaCooldowns(defaultReplicaCooldownTTL),
+		transportLeases:    transportLeases,
+		transportLeaseErr:  transportLeaseErr,
 		tunnels:            NewAgentTunnelRegistry(),
 		exchangeRates:      NewExchangeRateProvider(),
 		recordsStore:       recordsStore,
@@ -168,6 +180,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	s.mux.Handle("POST /ui/api/models/{model}/unload", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIModelUnload)))
 	s.mux.Handle("POST /ui/api/cooldowns/clear", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUICooldownClear)))
 	s.mux.Handle("GET /internal/agent/config", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentConfig)))
+	s.mux.Handle("POST /internal/agent/transport/lease", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleTransportLease)))
 	s.mux.Handle("POST /internal/agent/heartbeat", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentHeartbeat)))
 	s.mux.Handle("GET /internal/agent/tunnel", bearerAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleAgentTunnel)))
 	s.mux.Handle("GET /v1/models", bearerAuth(cfg.Tokens.Client, http.HandlerFunc(s.handleModels)))
@@ -354,7 +367,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
-	cfg := activeGatewayConfig(s.currentConfig())
+	cfg, version := s.configManager.Snapshot()
+	cfg = activeGatewayConfig(cfg)
 	tag, policy, ok := s.matchedTagPolicy(cfg, r.URL.Query().Get("tags"))
 	if !ok {
 		http.Error(w, "exactly one configured tag must match", http.StatusBadRequest)
@@ -377,8 +391,118 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			resp.Models[modelName] = model
 		}
 	}
+	if cfg.Transport.Type == "frp_tcp" {
+		if s.transportLeases == nil || s.transportLeaseErr != nil {
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+		if agentID == "" {
+			http.Error(w, "agent_id is required", http.StatusBadRequest)
+			return
+		}
+		if version <= 0 {
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		bootstrap, err := transport.SealBootstrap(cfg.Tokens.Agent, agentID, uint64(version), transport.Bootstrap{
+			Type:            cfg.Transport.Type,
+			ServerAddr:      cfg.Transport.FRP.ServerAddr,
+			ServerPort:      cfg.Transport.FRP.ServerPort,
+			AuthToken:       cfg.Transport.FRP.AuthToken,
+			PortStart:       cfg.Transport.FRP.PortStart,
+			PortEnd:         cfg.Transport.FRP.PortEnd,
+			LeaseTTLSeconds: cfg.Transport.FRP.LeaseTTLSeconds,
+			LlamaSwapToken:  cfg.Tokens.LlamaSwap,
+		})
+		if err != nil {
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		resp.Transport = &bootstrap
+	}
 
 	writeJSON(w, resp)
+}
+
+func (s *Server) handleTransportLease(w http.ResponseWriter, r *http.Request) {
+	if s.transportLeases == nil || s.transportLeaseErr != nil {
+		http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request protocol.TransportLeaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid transport lease request", http.StatusBadRequest)
+		return
+	}
+	request.AgentID = strings.TrimSpace(request.AgentID)
+	if request.AgentID == "" || request.Generation == 0 {
+		http.Error(w, "invalid transport lease request", http.StatusBadRequest)
+		return
+	}
+	cfg, version := s.configManager.Snapshot()
+	if cfg.Transport.Type != "frp_tcp" {
+		http.Error(w, "transport lease unavailable", http.StatusBadRequest)
+		return
+	}
+	if version <= 0 || request.Generation != uint64(version) {
+		http.Error(w, "transport lease generation conflict", http.StatusConflict)
+		return
+	}
+	policy := transportLeasePolicy(cfg)
+	if request.Release {
+		if strings.TrimSpace(request.LeaseID) == "" {
+			http.Error(w, "invalid transport lease request", http.StatusBadRequest)
+			return
+		}
+		released, err := s.transportLeases.Release(request.AgentID, request.LeaseID, request.Generation)
+		if err != nil {
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !released {
+			http.Error(w, "transport lease conflict", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	lease, err := s.transportLeases.Acquire(policy, TransportLeaseAcquireRequest{
+		AgentID:        request.AgentID,
+		Generation:     request.Generation,
+		CurrentLeaseID: request.LeaseID,
+		ExcludedSlots:  append([]int(nil), request.ExcludeSlots...),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTransportLeaseConflict):
+			http.Error(w, "transport lease conflict", http.StatusConflict)
+		case errors.Is(err, ErrTransportLeaseCapacity):
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+		default:
+			if strings.HasPrefix(err.Error(), "invalid ") {
+				http.Error(w, "invalid transport lease request", http.StatusBadRequest)
+			} else {
+				http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			}
+		}
+		return
+	}
+	writeJSON(w, protocol.TransportLeaseResponse{
+		LeaseID:    lease.LeaseID,
+		Slot:       lease.Slot,
+		RemotePort: lease.RemotePort,
+		Generation: lease.Generation,
+		ExpiresAt:  lease.ExpiresAt,
+	})
+}
+
+func transportLeasePolicy(cfg config.GatewayConfig) TransportLeasePolicy {
+	return TransportLeasePolicy{
+		PortStart: cfg.Transport.FRP.PortStart,
+		PortEnd:   cfg.Transport.FRP.PortEnd,
+		TTL:       time.Duration(cfg.Transport.FRP.LeaseTTLSeconds) * time.Second,
+	}
 }
 
 func (s *Server) matchedTagPolicy(cfg config.GatewayConfig, tagsParam string) (string, config.TagPolicy, bool) {
@@ -412,6 +536,30 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(hb.AgentID) == "" {
 		http.Error(w, "agent_id is required", http.StatusBadRequest)
 		return
+	}
+	cfg, version := s.configManager.Snapshot()
+	if cfg.Transport.Type == "frp_tcp" {
+		if s.transportLeases == nil || s.transportLeaseErr != nil {
+			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if version <= 0 || hb.TransportLeaseID == "" || hb.TransportGeneration != uint64(version) {
+			http.Error(w, "transport lease conflict", http.StatusConflict)
+			return
+		}
+		lease, err := s.transportLeases.Renew(transportLeasePolicy(cfg), hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration)
+		if err != nil {
+			if errors.Is(err, ErrTransportLeaseNotFound) {
+				http.Error(w, "transport lease conflict", http.StatusConflict)
+			} else {
+				http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+			}
+			return
+		}
+		if hb.LlamaSwapURL != expectedFRPLlamaSwapURL(cfg.Transport.FRP.ServerAddr, lease.RemotePort) {
+			http.Error(w, "transport lease conflict", http.StatusConflict)
+			return
+		}
 	}
 
 	now := time.Now()
@@ -451,6 +599,13 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, resp)
+}
+
+func expectedFRPLlamaSwapURL(serverAddr string, remotePort int) string {
+	return (&url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(strings.TrimSpace(serverAddr), strconv.Itoa(remotePort)),
+	}).String()
 }
 
 func (s *Server) logAgentEvent(workerID string, event protocol.AgentEvent) {
