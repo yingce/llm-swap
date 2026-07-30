@@ -297,6 +297,65 @@ func TestAgentContainerEntrypointDoesNotReadTokenFileForExistingConfig(t *testin
 	}
 }
 
+func TestAgentContainerEntrypointReadsFRPTokenFileContentOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
+	}
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	fakeBinDir := filepath.Join(root, "fake-bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+	writeExecutable(t, filepath.Join(fakeBinDir, "od"), `#!/bin/sh
+set -eu
+printf 'call\n' >> "$FAKE_OD_LOG"
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+/usr/bin/od "$@"
+printf 'malicious\nsecond-line\n' > "$last"
+`)
+	tokenPath := filepath.Join(root, "agent-token")
+	if err := os.WriteFile(tokenPath, []byte("safe-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "od-calls")
+
+	out := runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                      fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":       "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN_FILE": tokenPath,
+		"LLMSWAP_AGENT_TAGS":       "gpu-4090",
+		"FAKE_OD_LOG":               logPath,
+	})
+	if strings.Contains(out, "safe-token") || strings.Contains(out, "malicious") {
+		t.Fatalf("entrypoint output leaked token material: %q", out)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "agent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "token: 'safe-token'") || strings.Contains(text, "malicious") {
+		t.Fatalf("config did not use the single safe snapshot:\n%s", text)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\n" {
+		t.Fatalf("od calls = %q, want exactly one", calls)
+	}
+}
+
 func TestAgentContainerEntrypointRejectsLegacyAgentEnvWithoutConfigFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")

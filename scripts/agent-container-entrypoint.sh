@@ -116,39 +116,43 @@ read_agent_token_file() {
     printf 'invalid agent token file\n' >&2
     return 1
   fi
-  local token_size
-  token_size="$(stat -c '%s' -- "$token_file" 2>/dev/null)" || {
-    printf 'invalid agent token file\n' >&2
-    return 1
-  }
-  if (( token_size < 1 || token_size > 16384 )); then
+  local token_hex
+  if ! token_hex="$(LC_ALL=C od -An -v -tx1 -- "$token_file" 2>/dev/null)"; then
     printf 'invalid agent token file\n' >&2
     return 1
   fi
-  local token_bytes
-  if ! token_bytes="$(LC_ALL=C od -An -v -tu1 -- "$token_file" 2>/dev/null)"; then
+  token_hex="${token_hex//$'\n'/ }"
+  local -a token_bytes=()
+  read -r -a token_bytes <<< "$token_hex"
+  unset token_hex
+  if (( ${#token_bytes[@]} < 1 || ${#token_bytes[@]} > 16384 )); then
     printf 'invalid agent token file\n' >&2
     return 1
   fi
-  if grep -Eq '(^|[[:space:]])0([[:space:]]|$)' <<< "$token_bytes"; then
-    printf 'invalid agent token file\n' >&2
-    return 1
+  local byte
+  for byte in "${token_bytes[@]}"; do
+    if [[ ! "$byte" =~ ^[0-9a-f]{2}$ || "$byte" == "00" ]]; then
+      printf 'invalid agent token file\n' >&2
+      return 1
+    fi
+  done
+  local last_index
+  last_index=$((${#token_bytes[@]} - 1))
+  if [[ "${token_bytes[$last_index],,}" == "0a" ]]; then
+    unset "token_bytes[$last_index]"
   fi
-  unset token_bytes
-  local -a token_chunks=()
-  mapfile -d '' -t token_chunks < "$token_file"
-  if [[ "${#token_chunks[@]}" != "1" ]]; then
-    printf 'invalid agent token file\n' >&2
-    return 1
-  fi
-  local token="${token_chunks[0]}"
-  if [[ "$token" == *$'\n' ]]; then
-    token="${token%$'\n'}"
-  fi
-  if [[ "$token" == *$'\n'* ]]; then
-    printf 'invalid agent token file\n' >&2
-    return 1
-  fi
+  local escaped_token=""
+  for byte in "${token_bytes[@]}"; do
+    byte="${byte,,}"
+    if [[ "$byte" == "0a" || "$byte" == "0d" ]]; then
+      printf 'invalid agent token file\n' >&2
+      return 1
+    fi
+    escaped_token+="\\x$byte"
+  done
+  local token
+  printf -v token '%b' "$escaped_token"
+  unset escaped_token token_bytes
   token="$(trim "$token")"
   if [[ -z "$token" ]]; then
     printf 'invalid agent token file\n' >&2
