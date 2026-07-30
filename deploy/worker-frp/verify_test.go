@@ -185,9 +185,11 @@ func TestGatewayTestTemplateLoads(t *testing.T) {
 		t.Fatalf("LoadGateway(gateway.test.yaml.example): %v", err)
 	}
 	if cfg.Transport.Type != "frp_tcp" || cfg.Transport.FRP.ServerAddr != "frps.example.test" ||
+		cfg.Transport.FRP.DialAddr != "frps.example.test" ||
 		cfg.Transport.FRP.ServerPort != 7000 || cfg.Transport.FRP.AuthToken != "replace-me" ||
 		cfg.Transport.FRP.PortStart != 2000 || cfg.Transport.FRP.PortEnd != 2007 ||
-		cfg.Transport.FRP.LeaseTTLSeconds != 180 {
+		cfg.Transport.FRP.LeaseTTLSeconds != 180 ||
+		cfg.Transport.FRP.LeaseStorePath != "/opt/llmswap/state/transport-leases.json" {
 		t.Fatalf("unexpected FRP test config: %#v", cfg.Transport)
 	}
 	policy, ok := cfg.TagPolicies["gpu-4090"]

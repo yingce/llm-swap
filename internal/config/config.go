@@ -21,11 +21,13 @@ type TransportConfig struct {
 
 type FRPTCPConfig struct {
 	ServerAddr      string `yaml:"server_addr" json:"server_addr"`
+	DialAddr        string `yaml:"dial_addr" json:"dial_addr"`
 	ServerPort      int    `yaml:"server_port" json:"server_port"`
 	AuthToken       string `yaml:"auth_token" json:"auth_token"`
 	PortStart       int    `yaml:"port_start" json:"port_start"`
 	PortEnd         int    `yaml:"port_end" json:"port_end"`
 	LeaseTTLSeconds int    `yaml:"lease_ttl_seconds" json:"lease_ttl_seconds"`
+	LeaseStorePath  string `yaml:"lease_store_path" json:"lease_store_path"`
 	leaseTTLSet     bool
 }
 

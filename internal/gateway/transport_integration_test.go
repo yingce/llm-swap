@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +23,7 @@ import (
 
 func TestAgentConfigEndpointSealsFRPBootstrapForAgentIdentity(t *testing.T) {
 	cfg := testFRPGatewayConfig()
+	cfg.Transport.FRP.DialAddr = "127.0.0.1"
 	srv := NewServer(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/internal/agent/config?agent_id=worker-gpu0&tags=gpu-4090", nil)
 	req.Header.Set("Authorization", "Bearer agent-secret")
@@ -236,6 +240,32 @@ func TestServerReloadsTransportLeasesFromConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestServerUsesExplicitTransportLeaseStorePath(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config", "gateway.yaml")
+	leasePath := filepath.Join(directory, "state", "transport-leases.json")
+	cfg := testFRPGatewayConfig()
+	cfg.Transport.FRP.LeaseStorePath = leasePath
+
+	firstServer := NewServerWithGatewayConfigPath(cfg, configPath)
+	status, first := requestTransportLease(t, firstServer, "agent-secret", protocol.TransportLeaseRequest{AgentID: "worker-gpu0", Generation: 1})
+	if status != http.StatusOK {
+		t.Fatalf("first status=%d", status)
+	}
+	if _, err := os.Stat(leasePath); err != nil {
+		t.Fatalf("explicit lease store: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(configPath), "transport-leases.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy lease store should not be used with explicit path: %v", err)
+	}
+
+	reloaded := NewServerWithGatewayConfigPath(cfg, configPath)
+	status, second := requestTransportLease(t, reloaded, "agent-secret", protocol.TransportLeaseRequest{AgentID: "worker-gpu0", Generation: 1})
+	if status != http.StatusOK || second.LeaseID != first.LeaseID {
+		t.Fatalf("reloaded status=%d lease=%+v, want sticky %+v", status, second, first)
+	}
+}
+
 func TestTransportChangeAllowsOldGenerationReleaseToRecoverFullPool(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	oldConfig := testFRPGatewayConfig()
@@ -393,6 +423,90 @@ func TestFRPHeartbeatRenewsExactLeaseBeforeRegisteringWorker(t *testing.T) {
 	}
 	if !stored.RenewedAt.Equal(now) || !stored.ExpiresAt.Equal(now.Add(180*time.Second)) {
 		t.Fatalf("threshold heartbeat did not renew lease: %+v", stored)
+	}
+}
+
+func TestFRPHeartbeatValidatesPublicEndpointButRegistersGatewayDialEndpoint(t *testing.T) {
+	cfg := testFRPGatewayConfig()
+	cfg.Transport.FRP.ServerAddr = "frps.public.example"
+	cfg.Transport.FRP.DialAddr = "127.0.0.1"
+	srv := NewServer(cfg)
+	status, lease := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("lease status=%d", status)
+	}
+
+	status = postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        "http://frps.public.example:2000",
+		TransportLeaseID:    lease.LeaseID,
+		TransportGeneration: lease.Generation,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("heartbeat status=%d, want 200", status)
+	}
+	workers := srv.workers.Snapshot(time.Now())
+	if len(workers) != 1 || workers[0].LlamaSwapURL != "http://127.0.0.1:2000" {
+		t.Fatalf("workers=%+v, want gateway dial endpoint", workers)
+	}
+}
+
+func TestFRPProxyUsesGatewayDialEndpointAfterPublicHeartbeatValidation(t *testing.T) {
+	var gotAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dial-ok"}`))
+	}))
+	defer upstream.Close()
+	parsed, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialHost, portText, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePort, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testFRPGatewayConfig()
+	cfg.Transport.FRP.ServerAddr = "frps.public.example"
+	cfg.Transport.FRP.DialAddr = dialHost
+	cfg.Transport.FRP.PortStart = remotePort
+	cfg.Transport.FRP.PortEnd = remotePort
+	srv := NewServer(cfg)
+	status, lease := requestTransportLease(t, srv, "agent-secret", protocol.TransportLeaseRequest{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, Generation: 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("lease status=%d", status)
+	}
+	status = postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+		AgentID:             "worker-gpu0",
+		Tags:                []string{"gpu-4090"},
+		LlamaSwapURL:        expectedFRPLlamaSwapURL("frps.public.example", remotePort),
+		TransportLeaseID:    lease.LeaseID,
+		TransportGeneration: lease.Generation,
+		Artifacts:           map[string]string{"qwen": "ready"},
+		RunningModels:       []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("heartbeat status=%d", status)
+	}
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "dial-ok") {
+		t.Fatalf("proxy status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if gotAuthorization != "Bearer agent-secret" {
+		t.Fatalf("upstream authorization=%q, want inherited llama-swap bearer", gotAuthorization)
 	}
 }
 

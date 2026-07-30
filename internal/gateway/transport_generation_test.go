@@ -21,6 +21,8 @@ func TestTransportConfigGenerationUsesOnlyEffectiveBootstrapFields(t *testing.T)
 	unrelated.Models["new-model"] = config.Model{}
 	unrelated.ModelAliases = map[string]string{"latest": "new-model"}
 	unrelated.TagPolicies["new-tag"] = config.TagPolicy{}
+	unrelated.Transport.FRP.DialAddr = "127.0.0.1"
+	unrelated.Transport.FRP.LeaseStorePath = "/opt/llmswap/state/transport-leases.json"
 	got, err := transportConfigGeneration(unrelated)
 	if err != nil {
 		t.Fatal(err)

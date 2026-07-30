@@ -117,8 +117,12 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 		}
 	}
 	var transportLeaseStore TransportLeaseStore = NewMemoryTransportLeaseStore()
-	if strings.TrimSpace(configPath) != "" {
-		transportLeaseStore = NewFileTransportLeaseStore(filepath.Join(filepath.Dir(configPath), "transport-leases.json"))
+	leaseStorePath := strings.TrimSpace(cfg.Transport.FRP.LeaseStorePath)
+	if leaseStorePath == "" && strings.TrimSpace(configPath) != "" {
+		leaseStorePath = filepath.Join(filepath.Dir(configPath), "transport-leases.json")
+	}
+	if leaseStorePath != "" {
+		transportLeaseStore = NewFileTransportLeaseStore(leaseStorePath)
 	}
 	transportLeases, transportLeaseErr := NewTransportLeaseManager(transportLeaseStore, nil, nil)
 
@@ -586,6 +590,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			hb.LlamaSwapURL = expectedFRPLlamaSwapURL(gatewayFRPDialAddr(cfg.Transport.FRP), lease.RemotePort)
 		}
 	}
 
@@ -633,6 +638,13 @@ func expectedFRPLlamaSwapURL(serverAddr string, remotePort int) string {
 		Scheme: "http",
 		Host:   net.JoinHostPort(strings.TrimSpace(serverAddr), strconv.Itoa(remotePort)),
 	}).String()
+}
+
+func gatewayFRPDialAddr(cfg config.FRPTCPConfig) string {
+	if dialAddr := strings.TrimSpace(cfg.DialAddr); dialAddr != "" {
+		return dialAddr
+	}
+	return strings.TrimSpace(cfg.ServerAddr)
 }
 
 func (s *Server) logAgentEvent(workerID string, event protocol.AgentEvent) {

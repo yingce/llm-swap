@@ -9,6 +9,12 @@ its encrypted bootstrap response.
 The files are intentionally credential-free. They do not provide a usable
 model, object-store location, gateway token, or FRPS token.
 
+This deployment assumes one fully trusted worker trust domain. The shared
+agent bearer authenticates access to agent APIs but is not bound to an
+`agent_id`; any worker that has it can claim another identity. Do not use this
+design for untrusted-worker multi-tenancy. Per-agent credentials and identity
+authorization are outside the current implementation.
+
 ## Prerequisites
 
 - A Linux GPU host with Docker Engine, the Compose plugin, and NVIDIA Container
@@ -66,6 +72,23 @@ Copy `gateway.test.yaml.example` to the gateway's protected configuration
 directory. Replace all `replace-*` fields and `frps.example.test` with values
 from an authorized source. The agent token in `tokens.agent` must equal the
 contents of `AGENT_TOKEN_FILE`. Keep the gateway configuration mode `0600`.
+
+`transport.frp.server_addr` is the address embedded FRPC clients use to reach
+FRPS and the public host workers report in heartbeats. `dial_addr` is the host
+the gateway uses when calling a leased `remote_port`; omitting it preserves the
+old behavior and uses `server_addr`. When gateway and FRPS run on the same host,
+set `dial_addr: 127.0.0.1` to avoid an external hairpin. If the gateway instead
+dials an FRPS public address, that remote-port hop carries ordinary plaintext
+HTTP: bearer tokens, prompts, and responses are not protected by FRP token
+authentication. Do not send real traffic over that path without a private
+network or external protection such as IPsec. llama-swap does not provide HTTPS
+for this hop, so setting an `https://` address is neither valid nor a workaround.
+
+Set `lease_store_path` to an absolute path on durable gateway storage. The
+example uses `/opt/llmswap/state/transport-leases.json`; preserve its parent
+directory across gateway recreation and rollback. Omitting the field keeps the
+compatibility default `transport-leases.json` beside the loaded gateway config.
+Changing the path through Config Ops is saved but requires a gateway restart.
 
 The placeholder model is disabled so the template can be parsed safely. Before
 inference testing, replace it with a real existing model and object-store

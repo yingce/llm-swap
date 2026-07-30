@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"io"
+	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -137,6 +139,9 @@ func validateTransport(cfg TransportConfig) error {
 	if strings.TrimSpace(cfg.FRP.AuthToken) == "" {
 		return fmt.Errorf("transport.frp.auth_token is required")
 	}
+	if !validFRPDialAddr(cfg.FRP.DialAddr) {
+		return fmt.Errorf("transport.frp.dial_addr must be a host or IP address without a scheme or port")
+	}
 	if cfg.FRP.ServerPort < 1 || cfg.FRP.ServerPort > 65535 {
 		return fmt.Errorf("transport.frp.server_port must be between 1 and 65535")
 	}
@@ -152,7 +157,24 @@ func validateTransport(cfg TransportConfig) error {
 	if cfg.FRP.LeaseTTLSeconds <= 0 {
 		return fmt.Errorf("transport.frp.lease_ttl_seconds must be positive")
 	}
+	if leaseStorePath := strings.TrimSpace(cfg.FRP.LeaseStorePath); leaseStorePath != "" && !filepath.IsAbs(leaseStorePath) {
+		return fmt.Errorf("transport.frp.lease_store_path must be absolute when set")
+	}
 	return nil
+}
+
+func validFRPDialAddr(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "/?# \t\r\n") {
+		return false
+	}
+	if net.ParseIP(value) != nil {
+		return true
+	}
+	if strings.Contains(value, ":") {
+		return false
+	}
+	return true
 }
 
 func validModelRuntime(runtime string) bool {
@@ -188,6 +210,9 @@ func applyGatewayDefaults(cfg *GatewayConfig) {
 	}
 	if cfg.Transport.Type == "frp_tcp" && cfg.Transport.FRP.LeaseTTLSeconds == 0 && !cfg.Transport.FRP.leaseTTLSet {
 		cfg.Transport.FRP.LeaseTTLSeconds = 180
+	}
+	if cfg.Transport.Type == "frp_tcp" && strings.TrimSpace(cfg.Transport.FRP.DialAddr) == "" {
+		cfg.Transport.FRP.DialAddr = strings.TrimSpace(cfg.Transport.FRP.ServerAddr)
 	}
 }
 

@@ -670,6 +670,72 @@ func TestUIConfigApplyRestartRequiredChangePersistsWithoutReplacingRuntimeSnapsh
 	}
 }
 
+func TestUIConfigDryRunRequiresRestartForTransportLeaseStorePathChange(t *testing.T) {
+	raw := testGatewayYAMLWithFRPSecret("frp-secret", "qwen")
+	raw = strings.Replace(raw, "    lease_ttl_seconds: 180\n", "    lease_ttl_seconds: 180\n    lease_store_path: /opt/llmswap/state/transport-leases.json\n", 1)
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg)
+	nextRaw := strings.Replace(raw, "/opt/llmswap/state/transport-leases.json", "/opt/llmswap/next-state/transport-leases.json", 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(nextRaw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var resp uiConfigDryRunResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	change, ok := findConfigChange(resp.Changes, "transport.frp.lease_store_path", "changed")
+	if !ok || !change.RequiresGatewayRestart || !resp.RequiresGatewayRestart || resp.ApplyMode != "save_requires_gateway_restart" {
+		t.Fatalf("response = %+v, want lease store path restart requirement", resp)
+	}
+}
+
+func TestUIConfigLeaseStorePathChangeRemainsRestartRequiredUntilRestart(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	raw := testGatewayYAMLWithFRPSecret("frp-secret", "qwen")
+	raw = strings.Replace(raw, "    lease_ttl_seconds: 180\n", "    lease_ttl_seconds: 180\n    lease_store_path: /opt/llmswap/state/transport-leases.json\n", 1)
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServerWithGatewayConfigPath(cfg, configPath)
+	nextRaw := strings.Replace(raw, "/opt/llmswap/state/transport-leases.json", "/opt/llmswap/next-state/transport-leases.json", 1)
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/ui/api/config/apply", strings.NewReader(nextRaw))
+	applyReq.Header.Set("Authorization", "Bearer agent-secret")
+	applyRR := httptest.NewRecorder()
+	srv.ServeHTTP(applyRR, applyReq)
+	if applyRR.Code != http.StatusOK {
+		t.Fatalf("apply status = %d, want 200: %s", applyRR.Code, applyRR.Body.String())
+	}
+	if got := srv.currentConfig().Transport.FRP.LeaseStorePath; got != "/opt/llmswap/state/transport-leases.json" {
+		t.Fatalf("runtime lease store path = %q, want old path until restart", got)
+	}
+
+	dryRunReq := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(nextRaw))
+	dryRunReq.Header.Set("Authorization", "Bearer agent-secret")
+	dryRunRR := httptest.NewRecorder()
+	srv.ServeHTTP(dryRunRR, dryRunReq)
+	var resp uiConfigDryRunResponse
+	if err := json.NewDecoder(dryRunRR.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.RequiresGatewayRestart || resp.ApplyMode != "save_requires_gateway_restart" {
+		t.Fatalf("response = %+v, want pending restart to remain visible", resp)
+	}
+}
+
 func TestUIConfigApplyKeepsRuntimeTokenOverrideForHotModelChange(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
 	raw := testGatewayYAMLWithModels("qwen")

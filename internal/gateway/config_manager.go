@@ -570,6 +570,9 @@ func diffGatewayConfig(oldCfg config.GatewayConfig, newCfg config.GatewayConfig)
 	if oldCfg.Gateway.ProxyAttempts != newCfg.Gateway.ProxyAttempts {
 		changes = append(changes, uiConfigChange{Path: "gateway.proxy_attempts", Type: "changed"})
 	}
+	if oldCfg.Transport.FRP.LeaseStorePath != newCfg.Transport.FRP.LeaseStorePath {
+		changes = append(changes, uiConfigChange{Path: "transport.frp.lease_store_path", Type: "changed", RequiresGatewayRestart: true})
+	}
 	sort.SliceStable(changes, func(i, j int) bool {
 		if changes[i].Path == changes[j].Path {
 			return changes[i].Type < changes[j].Type

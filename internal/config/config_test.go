@@ -52,6 +52,8 @@ transport:
 		{name: "reversed port range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 1999", 1), want: "transport.frp.port_start"},
 		{name: "port start below range", raw: strings.Replace(validTransport, "    port_start: 2000", "    port_start: 0", 1), want: "transport.frp.port_start"},
 		{name: "out of range port", raw: strings.Replace(validTransport, "    port_start: 2000", "    port_start: 65536", 1), want: "transport.frp.port_start"},
+		{name: "dial address is URL", raw: strings.Replace(validTransport, "    server_port: 7000", "    dial_addr: https://frps.example.invalid\n    server_port: 7000", 1), want: "transport.frp.dial_addr"},
+		{name: "relative lease store", raw: strings.Replace(validTransport, "    lease_ttl_seconds: 180", "    lease_ttl_seconds: 180\n    lease_store_path: state/transport-leases.json", 1), want: "transport.frp.lease_store_path"},
 		{name: "port end below range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 0", 1), want: "transport.frp.port_end"},
 		{name: "port end above range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 65536", 1), want: "transport.frp.port_end"},
 		{name: "zero ttl", raw: strings.Replace(validTransport, "    lease_ttl_seconds: 180", "    lease_ttl_seconds: 0", 1), want: "transport.frp.lease_ttl_seconds"},
@@ -106,6 +108,37 @@ transport:
 	}
 	if cfg.Transport.FRP.LeaseTTLSeconds != 180 {
 		t.Fatalf("lease_ttl_seconds = %d, want 180", cfg.Transport.FRP.LeaseTTLSeconds)
+	}
+	if cfg.Transport.FRP.DialAddr != "frps.example.invalid" {
+		t.Fatalf("dial_addr = %q, want server_addr compatibility default", cfg.Transport.FRP.DialAddr)
+	}
+	if cfg.Transport.FRP.LeaseStorePath != "" {
+		t.Fatalf("lease_store_path = %q, want legacy config-directory default", cfg.Transport.FRP.LeaseStorePath)
+	}
+}
+
+func TestLoadGatewayAcceptsExplicitFRPDialAndLeaseStorePaths(t *testing.T) {
+	raw := `
+transport:
+  type: frp_tcp
+  frp:
+    server_addr: frps.example.invalid
+    dial_addr: 127.0.0.1
+    server_port: 7000
+    auth_token: transport-token
+    port_start: 2000
+    port_end: 2007
+    lease_store_path: /opt/llmswap/state/transport-leases.json
+`
+	cfg, err := LoadGateway(strings.NewReader(validGatewayYAML(raw)))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if cfg.Transport.FRP.DialAddr != "127.0.0.1" {
+		t.Fatalf("dial_addr = %q, want loopback", cfg.Transport.FRP.DialAddr)
+	}
+	if cfg.Transport.FRP.LeaseStorePath != "/opt/llmswap/state/transport-leases.json" {
+		t.Fatalf("lease_store_path = %q, want explicit durable path", cfg.Transport.FRP.LeaseStorePath)
 	}
 }
 

@@ -6,11 +6,13 @@ transport:
   type: frp_tcp
   frp:
     server_addr: frps.example.com
+    dial_addr: frps.example.com
     server_port: 7000
     auth_token: replace-with-frps-token
     port_start: 2000
     port_end: 3000
     lease_ttl_seconds: 180
+    lease_store_path: /opt/llmswap/state/transport-leases.json
 
 oss:
   base_url: https://oss.example.com/llm-swap

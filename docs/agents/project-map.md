@@ -17,8 +17,8 @@ client
   -> gateway /v1/chat/completions
     -> placement chooses a worker by model, tag, artifact readiness, running
        model state, active request count, and replica policy
-    -> gateway proxies request directly to the worker's advertised llama-swap
-       URL, normally an FRP TCP endpoint leased by the gateway
+    -> gateway validates the worker's advertised FRPS endpoint, then proxies to
+       the gateway-side FRP dial address plus the gateway-leased TCP port
       -> llama-swap starts/switches local runtime command from rendered config
         -> vLLM, SGLang, or llama.cpp runtime wrapper
 
@@ -310,6 +310,9 @@ disabled the gateway still runs with no external database.
   - Publish the direct worker URL only after FRP reports the proxy ready; clear
     it before replacement or shutdown so the gateway never routes to an
     unready transport.
+  - All workers currently share one agent bearer. It authenticates the API but
+    is not bound to `agent_id`, so FRP workers must belong to one fully trusted
+    trust domain; untrusted-worker multi-tenancy is not supported.
 
 - `internal/agent/reconcile.go`
   - Main worker reconcile loop.
@@ -824,10 +827,23 @@ request detail replay and recent event pages; VictoriaMetrics is for aggregate
 time-series history only.
 
 Production compose deployment runs gateway, VictoriaMetrics, and vmagent
-together. The gateway container mounts `/opt/llmswap/gateway.yaml` read-write so
-admin config apply can persist changes, and mounts `/opt/llmswap/logs`
-read-write. VictoriaMetrics stores data under
+together. The gateway container mounts `/opt/llmswap/config` as a directory so
+admin config apply can persist `gateway.yaml` without a single-file bind mount,
+mounts the dedicated
+`/opt/llmswap/state` directory for the configured FRP lease store, and mounts
+`/opt/llmswap/logs` read-write. A single-file `gateway.yaml` bind mount is not
+used because rename-based atomic replacement cannot safely update that mount.
+When gateway and FRPS are on the same host, the production example uses
+`dial_addr: 127.0.0.1`; public FRPS dial paths are plaintext HTTP and require a
+private network or external transport protection before carrying real bearer
+tokens or prompts. VictoriaMetrics stores data under
 `/opt/llmswap/data/victoriametrics`. Start it from the repository root with:
+
+Before upgrading an existing deployment, copy the protected old
+`/opt/llmswap/gateway.yaml` to `/opt/llmswap/config/gateway.yaml`, add the
+explicit lease-store path, and create `/opt/llmswap/state` with owner-only
+permissions. Keep the old file until the new deployment has passed health and
+lease-reload checks.
 
 ```bash
 docker compose -f deploy/production/docker-compose.yaml up -d --build

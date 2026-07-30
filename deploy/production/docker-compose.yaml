@@ -8,7 +8,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      LLMSWAP_GATEWAY_CONFIG: /opt/llmswap/gateway.yaml
+      LLMSWAP_GATEWAY_CONFIG: /opt/llmswap/config/gateway.yaml
       LLMSWAP_ENABLE_TAILSCALE: ${LLMSWAP_GATEWAY_ENABLE_TAILSCALE:-0}
       LLMSWAP_TAILSCALE_AUTHKEY_FILE: ${LLMSWAP_GATEWAY_TAILSCALE_AUTHKEY_FILE:-}
       LLMSWAP_TAILSCALE_HOSTNAME: ${LLMSWAP_GATEWAY_TAILSCALE_HOSTNAME:-}
@@ -23,7 +23,8 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - /opt/llmswap/gateway.yaml:/opt/llmswap/gateway.yaml
+      - /opt/llmswap/config:/opt/llmswap/config
+      - /opt/llmswap/state:/opt/llmswap/state
       - /opt/llmswap/logs:/opt/llmswap/logs
       - /opt/llmswap/tailscale:/opt/llmswap/tailscale
     depends_on:

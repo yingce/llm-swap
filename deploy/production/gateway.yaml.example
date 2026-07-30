@@ -5,21 +5,23 @@ gateway:
 transport:
   type: frp_tcp
   frp:
-    server_addr: frps.example.test
-    dial_addr: frps.example.test
+    server_addr: replace-with-worker-reachable-frps-address
+    # Loopback is correct only when gateway and FRPS share this host.
+    dial_addr: 127.0.0.1
     server_port: 7000
-    auth_token: replace-me
+    auth_token: replace-with-frps-token
     port_start: 2000
     port_end: 2007
     lease_ttl_seconds: 180
+    # This parent directory is a dedicated persistent Compose mount.
     lease_store_path: /opt/llmswap/state/transport-leases.json
 
 oss:
-  base_url: https://objects.example.test/llm-swap
+  base_url: https://objects.example.invalid/llm-swap
 
 tokens:
-  client: replace-client-token
-  agent: replace-agent-token
+  client: replace-with-client-token
+  agent: replace-with-agent-token
 
 models:
   replace-with-authorized-model:
@@ -33,7 +35,7 @@ models:
     artifact:
       object: replace/with/authorized-model.tar.gz
       kind: tar_gz
-      crc64ecma: replace-me
+      crc64ecma: replace-with-crc64
     runtime: vllm
 
 tag_policies:
