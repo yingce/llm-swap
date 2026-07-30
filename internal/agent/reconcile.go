@@ -35,6 +35,10 @@ type identityAwareConfigClient interface {
 	GetConfigForAgentContext(context.Context, string, []string) (protocol.AgentConfigResponse, error)
 }
 
+type TransportState interface {
+	Snapshot() RuntimeTransportSnapshot
+}
+
 type Reconciler struct {
 	AgentID         string
 	Tags            []string
@@ -42,6 +46,7 @@ type Reconciler struct {
 	LlamaSwapConfig string
 	LlamaSwapURL    string
 	LlamaSwapToken  string
+	TransportState  TransportState
 	Gateway         GatewayClient
 	HTTPClient      *http.Client
 	Service         Service
@@ -50,11 +55,13 @@ type Reconciler struct {
 	GPUDevices      GPUDevicesClient
 	RunInterval     time.Duration
 
-	needsRestart bool
-	eventMu      sync.Mutex
-	events       []protocol.AgentEvent
-	runningMu    sync.Mutex
-	lastRunning  map[string]string
+	needsRestart       bool
+	eventMu            sync.Mutex
+	events             []protocol.AgentEvent
+	runningMu          sync.Mutex
+	lastRunning        map[string]string
+	transportMu        sync.Mutex
+	lastTransportState string
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -134,6 +141,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
+	transport := r.transportForCycle()
 
 	r.drainInstallResults(installs, installDone)
 	artifactStatus, _, err := r.installAllowedArtifactsAsync(ctx, cfg, installs, installDone)
@@ -150,8 +158,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 	var pendingConfigContent []byte
 	var restartModels []string
 	restartBlocked := restartBlockedByUnreadyRunningModelReplacement(cfg, artifactStatus, runningModels)
-	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked && runningStateKnown {
-		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); transport.ready && readyCount > 0 && !restartBlocked && runningStateKnown {
+		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, transport.llamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
@@ -175,8 +183,8 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 		}
 	}
 
-	needsRestart := r.needsRestart && !restartBlocked && runningStateKnown
-	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, needsRestart, artifactStatus)
+	needsRestart := transport.ready && r.needsRestart && !restartBlocked && runningStateKnown
+	hb := r.buildHeartbeatForTransport(transport, cfg, needsRestart, artifactStatus)
 	if needsRestart {
 		hb.RestartModels = append([]string(nil), restartModels...)
 	}
@@ -403,6 +411,63 @@ func (r *Reconciler) dropReportedEvents(count int) {
 	r.events = append([]protocol.AgentEvent(nil), r.events[count:]...)
 }
 
+type reconcileTransportSnapshot struct {
+	ready          bool
+	llamaSwapURL   string
+	llamaSwapToken string
+	leaseID        string
+	generation     uint64
+}
+
+func (r *Reconciler) transportForCycle() reconcileTransportSnapshot {
+	if r.TransportState == nil {
+		return reconcileTransportSnapshot{
+			ready: true, llamaSwapURL: r.LlamaSwapURL, llamaSwapToken: r.LlamaSwapToken,
+		}
+	}
+	runtime := r.TransportState.Snapshot()
+	state := "unresolved"
+	if runtime.ModeResolved {
+		switch {
+		case !runtime.Managed:
+			state = "legacy_direct"
+		case runtime.Ready:
+			state = "ready"
+		default:
+			state = "not_ready"
+		}
+	}
+	r.transportMu.Lock()
+	previous := r.lastTransportState
+	if previous != state {
+		r.lastTransportState = state
+	}
+	r.transportMu.Unlock()
+	if previous != state {
+		r.recordEvent(protocol.AgentEvent{Event: "transport_state_changed", FromState: previous, ToState: state})
+	}
+	if !runtime.ModeResolved {
+		return reconcileTransportSnapshot{}
+	}
+	if !runtime.Managed {
+		return reconcileTransportSnapshot{ready: true, llamaSwapURL: r.LlamaSwapURL, llamaSwapToken: r.LlamaSwapToken}
+	}
+	if !runtime.Ready {
+		return reconcileTransportSnapshot{}
+	}
+	return reconcileTransportSnapshot{
+		ready: true, llamaSwapURL: runtime.LlamaSwapURL, llamaSwapToken: runtime.LlamaSwapToken,
+		leaseID: runtime.LeaseID, generation: runtime.Generation,
+	}
+}
+
+func (r *Reconciler) buildHeartbeatForTransport(transport reconcileTransportSnapshot, cfg protocol.AgentConfigResponse, needsRestart bool, artifactStatus map[string]string) protocol.HeartbeatRequest {
+	hb := BuildHeartbeat(r.AgentID, r.Tags, transport.llamaSwapURL, cfg, needsRestart, artifactStatus)
+	hb.TransportLeaseID = transport.leaseID
+	hb.TransportGeneration = transport.generation
+	return hb
+}
+
 func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse, error) {
 	if r.Gateway == nil {
 		return protocol.HeartbeatResponse{}, fmt.Errorf("agent gateway client is required")
@@ -419,6 +484,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	if err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
+	transport := r.transportForCycle()
 
 	artifactStatus, err := r.installAllowedArtifacts(ctx, cfg)
 	reconcileErr = errors.Join(reconcileErr, err)
@@ -434,8 +500,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	var pendingConfigContent []byte
 	var restartModels []string
 	restartBlocked := restartBlockedByUnreadyRunningModelReplacement(cfg, artifactStatus, runningModels)
-	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); readyCount > 0 && !restartBlocked && runningStateKnown {
-		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, r.LlamaSwapToken)
+	if readyCfg, readyCount := configWithReadyArtifacts(cfg, artifactStatus); transport.ready && readyCount > 0 && !restartBlocked && runningStateKnown {
+		content, err := RenderLlamaSwapConfig(readyCfg, r.ModelRoot, transport.llamaSwapToken)
 		if err != nil {
 			reconcileErr = errors.Join(reconcileErr, err)
 		} else {
@@ -456,8 +522,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 		}
 	}
 
-	needsRestart := r.needsRestart && !restartBlocked && runningStateKnown
-	hb := BuildHeartbeat(r.AgentID, r.Tags, r.LlamaSwapURL, cfg, needsRestart, artifactStatus)
+	needsRestart := transport.ready && r.needsRestart && !restartBlocked && runningStateKnown
+	hb := r.buildHeartbeatForTransport(transport, cfg, needsRestart, artifactStatus)
 	if needsRestart {
 		hb.RestartModels = append([]string(nil), restartModels...)
 	}

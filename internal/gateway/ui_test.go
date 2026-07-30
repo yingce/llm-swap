@@ -345,7 +345,7 @@ func TestUIStatusPreservesWorkerJoinOrder(t *testing.T) {
 
 func TestUIStatusShowsWorkerBackoffAfterReverseAccessFailure(t *testing.T) {
 	srv := NewServer(testProxyConfig())
-	registerProxyWorker(t, srv, "broken", "", true)
+	registerProxyWorker(t, srv, "broken", "://broken", true)
 
 	for i := 0; i < workerScrapeFailureBackoffThreshold; i++ {
 		rr := httptest.NewRecorder()

@@ -403,6 +403,24 @@ func TestWorkerRegistryMarksStaleWorkerUnavailable(t *testing.T) {
 	}
 }
 
+func TestWorkerRegistryDoesNotRouteWorkerWithoutLlamaSwapURL(t *testing.T) {
+	now := time.Unix(100, 0)
+	reg := NewWorkerRegistry(6 * time.Second)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:  "gpu-01",
+		Tags:     []string{"gpu-4090"},
+		Capacity: config.WorkerDefaults{MaxConcurrency: 2, MaxQueue: 4},
+		Artifacts: map[string]string{
+			"qwen": "ready",
+		},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+
+	if reg.Healthy("gpu-01", now.Add(time.Second)) {
+		t.Fatal("worker without llama-swap URL must not be routable")
+	}
+}
+
 func TestWorkerRegistryPrunesOfflineWorkerAfterRetention(t *testing.T) {
 	now := time.Unix(100, 0)
 	reg := NewWorkerRegistry(6 * time.Second)

@@ -1084,7 +1084,7 @@ func TestProxyAllWorkersReturn429PreservesTooManyRequests(t *testing.T) {
 
 func TestProxyMalformedWorkerURLReportsWorkerUnavailableAfterRepeatedFailures(t *testing.T) {
 	srv := NewServer(testProxyConfig())
-	registerProxyWorker(t, srv, "broken", "", true)
+	registerProxyWorker(t, srv, "broken", "://broken", true)
 
 	for i := 0; i < workerScrapeFailureBackoffThreshold; i++ {
 		rr := httptest.NewRecorder()

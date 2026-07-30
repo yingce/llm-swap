@@ -48,6 +48,30 @@ func TestPlacementPickReadyWorkerMatchesSchedulerReadyPreference(t *testing.T) {
 	}
 }
 
+func TestPlacementDoesNotRouteReadyModelFromWorkerWithoutTransportURL(t *testing.T) {
+	now := time.Now()
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{"qwen": {MinLoaded: 1}},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID: "transport-not-ready", Tags: []string{"gpu"},
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+
+	decision, err := (Placement{Config: cfg, Workers: reg}).PickReadyWorker("qwen", now, nil)
+	if err == nil {
+		t.Fatalf("PickReadyWorker returned worker %+v without transport URL", decision.Worker)
+	}
+	if decision.ReadyReplicas != 0 || decision.OccupiedReplicas != 0 {
+		t.Fatalf("unroutable worker counted as ready/occupied: %+v", decision)
+	}
+}
+
 func TestPlacementCountsLoadingReplicaAsOccupiedButNotRoutable(t *testing.T) {
 	now := time.Now()
 	cfg := config.GatewayConfig{

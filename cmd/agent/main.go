@@ -39,49 +39,60 @@ func main() {
 	gatewayHTTP := &http.Client{Timeout: 30 * time.Second}
 	artifactHTTP := &http.Client{}
 	service := restartService(cfg, log.Default())
-	llamaSwapState := llamaSwapStateClient(cfg, gatewayHTTP)
-
-	reconciler := &agent.Reconciler{
-		AgentID:         cfg.Agent.ID,
-		Tags:            cfg.Agent.Tags,
-		ModelRoot:       cfg.Agent.ModelRoot,
-		LlamaSwapConfig: cfg.Agent.LlamaSwapConfig,
-		LlamaSwapURL:    cfg.Agent.LlamaSwapURL,
-		LlamaSwapToken:  cfg.Agent.LlamaSwapToken,
-		Gateway: agent.ConfigClient{
-			BaseURL: cfg.Agent.GatewayURL,
-			Token:   cfg.Agent.Token,
-			HTTP:    gatewayHTTP,
-		},
-		HTTPClient:    artifactHTTP,
-		Service:       service,
-		Health:        llamaSwapState,
-		RunningModels: llamaSwapState,
-		GPUDevices:    agent.NvidiaSMIGPUDevicesClient{},
-	}
+	runtime := buildAgentRuntime(cfg, gatewayHTTP, artifactHTTP, service, agent.NewOfficialFRPClientFactory())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("agent reconcile loop starting for %s advertised_swap_url=%s local_swap_url=%s %s", cfg.Agent.ID, cfg.Agent.LlamaSwapURL, llamaSwapState.BaseURL, strings.TrimSpace(agentVersionText(build)))
-	tunnel := agent.TunnelClient{
-		GatewayURL: cfg.Agent.GatewayURL,
-		AgentID:    cfg.Agent.ID,
-		Token:      cfg.Agent.Token,
-		LocalURL:   config.LocalLlamaSwapURL(cfg.Agent.SwapPort),
-		HTTPClient: &http.Client{},
-		Logf:       log.Printf,
-	}
+	log.Printf("agent reconcile loop starting for %s local_swap_url=%s %s", cfg.Agent.ID, runtime.llamaSwapState.BaseURL, strings.TrimSpace(agentVersionText(build)))
 	go func() {
-		log.Printf("agent tunnel starting for %s gateway_url=%s local_swap_url=%s", cfg.Agent.ID, cfg.Agent.GatewayURL, tunnel.LocalURL)
-		if err := tunnel.Run(ctx); err != nil && err != context.Canceled {
-			log.Printf("agent tunnel stopped: %v", err)
+		if err := runtime.transport.Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("agent transport manager stopped")
 		}
 	}()
 
-	if err := reconciler.Run(ctx); err != nil && err != context.Canceled {
+	if err := runtime.reconciler.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+}
+
+type builtAgentRuntime struct {
+	configClient   *agent.ConfigClient
+	transport      *agent.TransportManager
+	reconciler     *agent.Reconciler
+	llamaSwapState agent.LlamaSwapStateClient
+}
+
+func buildAgentRuntime(cfg config.AgentConfig, gatewayHTTP, artifactHTTP *http.Client, service agent.Service, factory agent.FRPClientFactory) builtAgentRuntime {
+	configClient := &agent.ConfigClient{BaseURL: cfg.Agent.GatewayURL, Token: cfg.Agent.Token, HTTP: gatewayHTTP}
+	transport := &agent.TransportManager{
+		AgentID: cfg.Agent.ID, Tags: append([]string(nil), cfg.Agent.Tags...), AgentToken: cfg.Agent.Token,
+		SwapPort: cfg.Agent.SwapPort, Gateway: configClient, Factory: factory,
+		Logf: func(string, ...any) { log.Printf("agent transport unavailable") },
+	}
+	llamaSwapState := llamaSwapStateClient(cfg, gatewayHTTP)
+	llamaSwapState.BearerToken = ""
+	llamaSwapState.TokenSource = func() string {
+		snapshot := transport.Snapshot()
+		switch {
+		case !snapshot.ModeResolved:
+			return ""
+		case !snapshot.Managed:
+			return cfg.Agent.LlamaSwapToken
+		case snapshot.Ready:
+			return snapshot.LlamaSwapToken
+		default:
+			return ""
+		}
+	}
+	reconciler := &agent.Reconciler{
+		AgentID: cfg.Agent.ID, Tags: cfg.Agent.Tags, ModelRoot: cfg.Agent.ModelRoot,
+		LlamaSwapConfig: cfg.Agent.LlamaSwapConfig, LlamaSwapURL: cfg.Agent.LlamaSwapURL,
+		LlamaSwapToken: cfg.Agent.LlamaSwapToken, TransportState: transport,
+		Gateway: configClient, HTTPClient: artifactHTTP, Service: service,
+		Health: llamaSwapState, RunningModels: llamaSwapState, GPUDevices: agent.NvidiaSMIGPUDevicesClient{},
+	}
+	return builtAgentRuntime{configClient: configClient, transport: transport, reconciler: reconciler, llamaSwapState: llamaSwapState}
 }
 
 func agentVersionText(build protocol.BuildInfo) string {

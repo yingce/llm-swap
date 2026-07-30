@@ -562,30 +562,33 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		if hb.TransportLeaseID == "" || hb.TransportGeneration != generation {
+		notReady := hb.LlamaSwapURL == "" && hb.TransportLeaseID == "" && hb.TransportGeneration == 0
+		if !notReady && (hb.LlamaSwapURL == "" || hb.TransportLeaseID == "" || hb.TransportGeneration != generation) {
 			http.Error(w, "transport lease conflict", http.StatusConflict)
 			return
 		}
-		lease, err := s.transportLeases.LookupCurrent(hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration)
-		if err != nil {
-			if errors.Is(err, ErrTransportLeaseNotFound) {
-				http.Error(w, "transport lease conflict", http.StatusConflict)
-			} else {
-				http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+		if !notReady {
+			lease, err := s.transportLeases.LookupCurrent(hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration)
+			if err != nil {
+				if errors.Is(err, ErrTransportLeaseNotFound) {
+					http.Error(w, "transport lease conflict", http.StatusConflict)
+				} else {
+					http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+				}
+				return
 			}
-			return
-		}
-		if hb.LlamaSwapURL != expectedFRPLlamaSwapURL(cfg.Transport.FRP.ServerAddr, lease.RemotePort) {
-			http.Error(w, "transport lease conflict", http.StatusConflict)
-			return
-		}
-		if _, err := s.transportLeases.Renew(transportLeasePolicy(cfg), hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration); err != nil {
-			if errors.Is(err, ErrTransportLeaseNotFound) {
+			if hb.LlamaSwapURL != expectedFRPLlamaSwapURL(cfg.Transport.FRP.ServerAddr, lease.RemotePort) {
 				http.Error(w, "transport lease conflict", http.StatusConflict)
-			} else {
-				http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+				return
 			}
-			return
+			if _, err := s.transportLeases.Renew(transportLeasePolicy(cfg), hb.AgentID, hb.TransportLeaseID, hb.TransportGeneration); err != nil {
+				if errors.Is(err, ErrTransportLeaseNotFound) {
+					http.Error(w, "transport lease conflict", http.StatusConflict)
+				} else {
+					http.Error(w, "transport unavailable", http.StatusServiceUnavailable)
+				}
+				return
+			}
 		}
 	}
 

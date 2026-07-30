@@ -211,6 +211,9 @@ func (r *WorkerRegistry) Healthy(id string, now time.Time) bool {
 	if now.Before(w.ScrapeBackoffUntil) {
 		return false
 	}
+	if strings.TrimSpace(w.LlamaSwapURL) == "" {
+		return false
+	}
 	return w.State == WorkerActive
 }
 

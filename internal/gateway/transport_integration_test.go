@@ -396,6 +396,38 @@ func TestFRPHeartbeatRenewsExactLeaseBeforeRegisteringWorker(t *testing.T) {
 	}
 }
 
+func TestFRPHeartbeatAcceptsNotReadyWithoutLeaseAndDoesNotAllocate(t *testing.T) {
+	srv := NewServer(testFRPGatewayConfig())
+	status := postFRPHeartbeatStatus(t, srv, protocol.HeartbeatRequest{
+		AgentID: "worker-gpu0",
+		Tags:    []string{"gpu-4090"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("not-ready heartbeat status=%d, want 200", status)
+	}
+	workers := srv.workers.Snapshot(time.Now())
+	if len(workers) != 1 || workers[0].LlamaSwapURL != "" {
+		t.Fatalf("workers = %+v, want one not-ready worker", workers)
+	}
+	if _, err := srv.transportLeases.LookupCurrent("worker-gpu0", "", 0); !errors.Is(err, ErrTransportLeaseNotFound) {
+		t.Fatalf("not-ready heartbeat unexpectedly created lease: %v", err)
+	}
+}
+
+func TestFRPHeartbeatRejectsMixedNotReadyTransportFields(t *testing.T) {
+	tests := []protocol.HeartbeatRequest{
+		{AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, LlamaSwapURL: "http://frps.example.test:2000"},
+		{AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, TransportLeaseID: "lease"},
+		{AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, TransportGeneration: 1},
+	}
+	for _, hb := range tests {
+		srv := NewServer(testFRPGatewayConfig())
+		if got := postFRPHeartbeatStatus(t, srv, hb); got != http.StatusConflict {
+			t.Fatalf("heartbeat %+v status=%d, want 409", hb, got)
+		}
+	}
+}
+
 func TestFRPHeartbeatRejectsInvalidLeaseOrURLWithoutRegisteringWorker(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -21,6 +21,7 @@ type HealthClient interface {
 type LlamaSwapStateClient struct {
 	BaseURL     string
 	BearerToken string
+	TokenSource func() string
 	HTTP        *http.Client
 }
 
@@ -29,8 +30,8 @@ func (c LlamaSwapStateClient) HealthContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if c.BearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	if token := c.token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	httpClient := c.HTTP
@@ -53,8 +54,8 @@ func (c LlamaSwapStateClient) RunningModelsContext(ctx context.Context) ([]proto
 	if err != nil {
 		return nil, err
 	}
-	if c.BearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	if token := c.token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	httpClient := c.HTTP
@@ -75,6 +76,13 @@ func (c LlamaSwapStateClient) RunningModelsContext(ctx context.Context) ([]proto
 		return nil, err
 	}
 	return parseRunningModels(raw), nil
+}
+
+func (c LlamaSwapStateClient) token() string {
+	if c.TokenSource != nil {
+		return c.TokenSource()
+	}
+	return c.BearerToken
 }
 
 func parseRunningModels(raw any) []protocol.RunningModel {

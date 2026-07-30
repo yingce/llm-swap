@@ -20,6 +20,8 @@ type TransportGateway interface {
 }
 
 type RuntimeTransportSnapshot struct {
+	ModeResolved   bool
+	Managed        bool
 	Ready          bool
 	LlamaSwapURL   string
 	LlamaSwapToken string
@@ -81,10 +83,36 @@ func (m *TransportManager) Run(ctx context.Context) error {
 	retryDelay := m.retryMin()
 	var active *activeTransport
 	var replacement *transportReplacement
+	var pendingDesired *desiredTransport
+	legacy := false
 
 	for {
-		if active == nil {
+		if legacy {
+			if err := m.wait(ctx, m.pollInterval()); err != nil {
+				m.state.clear()
+				return nil
+			}
 			desired, err := m.fetchDesired(ctx)
+			if err != nil {
+				m.log("transport configuration unavailable")
+				continue
+			}
+			if !desired.managed {
+				continue
+			}
+			legacy = false
+			m.publishManagedNotReady()
+			pendingDesired = &desired
+		}
+		if active == nil {
+			var desired desiredTransport
+			var err error
+			if pendingDesired != nil {
+				desired = *pendingDesired
+				pendingDesired = nil
+			} else {
+				desired, err = m.fetchDesired(ctx)
+			}
 			if err != nil {
 				m.log("transport configuration unavailable")
 				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
@@ -93,6 +121,14 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				retryDelay = m.nextRetry(retryDelay)
 				continue
 			}
+			if !desired.managed {
+				m.releaseReplacement(replacement)
+				replacement = nil
+				m.publishLegacy()
+				legacy = true
+				continue
+			}
+			m.publishManagedNotReady()
 			if replacement != nil && replacement.generation != desired.generation {
 				m.releaseReplacement(replacement)
 				replacement = nil
@@ -141,6 +177,7 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				if !m.stopClient(started) {
 					return m.parkUnconverged(ctx)
 				}
+				m.publishManagedNotReady()
 				m.releaseLease(lease)
 				replacement = nil
 				m.log("transport client unavailable")
@@ -152,6 +189,7 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				if !m.stopClient(started) {
 					return m.parkUnconverged(ctx)
 				}
+				m.publishManagedNotReady()
 				replacement = &transportReplacement{leaseID: lease.LeaseID, slot: lease.Slot, generation: lease.Generation}
 				m.log("transport client unavailable")
 				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
@@ -180,6 +218,7 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			}
 			replacement = &transportReplacement{leaseID: lease.LeaseID, slot: lease.Slot, generation: lease.Generation}
 			active = nil
+			m.publishManagedNotReady()
 			m.log("transport client stopped")
 			if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
 				return nil
@@ -201,6 +240,18 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				m.log("transport configuration unavailable")
 				continue
 			}
+			if !desired.managed {
+				if !m.stopClient(active) {
+					return m.parkUnconverged(ctx)
+				}
+				m.releaseLease(active.lease)
+				active = nil
+				replacement = nil
+				retryDelay = m.retryMin()
+				m.publishLegacy()
+				legacy = true
+				continue
+			}
 			if active.desired == desired {
 				continue
 			}
@@ -211,11 +262,13 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			active = nil
 			replacement = nil
 			retryDelay = m.retryMin()
+			m.publishManagedNotReady()
 		}
 	}
 }
 
 type desiredTransport struct {
+	managed    bool
 	generation uint64
 	bootstrap  transportcrypto.Bootstrap
 }
@@ -246,8 +299,11 @@ const (
 
 func (m *TransportManager) fetchDesired(ctx context.Context) (desiredTransport, error) {
 	response, err := m.Gateway.GetConfigForAgentContext(ctx, m.AgentID, append([]string(nil), m.Tags...))
-	if err != nil || response.Transport == nil {
+	if err != nil {
 		return desiredTransport{}, errors.New("transport configuration unavailable")
+	}
+	if response.Transport == nil {
+		return desiredTransport{}, nil
 	}
 	bootstrap, err := transportcrypto.OpenBootstrap(m.AgentToken, m.AgentID, *response.Transport)
 	if err != nil || response.Transport.Generation == 0 || m.SwapPort <= 0 || m.SwapPort > 65535 {
@@ -257,7 +313,7 @@ func (m *TransportManager) fetchDesired(ctx context.Context) (desiredTransport, 
 	if err != nil {
 		return desiredTransport{}, errors.New("transport configuration unavailable")
 	}
-	return desiredTransport{generation: response.Transport.Generation, bootstrap: bootstrap}, nil
+	return desiredTransport{managed: true, generation: response.Transport.Generation, bootstrap: bootstrap}, nil
 }
 
 func normalizeTransportBootstrap(bootstrap transportcrypto.Bootstrap) (transportcrypto.Bootstrap, error) {
@@ -360,11 +416,19 @@ func (m *TransportManager) start(ctx context.Context, desired desiredTransport, 
 	default:
 	}
 	m.state.publish(RuntimeTransportSnapshot{
-		Ready: true, LlamaSwapURL: transportURL(desired.bootstrap.ServerAddr, lease.RemotePort),
+		ModeResolved: true, Managed: true, Ready: true, LlamaSwapURL: transportURL(desired.bootstrap.ServerAddr, lease.RemotePort),
 		LlamaSwapToken: desired.bootstrap.LlamaSwapToken, LeaseID: lease.LeaseID,
 		Slot: lease.Slot, Generation: lease.Generation,
 	})
 	return active, transportStartReady
+}
+
+func (m *TransportManager) publishLegacy() {
+	m.state.publish(RuntimeTransportSnapshot{ModeResolved: true})
+}
+
+func (m *TransportManager) publishManagedNotReady() {
+	m.state.publish(RuntimeTransportSnapshot{ModeResolved: true, Managed: true})
 }
 
 func (m *TransportManager) stopClient(active *activeTransport) bool {

@@ -87,6 +87,97 @@ func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *tes
 	}
 }
 
+func TestTransportManagerResolvesLegacyModeWithoutLeaseOrFRPClient(t *testing.T) {
+	gateway := newTransportGatewayFake(protocol.AgentConfigResponse{})
+	waiter := newManualTransportWaiter()
+	factory := newTransportFactoryFake()
+	manager := &TransportManager{
+		AgentID: "worker-gpu0", AgentToken: "agent-secret", SwapPort: 6006,
+		Gateway: gateway, Factory: factory, PollInterval: time.Second, Wait: waiter.Wait,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+	receiveWithTimeout(t, gateway.configCalls)
+	eventually(t, func() bool {
+		snapshot := manager.Snapshot()
+		return snapshot.ModeResolved && !snapshot.Managed && !snapshot.Ready
+	})
+	receiveWithTimeout(t, waiter.calls)
+	if gateway.acquireCount() != 0 || factory.createCount() != 0 {
+		t.Fatalf("legacy mode acquired=%d clients=%d", gateway.acquireCount(), factory.createCount())
+	}
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestTransportManagerSwitchesFromManagedFRPToResolvedLegacy(t *testing.T) {
+	manager, gateway, _, client, waiter, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
+
+	gateway.setConfig(protocol.AgentConfigResponse{})
+	waiter.advance(t)
+	receiveWithTimeout(t, gateway.configCalls)
+	receiveWithTimeout(t, client.closed)
+	release := receiveWithTimeout(t, gateway.releaseCalls)
+	if release.LeaseID == "" || release.Generation != 7 {
+		t.Fatalf("released lease = %+v", release)
+	}
+	eventually(t, func() bool {
+		snapshot := manager.Snapshot()
+		return snapshot.ModeResolved && !snapshot.Managed && !snapshot.Ready && snapshot.LeaseID == ""
+	})
+	select {
+	case err := <-done:
+		t.Fatalf("manager stopped after switching to legacy: %v", err)
+	default:
+	}
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestTransportManagerSwitchesFromResolvedLegacyToManagedFRP(t *testing.T) {
+	const agentID, agentToken = "worker-gpu0", "agent-secret"
+	gateway := newTransportGatewayFake(protocol.AgentConfigResponse{})
+	waiter := newManualTransportWaiter()
+	client := newFRPClientFake()
+	factory := newTransportFactoryFake(client)
+	manager := &TransportManager{
+		AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
+		Gateway: gateway, Factory: factory, PollInterval: time.Second, Wait: waiter.Wait, ReleaseTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+	receiveWithTimeout(t, gateway.configCalls)
+	eventually(t, func() bool { return manager.Snapshot().ModeResolved && !manager.Snapshot().Managed })
+
+	gateway.setConfig(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "lease-7", Slot: 2, RemotePort: 2002, Generation: 7})
+	waiter.advance(t)
+	receiveWithTimeout(t, gateway.configCalls)
+	receiveWithTimeout(t, gateway.acquireCalls)
+	receiveWithTimeout(t, factory.created)
+	eventually(t, func() bool {
+		snapshot := manager.Snapshot()
+		return snapshot.ModeResolved && snapshot.Managed && !snapshot.Ready
+	})
+	client.ready <- nil
+	eventually(t, func() bool { return manager.Snapshot().Ready })
+
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	release := receiveWithTimeout(t, gateway.releaseCalls)
+	if release.LeaseID != "lease-7" || release.Generation != 7 {
+		t.Fatalf("shutdown release = %+v", release)
+	}
+}
+
 func TestTransportManagerDoesNotRestartForUnchangedDecodedConfig(t *testing.T) {
 	manager, gateway, factory, first, waiter, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
 	defer stopTransportManager(t, cancel, done)

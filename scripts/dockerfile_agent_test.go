@@ -55,6 +55,23 @@ func TestDockerfileAgentDefaultsToCudaDevelImage(t *testing.T) {
 	}
 }
 
+func TestDockerfileAgentCanSkipTailscaleInstallation(t *testing.T) {
+	repo := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(repo, "Dockerfile.agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"ARG LLMSWAP_INSTALL_TAILSCALE=1",
+		`if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Dockerfile.agent missing Tailscale opt-out path %q", want)
+		}
+	}
+}
+
 func TestDockerfileAgentCopiesAgentBinaryAfterHeavyInstallLayers(t *testing.T) {
 	repo := repoRoot(t)
 	path := filepath.Join(repo, "Dockerfile.agent")
