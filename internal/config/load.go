@@ -33,13 +33,13 @@ func LoadAgent(r io.Reader) (AgentConfig, error) {
 	if cfg.Agent.LlamaSwapURL == "" && cfg.Agent.SwapURL != "" {
 		cfg.Agent.LlamaSwapURL = cfg.Agent.SwapURL
 	}
-	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.LlamaSwapURL == "" || cfg.Agent.GatewayURL == "" {
-		return cfg, fmt.Errorf("agent model_root, llama_swap_config, swap_url, and gateway_url are required")
+	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.GatewayURL == "" {
+		return cfg, fmt.Errorf("agent model_root, llama_swap_config, and gateway_url are required")
 	}
 	if cfg.Agent.Token == "" {
 		return cfg, fmt.Errorf("agent.token is required")
 	}
-	if cfg.Agent.LlamaSwapToken == "" {
+	if cfg.Agent.LlamaSwapToken == "" && cfg.Agent.LlamaSwapURL != "" {
 		cfg.Agent.LlamaSwapToken = cfg.Agent.Token
 	}
 	return cfg, nil
@@ -65,6 +65,9 @@ func validateGateway(cfg GatewayConfig) error {
 	}
 	if cfg.Tokens.Client == "" || cfg.Tokens.Agent == "" {
 		return fmt.Errorf("tokens.client and tokens.agent are required")
+	}
+	if err := validateTransport(cfg.Transport); err != nil {
+		return err
 	}
 	if len(cfg.Models) == 0 {
 		return fmt.Errorf("models is required")
@@ -120,6 +123,38 @@ func validateGateway(cfg GatewayConfig) error {
 	return nil
 }
 
+func validateTransport(cfg TransportConfig) error {
+	switch cfg.Type {
+	case "":
+		return nil
+	case "frp_tcp":
+	default:
+		return fmt.Errorf("transport.type must be frp_tcp")
+	}
+	if strings.TrimSpace(cfg.FRP.ServerAddr) == "" {
+		return fmt.Errorf("transport.frp.server_addr is required")
+	}
+	if strings.TrimSpace(cfg.FRP.AuthToken) == "" {
+		return fmt.Errorf("transport.frp.auth_token is required")
+	}
+	if cfg.FRP.ServerPort < 1 || cfg.FRP.ServerPort > 65535 {
+		return fmt.Errorf("transport.frp.server_port must be between 1 and 65535")
+	}
+	if cfg.FRP.PortStart < 1 || cfg.FRP.PortStart > 65535 {
+		return fmt.Errorf("transport.frp.port_start must be between 1 and 65535")
+	}
+	if cfg.FRP.PortEnd < 1 || cfg.FRP.PortEnd > 65535 {
+		return fmt.Errorf("transport.frp.port_end must be between 1 and 65535")
+	}
+	if cfg.FRP.PortStart > cfg.FRP.PortEnd {
+		return fmt.Errorf("transport.frp.port_start must not exceed transport.frp.port_end")
+	}
+	if cfg.FRP.LeaseTTLSeconds <= 0 {
+		return fmt.Errorf("transport.frp.lease_ttl_seconds must be positive")
+	}
+	return nil
+}
+
 func validModelRuntime(runtime string) bool {
 	switch strings.ToLower(strings.TrimSpace(runtime)) {
 	case "vllm", "sglang", "llamacpp":
@@ -150,6 +185,9 @@ func applyGatewayDefaults(cfg *GatewayConfig) {
 	}
 	if cfg.RecordsStore.TimeoutMS <= 0 {
 		cfg.RecordsStore.TimeoutMS = 3000
+	}
+	if cfg.Transport.Type == "frp_tcp" && !cfg.Transport.FRP.leaseTTLSet {
+		cfg.Transport.FRP.LeaseTTLSeconds = 180
 	}
 }
 

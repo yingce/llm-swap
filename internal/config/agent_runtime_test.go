@@ -10,6 +10,90 @@ import (
 	"testing"
 )
 
+type fakeAgentIdentityProvider struct {
+	hostname    string
+	hostnameErr error
+	generated   string
+}
+
+func (p fakeAgentIdentityProvider) Hostname() (string, error) {
+	return p.hostname, p.hostnameErr
+}
+
+func (p fakeAgentIdentityProvider) NewID() (string, error) {
+	return p.generated, nil
+}
+
+func TestLoadAgentRuntimeUsesHostnameWithoutAdvertisedURL(t *testing.T) {
+	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "missing-agent.yaml"),
+		Args: []string{
+			"--tags", "gpu-4090",
+			"--gateway-url", "http://gateway",
+			"--token", "agent-token",
+		},
+		Identity: fakeAgentIdentityProvider{hostname: "worker-gpu0", generated: "unused"},
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+	if cfg.Agent.ID != "worker-gpu0" {
+		t.Fatalf("agent.id = %q, want hostname", cfg.Agent.ID)
+	}
+	if cfg.Agent.SwapURL != "" || cfg.Agent.LlamaSwapURL != "" {
+		t.Fatalf("advertised URLs = %q/%q, want empty", cfg.Agent.SwapURL, cfg.Agent.LlamaSwapURL)
+	}
+	if cfg.Agent.LlamaSwapToken != "" {
+		t.Fatalf("llama_swap_token = %q, want empty without legacy external URL", cfg.Agent.LlamaSwapToken)
+	}
+}
+
+func TestLoadAgentRuntimePersistsFallbackIdentity(t *testing.T) {
+	root := t.TempDir()
+	provider := fakeAgentIdentityProvider{
+		hostnameErr: errors.New("hostname unavailable"),
+		generated:   "7b2a9e8c-c760-4a5f-bb08-38adfd1e6496",
+	}
+	opts := AgentRuntimeOptions{
+		ConfigPath: filepath.Join(root, "missing-agent.yaml"),
+		Root:       root,
+		Args: []string{
+			"--tags", "gpu-4090",
+			"--gateway-url", "http://gateway",
+			"--token", "agent-token",
+		},
+		Identity: provider,
+	}
+
+	first, err := LoadAgentRuntime(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("first LoadAgentRuntime returned error: %v", err)
+	}
+	if first.Agent.ID != provider.generated {
+		t.Fatalf("first agent.id = %q, want generated fallback", first.Agent.ID)
+	}
+	identityPath := filepath.Join(root, "agent-id")
+	info, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("stat persisted identity: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("agent-id permissions = %04o, want 0600", info.Mode().Perm())
+	}
+
+	opts.Identity = fakeAgentIdentityProvider{
+		hostnameErr: errors.New("hostname unavailable"),
+		generated:   "must-not-replace-persisted-id",
+	}
+	second, err := LoadAgentRuntime(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("second LoadAgentRuntime returned error: %v", err)
+	}
+	if second.Agent.ID != provider.generated {
+		t.Fatalf("second agent.id = %q, want persisted fallback", second.Agent.ID)
+	}
+}
+
 func TestResolveSwapURLPrefersExplicitValue(t *testing.T) {
 	got, err := ResolveSwapURL(context.Background(), "http://custom:9000", 8081, func(context.Context) (string, bool) {
 		return "100.64.0.1", true
@@ -52,7 +136,7 @@ func TestResolveSwapURLFallsBackToLocalIP(t *testing.T) {
 	}
 }
 
-func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
+func TestLoadAgentRuntimeAppliesDefaultsWithoutDerivedSwapURL(t *testing.T) {
 	unsetEnv(t, "LLMSWAP_SWAP_URL")
 
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
@@ -82,14 +166,14 @@ func TestLoadAgentRuntimeAppliesOptDefaultsAndDerivedSwapURL(t *testing.T) {
 	if cfg.Agent.SwapPort != 6006 {
 		t.Fatalf("swap_port = %d, want 6006", cfg.Agent.SwapPort)
 	}
-	if cfg.Agent.LlamaSwapURL != "http://100.64.0.30:6006" {
-		t.Fatalf("llama_swap_url = %q, want derived tailscale URL", cfg.Agent.LlamaSwapURL)
+	if cfg.Agent.LlamaSwapURL != "" {
+		t.Fatalf("llama_swap_url = %q, want no derived external URL", cfg.Agent.LlamaSwapURL)
 	}
 	if len(cfg.Agent.Tags) != 2 || cfg.Agent.Tags[0] != "gpu-4090" || cfg.Agent.Tags[1] != "gpu-a100" {
 		t.Fatalf("tags = %v, want parsed CLI tags", cfg.Agent.Tags)
 	}
-	if cfg.Agent.LlamaSwapToken != "agent-token" {
-		t.Fatalf("llama_swap_token = %q, want inherited agent token", cfg.Agent.LlamaSwapToken)
+	if cfg.Agent.LlamaSwapToken != "" {
+		t.Fatalf("llama_swap_token = %q, want no static token in FRP mode", cfg.Agent.LlamaSwapToken)
 	}
 }
 

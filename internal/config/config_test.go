@@ -22,6 +22,82 @@ func TestLoadGatewayAcceptsModelDirectoryAndAlias(t *testing.T) {
 	}
 }
 
+func TestLoadGatewayTransportFRPTCPValidation(t *testing.T) {
+	validTransport := `
+transport:
+  type: frp_tcp
+  frp:
+    server_addr: frps.example.invalid
+    server_port: 7000
+    auth_token: transport-token
+    port_start: 2000
+    port_end: 2007
+    lease_ttl_seconds: 180
+`
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "valid", raw: validTransport},
+		{name: "missing address", raw: strings.Replace(validTransport, "    server_addr: frps.example.invalid\n", "", 1), want: "transport.frp.server_addr"},
+		{name: "missing auth token", raw: strings.Replace(validTransport, "    auth_token: transport-token\n", "", 1), want: "transport.frp.auth_token"},
+		{name: "invalid frps port", raw: strings.Replace(validTransport, "    server_port: 7000", "    server_port: 0", 1), want: "transport.frp.server_port"},
+		{name: "reversed port range", raw: strings.Replace(validTransport, "    port_end: 2007", "    port_end: 1999", 1), want: "transport.frp.port_start"},
+		{name: "out of range port", raw: strings.Replace(validTransport, "    port_start: 2000", "    port_start: 65536", 1), want: "transport.frp.port_start"},
+		{name: "zero ttl", raw: strings.Replace(validTransport, "    lease_ttl_seconds: 180", "    lease_ttl_seconds: 0", 1), want: "transport.frp.lease_ttl_seconds"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadGateway(strings.NewReader(validGatewayYAML(tt.raw)))
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("LoadGateway returned error: %v", err)
+				}
+				if cfg.Transport.Type != "frp_tcp" {
+					t.Fatalf("transport.type = %q, want frp_tcp", cfg.Transport.Type)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadGatewayAcceptsLegacyConfigWithoutTransport(t *testing.T) {
+	cfg, err := LoadGateway(strings.NewReader(validGatewayYAML("")))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if cfg.Transport.Type != "" {
+		t.Fatalf("transport.type = %q, want empty legacy mode", cfg.Transport.Type)
+	}
+}
+
+func TestLoadGatewayDefaultsFRPTCPLeaseTTLWhenOmitted(t *testing.T) {
+	raw := `
+transport:
+  type: frp_tcp
+  frp:
+    server_addr: frps.example.invalid
+    server_port: 7000
+    auth_token: transport-token
+    port_start: 2000
+    port_end: 2007
+`
+	cfg, err := LoadGateway(strings.NewReader(validGatewayYAML(raw)))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	if cfg.Transport.FRP.LeaseTTLSeconds != 180 {
+		t.Fatalf("lease_ttl_seconds = %d, want 180", cfg.Transport.FRP.LeaseTTLSeconds)
+	}
+}
+
 func TestLoadGatewayRejectsInvalidModelIdentity(t *testing.T) {
 	tests := []struct {
 		name string
@@ -599,8 +675,8 @@ agent:
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "swap_url") {
-		t.Fatalf("error = %v, want swap_url", err)
+	if !strings.Contains(err.Error(), "agent.token") {
+		t.Fatalf("error = %v, want agent.token", err)
 	}
 }
 
@@ -670,5 +746,27 @@ agent:
 	}
 	if cfg.Agent.LlamaSwapToken != "agent-token" {
 		t.Fatalf("agent.llama_swap_token = %q, want inherited agent token", cfg.Agent.LlamaSwapToken)
+	}
+}
+
+func TestLoadAgentWithoutExternalURLDoesNotDefaultLlamaSwapToken(t *testing.T) {
+	raw := `
+agent:
+  id: gpu-01
+  tags: [gpu-4090]
+  model_root: /data/models
+  llama_swap_config: /etc/llama-swap/config.yaml
+  gateway_url: http://gateway
+  token: agent-token
+`
+	cfg, err := LoadAgent(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadAgent returned error: %v", err)
+	}
+	if cfg.Agent.LlamaSwapURL != "" {
+		t.Fatalf("agent.llama_swap_url = %q, want empty", cfg.Agent.LlamaSwapURL)
+	}
+	if cfg.Agent.LlamaSwapToken != "" {
+		t.Fatalf("agent.llama_swap_token = %q, want empty without legacy URL", cfg.Agent.LlamaSwapToken)
 	}
 }

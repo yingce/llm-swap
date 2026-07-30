@@ -3,12 +3,14 @@ package config
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -25,10 +27,36 @@ const DefaultSwapPort = 6006
 var ErrHelpRequested = errors.New("help requested")
 
 type AgentRuntimeOptions struct {
-	ConfigPath  string
-	Args        []string
+	ConfigPath string
+	Args       []string
+	Root       string
+	Identity   AgentIdentityProvider
+	// TailscaleIP and LocalIP are retained for callers of ResolveSwapURL. Agent
+	// runtime loading no longer derives an advertised worker URL from either.
 	TailscaleIP func(context.Context) (string, bool)
 	LocalIP     func() (string, error)
+}
+
+type AgentIdentityProvider interface {
+	Hostname() (string, error)
+	NewID() (string, error)
+}
+
+type defaultAgentIdentityProvider struct{}
+
+func (defaultAgentIdentityProvider) Hostname() (string, error) {
+	return os.Hostname()
+}
+
+func (defaultAgentIdentityProvider) NewID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	value[6] = value[6]&0x0f | 0x40
+	value[8] = value[8]&0x3f | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
 }
 
 func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfig, error) {
@@ -38,9 +66,10 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	v := viper.New()
 	v.SetConfigType("yaml")
 
+	root := firstNonEmpty(opts.Root, os.Getenv("LLMSWAP_ROOT"), DefaultAgentRoot)
 	configDefault := opts.ConfigPath
 	if configDefault == "" {
-		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
+		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_AGENT_CONFIG"), filepath.Join(root, "agent.yaml"))
 	}
 	flags := newAgentRuntimeFlagSet(configDefault, io.Discard)
 	if err := flags.Parse(opts.Args); err != nil {
@@ -89,8 +118,8 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	cfg := AgentConfig{}
 	cfg.Agent.ID = configString(v, "id", "")
 	cfg.Agent.Tags = configTags(v)
-	cfg.Agent.ModelRoot = configString(v, "model_root", DefaultModelRoot)
-	cfg.Agent.LlamaSwapConfig = configString(v, "llama_swap_config", DefaultLlamaSwapConfig)
+	cfg.Agent.ModelRoot = configString(v, "model_root", filepath.Join(root, "models"))
+	cfg.Agent.LlamaSwapConfig = configString(v, "llama_swap_config", filepath.Join(root, "llama-swap.yaml"))
 	cfg.Agent.LlamaSwapService = configString(v, "llama_swap_service", "")
 	cfg.Agent.RestartCommand = configString(v, "restart_command", "")
 	cfg.Agent.SwapURL = firstNonEmpty(configString(v, "swap_url", ""), configString(v, "llama_swap_url", ""))
@@ -98,24 +127,20 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	cfg.Agent.GatewayURL = configString(v, "gateway_url", "")
 	cfg.Agent.Token = configString(v, "token", "")
 	cfg.Agent.LlamaSwapToken = configString(v, "llama_swap_token", "")
-	if cfg.Agent.LlamaSwapToken == "" {
+	if cfg.Agent.LlamaSwapToken == "" && cfg.Agent.SwapURL != "" {
 		cfg.Agent.LlamaSwapToken = cfg.Agent.Token
 	}
+	cfg.Agent.LlamaSwapURL = cfg.Agent.SwapURL
 
-	tailscaleIP := opts.TailscaleIP
-	if tailscaleIP == nil {
-		tailscaleIP = DefaultTailscaleIP
+	identity := opts.Identity
+	if identity == nil {
+		identity = defaultAgentIdentityProvider{}
 	}
-	localIP := opts.LocalIP
-	if localIP == nil {
-		localIP = DefaultLocalIP
-	}
-	swapURL, err := ResolveSwapURL(ctx, cfg.Agent.SwapURL, cfg.Agent.SwapPort, tailscaleIP, localIP)
+	agentID, err := resolveAgentID(root, cfg.Agent.ID, identity)
 	if err != nil {
 		return cfg, err
 	}
-	cfg.Agent.SwapURL = swapURL
-	cfg.Agent.LlamaSwapURL = swapURL
+	cfg.Agent.ID = agentID
 
 	if err := validateAgentRuntime(cfg); err != nil {
 		return cfg, err
@@ -123,10 +148,51 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	return cfg, nil
 }
 
+func resolveAgentID(root, configuredID string, provider AgentIdentityProvider) (string, error) {
+	if id := strings.TrimSpace(configuredID); id != "" {
+		return id, nil
+	}
+	if hostname, err := provider.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		return strings.TrimSpace(hostname), nil
+	}
+
+	path := filepath.Join(root, "agent-id")
+	if existing, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(existing)); id != "" {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return "", err
+			}
+			return id, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	id, err := provider.NewID()
+	if err != nil {
+		return "", err
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("agent identity provider generated an empty ID")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 func AgentRuntimeUsage(opts AgentRuntimeOptions) string {
+	root := firstNonEmpty(opts.Root, os.Getenv("LLMSWAP_ROOT"), DefaultAgentRoot)
 	configDefault := opts.ConfigPath
 	if configDefault == "" {
-		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_AGENT_CONFIG"), DefaultAgentConfigPath)
+		configDefault = firstNonEmpty(os.Getenv("LLMSWAP_AGENT_CONFIG"), filepath.Join(root, "agent.yaml"))
 	}
 	var out bytes.Buffer
 	flags := newAgentRuntimeFlagSet(configDefault, &out)
@@ -144,7 +210,7 @@ func newAgentRuntimeFlagSet(configDefault string, output io.Writer) *pflag.FlagS
 	flags.String("llama-swap-config", "", "rendered llama-swap config path")
 	flags.String("llama-swap-service", "", "llama-swap system service")
 	flags.String("restart-command", "", "restart shell command")
-	flags.String("swap-url", "", "public llama-swap URL advertised to gateway")
+	flags.String("swap-url", "", "legacy public llama-swap URL advertised to gateway")
 	flags.String("llama-swap-url", "", "deprecated alias for swap-url")
 	flags.Int("swap-port", 0, "llama-swap port used when swap-url is omitted")
 	flags.String("gateway-url", "", "gateway URL")
@@ -336,8 +402,8 @@ func validateAgentRuntime(cfg AgentConfig) error {
 	if len(cfg.Agent.Tags) == 0 {
 		return fmt.Errorf("agent.tags is required")
 	}
-	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.LlamaSwapURL == "" || cfg.Agent.GatewayURL == "" {
-		return fmt.Errorf("agent model_root, llama_swap_config, swap_url, and gateway_url are required")
+	if cfg.Agent.ModelRoot == "" || cfg.Agent.LlamaSwapConfig == "" || cfg.Agent.GatewayURL == "" {
+		return fmt.Errorf("agent model_root, llama_swap_config, and gateway_url are required")
 	}
 	if cfg.Agent.Token == "" {
 		return fmt.Errorf("agent.token is required")

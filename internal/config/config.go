@@ -4,6 +4,7 @@ import "gopkg.in/yaml.v3"
 
 type GatewayConfig struct {
 	Gateway      GatewaySettings      `yaml:"gateway" json:"gateway"`
+	Transport    TransportConfig      `yaml:"transport" json:"transport"`
 	OSS          OSSConfig            `yaml:"oss" json:"oss"`
 	Tokens       TokenConfig          `yaml:"tokens" json:"tokens"`
 	MetricsStore MetricsStoreConfig   `yaml:"metrics_store" json:"metrics_store"`
@@ -11,6 +12,32 @@ type GatewayConfig struct {
 	Models       map[string]Model     `yaml:"models" json:"models"`
 	ModelAliases map[string]string    `yaml:"model_aliases" json:"model_aliases"`
 	TagPolicies  map[string]TagPolicy `yaml:"tag_policies" json:"tag_policies"`
+}
+
+type TransportConfig struct {
+	Type string       `yaml:"type" json:"type"`
+	FRP  FRPTCPConfig `yaml:"frp" json:"frp"`
+}
+
+type FRPTCPConfig struct {
+	ServerAddr      string `yaml:"server_addr" json:"server_addr"`
+	ServerPort      int    `yaml:"server_port" json:"server_port"`
+	AuthToken       string `yaml:"auth_token" json:"auth_token"`
+	PortStart       int    `yaml:"port_start" json:"port_start"`
+	PortEnd         int    `yaml:"port_end" json:"port_end"`
+	LeaseTTLSeconds int    `yaml:"lease_ttl_seconds" json:"lease_ttl_seconds"`
+	leaseTTLSet     bool
+}
+
+func (c *FRPTCPConfig) UnmarshalYAML(value *yaml.Node) error {
+	type rawFRPTCPConfig FRPTCPConfig
+	var raw rawFRPTCPConfig
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*c = FRPTCPConfig(raw)
+	c.leaseTTLSet = yamlMappingHasKey(value, "lease_ttl_seconds")
+	return nil
 }
 
 type GatewaySettings struct {
