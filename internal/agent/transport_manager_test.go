@@ -17,6 +17,8 @@ import (
 	transportcrypto "llm-swap/internal/transport"
 )
 
+func prepareTransportForTest(context.Context, string) error { return nil }
+
 func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *testing.T) {
 	const (
 		agentID    = "worker-gpu0"
@@ -49,6 +51,7 @@ func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *tes
 		SwapPort: 6006, Gateway: gateway, Factory: factory,
 		PollInterval: time.Hour, RetryMin: time.Millisecond, RetryMax: time.Millisecond,
 		ReleaseTimeout: time.Second,
+		Prepare:        prepareTransportForTest,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,13 +90,60 @@ func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *tes
 	}
 }
 
+func TestTransportManagerDoesNotAcquireLeaseUntilLocalLlamaSwapTokenIsPrepared(t *testing.T) {
+	const agentID, agentToken = "worker-gpu0", "agent-secret"
+	gateway := newTransportGatewayFake(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "lease-7", Slot: 3, RemotePort: 2003, Generation: 7})
+	client := newFRPClientFake()
+	prepareStarted := make(chan string, 1)
+	allowPrepared := make(chan struct{})
+	manager := &TransportManager{
+		AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
+		Gateway: gateway, Factory: newTransportFactoryFake(client),
+		Prepare: func(ctx context.Context, llamaSwapToken string) error {
+			prepareStarted <- llamaSwapToken
+			select {
+			case <-allowPrepared:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+
+	receiveWithTimeout(t, gateway.configCalls)
+	if token := receiveWithTimeout(t, prepareStarted); token != "llama-secret" {
+		t.Fatalf("prepared llama-swap token = %q, want bootstrap token", token)
+	}
+	select {
+	case request := <-gateway.acquireCalls:
+		t.Fatalf("lease acquired before local token preparation completed: %+v", request)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if snapshot := manager.Snapshot(); !snapshot.ModeResolved || !snapshot.Managed || snapshot.Ready {
+		t.Fatalf("state before local token preparation = %+v, want managed not ready", snapshot)
+	}
+
+	close(allowPrepared)
+	receiveWithTimeout(t, gateway.acquireCalls)
+	client.ready <- nil
+	eventually(t, func() bool { return manager.Snapshot().Ready })
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
 func TestTransportManagerResolvesLegacyModeWithoutLeaseOrFRPClient(t *testing.T) {
 	gateway := newTransportGatewayFake(protocol.AgentConfigResponse{})
 	waiter := newManualTransportWaiter()
 	factory := newTransportFactoryFake()
 	manager := &TransportManager{
 		AgentID: "worker-gpu0", AgentToken: "agent-secret", SwapPort: 6006,
-		Gateway: gateway, Factory: factory, PollInterval: time.Second, Wait: waiter.Wait,
+		Gateway: gateway, Factory: factory, PollInterval: time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -147,7 +197,7 @@ func TestTransportManagerSwitchesFromResolvedLegacyToManagedFRP(t *testing.T) {
 	factory := newTransportFactoryFake(client)
 	manager := &TransportManager{
 		AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
-		Gateway: gateway, Factory: factory, PollInterval: time.Second, Wait: waiter.Wait, ReleaseTimeout: time.Second,
+		Gateway: gateway, Factory: factory, PollInterval: time.Second, Wait: waiter.Wait, ReleaseTimeout: time.Second, Prepare: prepareTransportForTest,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -285,7 +335,8 @@ func TestTransportManagerNonCooperativeStartupFailureParksWithoutRetryOrRelease(
 	manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
 		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second,
 		ShutdownTimeout: 10 * time.Millisecond, ReleaseTimeout: time.Second, Wait: waiter.Wait,
-		Logf: func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) }}
+		Prepare: prepareTransportForTest,
+		Logf:    func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) }}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- manager.Run(ctx) }()
@@ -349,7 +400,7 @@ func TestTransportManagerReadinessFailureReplacesAndExcludesSuspectLease(t *test
 	waiter := newManualTransportWaiter()
 	manager := &TransportManager{AgentID: agentID, Tags: []string{"gpu-4090"}, AgentToken: agentToken, SwapPort: 6006,
 		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, PollInterval: time.Hour,
-		ReleaseTimeout: time.Second, Wait: waiter.Wait}
+		ReleaseTimeout: time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- manager.Run(ctx) }()
@@ -411,7 +462,7 @@ func TestTransportManagerBootstrapUnavailableReleasesAndRefetchesFreshConfig(t *
 			waiter := newManualTransportWaiter()
 			manager := &TransportManager{AgentID: agentID, Tags: []string{"gpu-4090"}, AgentToken: agentToken, SwapPort: 6006,
 				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, PollInterval: time.Hour,
-				ReleaseTimeout: time.Second, Wait: waiter.Wait}
+				ReleaseTimeout: time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest}
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() { done <- manager.Run(ctx) }()
@@ -489,7 +540,7 @@ func TestTransportManagerCancellationAfterClientFailureReleasesExactLease(t *tes
 			client := newFRPClientFake()
 			factory := newTransportFactoryFake(client)
 			manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
-				Gateway: gateway, Factory: factory, RetryMin: time.Hour, ReleaseTimeout: time.Second}
+				Gateway: gateway, Factory: factory, RetryMin: time.Hour, ReleaseTimeout: time.Second, Prepare: prepareTransportForTest}
 			ctx, cancel := context.WithCancel(context.Background())
 			client.closeHook = cancel
 			done := make(chan error, 1)
@@ -670,7 +721,7 @@ func TestTransportManagerTamperedOrWrongTokenStaysNotReadyWithoutLeakingSecrets(
 			var logs []string
 			manager := &TransportManager{AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, AgentToken: test.token,
 				SwapPort: 6006, Gateway: gateway, Factory: newTransportFactoryFake(), RetryMin: time.Second,
-				RetryMax: time.Second, Wait: waiter.Wait, Logf: func(format string, args ...any) {
+				RetryMax: time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest, Logf: func(format string, args ...any) {
 					mu.Lock()
 					logs = append(logs, fmt.Sprintf(format, args...))
 					mu.Unlock()
@@ -729,7 +780,7 @@ func TestTransportManagerRejectsMalformedBootstrapBeforeLeaseOrClient(t *testing
 			var mu sync.Mutex
 			var logs []string
 			manager := &TransportManager{AgentID: "worker-gpu0", AgentToken: "agent-secret", SwapPort: 6006,
-				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait,
+				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest,
 				Logf: func(format string, args ...any) {
 					mu.Lock()
 					logs = append(logs, fmt.Sprintf(format, args...))
@@ -776,7 +827,7 @@ func TestTransportManagerRejectsMalformedLeaseWithoutClientPublishOrRelease(t *t
 			var mu sync.Mutex
 			var logs []string
 			manager := &TransportManager{AgentID: "worker-gpu0", AgentToken: "agent-secret", SwapPort: 6006,
-				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait,
+				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest,
 				Logf: func(format string, args ...any) {
 					mu.Lock()
 					logs = append(logs, fmt.Sprintf(format, args...))
@@ -814,7 +865,7 @@ func TestTransportManagerMalformedReplacementKeepsKnownLeaseAndReleasesItOnShutd
 	factory := newTransportFactoryFake(client)
 	waiter := newManualTransportWaiter()
 	manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
-		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait, ReleaseTimeout: time.Second}
+		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, Wait: waiter.Wait, ReleaseTimeout: time.Second, Prepare: prepareTransportForTest}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- manager.Run(ctx) }()
@@ -859,7 +910,7 @@ func TestTransportManagerLeaseRetryBackoffIsBounded(t *testing.T) {
 	gateway.leaseErrs = []error{errors.New("capacity"), errors.New("capacity"), errors.New("capacity"), errors.New("capacity")}
 	waiter := newManualTransportWaiter()
 	manager := &TransportManager{AgentID: agentID, AgentToken: agentToken, SwapPort: 6006,
-		Gateway: gateway, Factory: newTransportFactoryFake(), RetryMin: time.Second, RetryMax: 4 * time.Second, Wait: waiter.Wait}
+		Gateway: gateway, Factory: newTransportFactoryFake(), RetryMin: time.Second, RetryMax: 4 * time.Second, Wait: waiter.Wait, Prepare: prepareTransportForTest}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -924,6 +975,44 @@ func TestTransportManagerSnapshotIsSafeDuringFatalReplacement(t *testing.T) {
 	readers.Wait()
 }
 
+func TestTransportManagerInvalidatedActiveLeaseClosesAndReacquiresWithoutStaleReplacement(t *testing.T) {
+	manager, gateway, factory, first, _, cancel, done := startReadyTransportManager(t, "frps.example.test", 7)
+	second := newFRPClientFake()
+	factory.addClient(second)
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "lease-new", Slot: 4, RemotePort: 2004, Generation: 7})
+
+	manager.InvalidateTransportLease("lease-7", 7)
+	receiveWithTimeout(t, first.closed)
+	release := receiveWithTimeout(t, gateway.releaseCalls)
+	if release.LeaseID != "lease-7" || release.Generation != 7 {
+		t.Fatalf("invalidated lease release = %+v, want exact old lease", release)
+	}
+	receiveWithTimeout(t, gateway.configCalls)
+	acquire := receiveWithTimeout(t, gateway.acquireCalls)
+	if acquire.LeaseID != "" || len(acquire.ExcludeSlots) != 0 || acquire.Generation != 7 {
+		t.Fatalf("reacquire request = %+v, want fresh same-generation lease without stale replacement", acquire)
+	}
+	receiveWithTimeout(t, factory.created)
+	second.ready <- nil
+	eventually(t, func() bool {
+		snapshot := manager.Snapshot()
+		return snapshot.Ready && snapshot.LeaseID == "lease-new" && snapshot.LlamaSwapURL == "http://frps.example.test:2004"
+	})
+	cancel()
+	if err := receiveWithTimeout(t, done); err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestTransportManagerStaleInvalidationCannotOverwritePendingActiveLeaseInvalidation(t *testing.T) {
+	manager := &TransportManager{}
+	manager.InvalidateTransportLease("active-lease", 7)
+	manager.InvalidateTransportLease("stale-lease", 6)
+	if !manager.takeInvalidationFor(transportLeaseIdentity{leaseID: "active-lease", generation: 7}) {
+		t.Fatal("stale invalidation overwrote the pending active lease invalidation")
+	}
+}
+
 func startReadyTransportManager(t *testing.T, serverAddr string, generation uint64) (*TransportManager, *transportGatewayFake, *transportFactoryFake, *frpClientFake, *manualTransportWaiter, context.CancelFunc, <-chan error) {
 	t.Helper()
 	const agentToken = "agent-secret"
@@ -937,6 +1026,7 @@ func startReadyTransportManager(t *testing.T, serverAddr string, generation uint
 		AgentID: agentID, Tags: []string{"gpu-4090"}, AgentToken: agentToken, SwapPort: 6006,
 		Gateway: gateway, Factory: factory, PollInterval: time.Minute,
 		RetryMin: time.Second, RetryMax: time.Second, ReleaseTimeout: time.Second, Wait: waiter.Wait,
+		Prepare: func(context.Context, string) error { return nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -26,6 +26,8 @@ const ReconcileInterval = 3 * time.Second
 const agentEventBufferLimit = 256
 const agentEventHeartbeatLimit = 64
 
+var errLlamaSwapTokenNotEnforced = errors.New("llama-swap running endpoint did not enforce api key")
+
 type GatewayClient interface {
 	GetConfigContext(context.Context, []string) (protocol.AgentConfigResponse, error)
 	HeartbeatContext(context.Context, protocol.HeartbeatRequest) (protocol.HeartbeatResponse, error)
@@ -37,6 +39,10 @@ type identityAwareConfigClient interface {
 
 type TransportState interface {
 	Snapshot() RuntimeTransportSnapshot
+}
+
+type transportLeaseInvalidator interface {
+	InvalidateTransportLease(string, uint64)
 }
 
 type tokenAwareRunningModelsClient interface {
@@ -64,12 +70,135 @@ type Reconciler struct {
 	RunInterval     time.Duration
 
 	needsRestart       bool
+	cycleMu            sync.Mutex
 	eventMu            sync.Mutex
 	events             []protocol.AgentEvent
 	runningMu          sync.Mutex
 	lastRunning        map[string]string
 	transportMu        sync.Mutex
 	lastTransportState string
+}
+
+// PrepareManagedTransport applies the gateway-provided llama-swap credential
+// locally before an FRP listener can be registered. The authenticated running
+// state endpoint must reject a distinct probe token and accept the exact token,
+// proving that the watched credential config is active.
+func (r *Reconciler) PrepareManagedTransport(ctx context.Context, llamaSwapToken string) error {
+	r.cycleMu.Lock()
+	defer r.cycleMu.Unlock()
+	if strings.TrimSpace(llamaSwapToken) == "" {
+		return errors.New("managed llama-swap token is required")
+	}
+	verifier, ok := r.RunningModels.(tokenAwareRunningModelsClient)
+	if !ok {
+		return errors.New("token-authenticated llama-swap verifier is required")
+	}
+	content, err := llamaSwapConfigWithAPIKey(r.LlamaSwapConfig, r.ModelRoot, llamaSwapToken)
+	if err != nil {
+		return errors.New("prepare llama-swap credential config")
+	}
+	if _, err := writeConfigIfChangedWithoutMarkingPending(r.LlamaSwapConfig, content); err != nil {
+		return errors.New("prepare llama-swap credential config")
+	}
+	verificationErr := verifyLlamaSwapTokenEnforcement(ctx, verifier, llamaSwapToken)
+	if verificationErr == nil {
+		return nil
+	}
+	if errors.Is(verificationErr, errLlamaSwapTokenNotEnforced) {
+		return errors.New("llama-swap credential enforcement unavailable")
+	}
+
+	cfg, err := r.getConfigContext(ctx)
+	if err != nil {
+		return errors.New("managed transport restart authorization unavailable")
+	}
+	hb := BuildHeartbeat(r.AgentID, r.Tags, "", cfg, true)
+	response, err := r.Gateway.HeartbeatContext(ctx, hb)
+	if err != nil {
+		return errors.New("managed transport restart authorization unavailable")
+	}
+	if !response.RestartAllowed {
+		return errors.New("managed transport restart not authorized")
+	}
+	if err := r.restart(ctx); err != nil {
+		return errors.New("authorized managed transport restart failed")
+	}
+	if err := verifyLlamaSwapTokenEnforcement(ctx, verifier, llamaSwapToken); err != nil {
+		return errors.New("verify authorized managed transport restart")
+	}
+	return nil
+}
+
+func verifyLlamaSwapTokenEnforcement(ctx context.Context, verifier tokenAwareRunningModelsClient, token string) error {
+	probe := "llmswap-intentionally-invalid-token"
+	if probe == token {
+		probe += "-probe"
+	}
+	if _, err := verifier.RunningModelsContextWithToken(ctx, probe); err == nil {
+		return errLlamaSwapTokenNotEnforced
+	}
+	if _, err := verifier.RunningModelsContextWithToken(ctx, token); err != nil {
+		return errors.New("llama-swap running endpoint rejected configured api key")
+	}
+	return nil
+}
+
+func llamaSwapConfigWithAPIKey(configPath, modelRoot, token string) ([]byte, error) {
+	content, err := os.ReadFile(configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return RenderLlamaSwapConfig(protocol.AgentConfigResponse{}, modelRoot, token)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("invalid llama-swap config")
+	}
+	root := document.Content[0]
+	key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "apiKeys"}
+	value := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: token}}}
+	allowed := map[string]bool{
+		"healthCheckTimeout": true, "startPort": true, "globalTTL": true,
+		"performance": true, "models": true,
+	}
+	seen := make(map[string]bool, len(allowed))
+	filtered := make([]*yaml.Node, 0, len(root.Content)+2)
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		name := root.Content[index].Value
+		if name == "apiKeys" {
+			continue
+		}
+		if !allowed[name] {
+			continue
+		}
+		if seen[name] || yamlNodeContainsAlias(root.Content[index+1]) {
+			return nil, errors.New("invalid llama-swap config")
+		}
+		seen[name] = true
+		filtered = append(filtered, root.Content[index], root.Content[index+1])
+	}
+	filtered = append(filtered, key, value)
+	root.Content = filtered
+	return yaml.Marshal(&document)
+}
+
+func yamlNodeContainsAlias(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.AliasNode || node.Alias != nil {
+		return true
+	}
+	for _, child := range node.Content {
+		if yamlNodeContainsAlias(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -134,6 +263,8 @@ func artifactKey(modelName string, modelDirName string, artifactObject string, a
 }
 
 func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*artifactInstallState, installDone chan artifactInstallResult) (protocol.HeartbeatResponse, error) {
+	r.cycleMu.Lock()
+	defer r.cycleMu.Unlock()
 	if r.Gateway == nil {
 		return protocol.HeartbeatResponse{}, fmt.Errorf("agent gateway client is required")
 	}
@@ -209,6 +340,7 @@ func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*
 
 	resp, err := r.Gateway.HeartbeatContext(ctx, hb)
 	if err != nil {
+		r.invalidateTransportLeaseOnHeartbeatConflict(err, transport)
 		return resp, errors.Join(reconcileErr, err)
 	}
 	r.dropReportedEvents(len(hb.Events))
@@ -481,6 +613,8 @@ func (r *Reconciler) buildHeartbeatForTransport(transport reconcileTransportSnap
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse, error) {
+	r.cycleMu.Lock()
+	defer r.cycleMu.Unlock()
 	if r.Gateway == nil {
 		return protocol.HeartbeatResponse{}, fmt.Errorf("agent gateway client is required")
 	}
@@ -552,6 +686,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 
 	resp, err := r.Gateway.HeartbeatContext(ctx, hb)
 	if err != nil {
+		r.invalidateTransportLeaseOnHeartbeatConflict(err, transport)
 		return resp, errors.Join(reconcileErr, err)
 	}
 	r.dropReportedEvents(len(hb.Events))
@@ -575,6 +710,16 @@ func (r *Reconciler) Reconcile(ctx context.Context) (protocol.HeartbeatResponse,
 	}
 
 	return resp, reconcileErr
+}
+
+func (r *Reconciler) invalidateTransportLeaseOnHeartbeatConflict(err error, transport reconcileTransportSnapshot) {
+	var conflict *HeartbeatTransportLeaseConflictError
+	if !errors.As(err, &conflict) || transport.leaseID == "" || transport.generation == 0 {
+		return
+	}
+	if invalidator, ok := r.TransportState.(transportLeaseInvalidator); ok {
+		invalidator.InvalidateTransportLease(transport.leaseID, transport.generation)
+	}
 }
 
 func (r *Reconciler) getConfigContext(ctx context.Context) (protocol.AgentConfigResponse, error) {
@@ -788,7 +933,7 @@ func WriteConfigIfChanged(path string, content []byte, service Service) (bool, e
 		_ = tmp.Close()
 		return false, err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return false, err
 	}
@@ -836,7 +981,7 @@ func writeConfigIfChangedAndMarkPending(path string, content []byte, markPending
 		_ = tmp.Close()
 		return false, err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return false, err
 	}
@@ -1055,7 +1200,7 @@ func writeConfigIfChangedWithoutMarkingPending(path string, content []byte) (boo
 		_ = tmp.Close()
 		return false, err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return false, err
 	}

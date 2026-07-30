@@ -12,6 +12,15 @@ import (
 	"llm-swap/internal/protocol"
 )
 
+// HeartbeatTransportLeaseConflictError is returned only when the gateway
+// rejects the lease identity carried by a heartbeat. It intentionally carries
+// no response body or request values because both may contain credentials.
+type HeartbeatTransportLeaseConflictError struct{}
+
+func (*HeartbeatTransportLeaseConflictError) Error() string {
+	return "agent heartbeat transport lease conflict"
+}
+
 type ConfigClient struct {
 	BaseURL string
 	Token   string
@@ -124,6 +133,9 @@ func (c ConfigClient) HeartbeatContext(ctx context.Context, hb protocol.Heartbea
 		return protocol.HeartbeatResponse{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return protocol.HeartbeatResponse{}, &HeartbeatTransportLeaseConflictError{}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return protocol.HeartbeatResponse{}, fmt.Errorf("agent heartbeat returned HTTP %d", resp.StatusCode)
 	}

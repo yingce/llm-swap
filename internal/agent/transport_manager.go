@@ -58,6 +58,7 @@ type TransportManager struct {
 	SwapPort   int
 	Gateway    TransportGateway
 	Factory    FRPClientFactory
+	Prepare    func(context.Context, string) error
 
 	PollInterval    time.Duration
 	RetryMin        time.Duration
@@ -68,7 +69,16 @@ type TransportManager struct {
 	Now             func() time.Time
 	Logf            func(string, ...any)
 
-	state RuntimeTransportState
+	state            RuntimeTransportState
+	invalidationOnce sync.Once
+	invalidationMu   sync.Mutex
+	invalidations    map[transportLeaseIdentity]struct{}
+	invalidationCh   chan struct{}
+}
+
+type transportLeaseIdentity struct {
+	leaseID    string
+	generation uint64
 }
 
 func (m *TransportManager) Snapshot() RuntimeTransportSnapshot {
@@ -129,6 +139,22 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				continue
 			}
 			m.publishManagedNotReady()
+			if m.Prepare == nil {
+				m.log("local llama-swap transport preparation unavailable")
+				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
+					return nil
+				}
+				retryDelay = m.nextRetry(retryDelay)
+				continue
+			}
+			if err := m.Prepare(ctx, desired.bootstrap.LlamaSwapToken); err != nil {
+				m.log("local llama-swap transport preparation unavailable")
+				if !m.waitRetryWithReplacement(ctx, retryDelay, replacement) {
+					return nil
+				}
+				retryDelay = m.nextRetry(retryDelay)
+				continue
+			}
 			if replacement != nil && replacement.generation != desired.generation {
 				m.releaseReplacement(replacement)
 				replacement = nil
@@ -224,6 +250,20 @@ func (m *TransportManager) Run(ctx context.Context) error {
 				return nil
 			}
 			retryDelay = m.nextRetry(retryDelay)
+		case <-m.invalidationSignal():
+			cancelCycle()
+			if !m.takeInvalidationFor(transportLeaseIdentity{leaseID: active.lease.LeaseID, generation: active.lease.Generation}) {
+				continue
+			}
+			lease := active.lease
+			if !m.stopClient(active) {
+				return m.parkUnconverged(ctx)
+			}
+			m.releaseLease(lease)
+			active = nil
+			replacement = nil
+			retryDelay = m.retryMin()
+			m.publishManagedNotReady()
 		case err := <-pollDone:
 			cancelCycle()
 			if err != nil {
@@ -265,6 +305,40 @@ func (m *TransportManager) Run(ctx context.Context) error {
 			m.publishManagedNotReady()
 		}
 	}
+}
+
+// InvalidateTransportLease asks the manager to abandon one exact active lease.
+// It is safe to call from the reconcile heartbeat goroutine and never blocks it.
+func (m *TransportManager) InvalidateTransportLease(leaseID string, generation uint64) {
+	if strings.TrimSpace(leaseID) == "" || generation == 0 {
+		return
+	}
+	m.invalidationSignal()
+	m.invalidationMu.Lock()
+	if m.invalidations == nil {
+		m.invalidations = make(map[transportLeaseIdentity]struct{})
+	}
+	m.invalidations[transportLeaseIdentity{leaseID: leaseID, generation: generation}] = struct{}{}
+	m.invalidationMu.Unlock()
+	select {
+	case m.invalidationCh <- struct{}{}:
+	default:
+	}
+}
+
+func (m *TransportManager) invalidationSignal() <-chan struct{} {
+	m.invalidationOnce.Do(func() { m.invalidationCh = make(chan struct{}, 1) })
+	return m.invalidationCh
+}
+
+func (m *TransportManager) takeInvalidationFor(active transportLeaseIdentity) bool {
+	m.invalidationMu.Lock()
+	defer m.invalidationMu.Unlock()
+	_, found := m.invalidations[active]
+	// Signals are tied to the lease active at the time of a heartbeat. Once the
+	// manager examines its current lease, all other pending identities are stale.
+	m.invalidations = nil
+	return found
 }
 
 type desiredTransport struct {

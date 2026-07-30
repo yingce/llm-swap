@@ -2198,6 +2198,28 @@ func TestConfigClientHeartbeatSuccess(t *testing.T) {
 	}
 }
 
+func TestConfigClientHeartbeatConflictReturnsTypedSecretFreeError(t *testing.T) {
+	const responseSecret = "lease-secret-must-not-escape"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "transport lease conflict: "+responseSecret, http.StatusConflict)
+	}))
+	defer srv.Close()
+
+	_, err := (ConfigClient{BaseURL: srv.URL, Token: "agent-token", HTTP: srv.Client()}).Heartbeat(
+		protocol.HeartbeatRequest{AgentID: "gpu-01", TransportLeaseID: "lease-7", TransportGeneration: 7},
+	)
+	if err == nil {
+		t.Fatal("Heartbeat returned nil error for lease conflict")
+	}
+	var conflict *HeartbeatTransportLeaseConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("heartbeat error type = %T, want *HeartbeatTransportLeaseConflictError", err)
+	}
+	if strings.Contains(err.Error(), responseSecret) {
+		t.Fatalf("heartbeat conflict error leaked response body: %q", err)
+	}
+}
+
 func TestConfigClientReturnsErrorOnNon2xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)

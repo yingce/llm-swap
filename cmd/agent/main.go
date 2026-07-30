@@ -110,6 +110,7 @@ func buildAgentRuntime(cfg config.AgentConfig, gatewayHTTP, artifactHTTP *http.C
 		Gateway: configClient, HTTPClient: artifactHTTP, Service: service,
 		Health: llamaSwapState, RunningModels: llamaSwapState, GPUDevices: agent.NvidiaSMIGPUDevicesClient{},
 	}
+	transport.Prepare = reconciler.PrepareManagedTransport
 	return builtAgentRuntime{configClient: configClient, transport: transport, reconciler: reconciler, llamaSwapState: llamaSwapState}
 }
 
