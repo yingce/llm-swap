@@ -16,9 +16,32 @@ type BuildInfo struct {
 }
 
 type AgentConfigResponse struct {
-	OSS       config.OSSConfig        `yaml:"oss" json:"oss"`
-	Models    map[string]config.Model `yaml:"models" json:"models"`
-	TagPolicy AgentTagPolicy          `yaml:"tag_policy" json:"tag_policy"`
+	OSS       config.OSSConfig             `yaml:"oss" json:"oss"`
+	Models    map[string]config.Model      `yaml:"models" json:"models"`
+	TagPolicy AgentTagPolicy               `yaml:"tag_policy" json:"tag_policy"`
+	Transport *EncryptedTransportBootstrap `yaml:"transport,omitempty" json:"transport,omitempty"`
+}
+
+type EncryptedTransportBootstrap struct {
+	Generation uint64 `json:"generation"`
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
+}
+
+type TransportLeaseRequest struct {
+	AgentID      string `json:"agent_id"`
+	Generation   uint64 `json:"generation"`
+	LeaseID      string `json:"lease_id,omitempty"`
+	Release      bool   `json:"release,omitempty"`
+	ExcludeSlots []int  `json:"exclude_slots,omitempty"`
+}
+
+type TransportLeaseResponse struct {
+	LeaseID    string    `json:"lease_id"`
+	Slot       int       `json:"slot"`
+	RemotePort int       `json:"remote_port"`
+	Generation uint64    `json:"generation"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type AgentTagPolicy struct {
@@ -62,18 +85,20 @@ type AgentEvent struct {
 }
 
 type HeartbeatRequest struct {
-	AgentID       string                `json:"agent_id"`
-	Tags          []string              `json:"tags"`
-	LlamaSwapURL  string                `json:"llama_swap_url"`
-	RunningModels []RunningModel        `json:"running_models"`
-	GPUDevices    []GPUDevice           `json:"gpu_devices,omitempty"`
-	Artifacts     map[string]string     `json:"artifacts"`
-	Capacity      config.WorkerDefaults `json:"capacity"`
-	NeedsRestart  bool                  `json:"needs_restart"`
-	RestartModels []string              `json:"restart_models,omitempty"`
-	AgentBuild    BuildInfo             `json:"agent_build,omitempty"`
-	LastError     string                `json:"last_error"`
-	Events        []AgentEvent          `json:"events,omitempty"`
+	AgentID             string                `json:"agent_id"`
+	Tags                []string              `json:"tags"`
+	LlamaSwapURL        string                `json:"llama_swap_url"`
+	RunningModels       []RunningModel        `json:"running_models"`
+	GPUDevices          []GPUDevice           `json:"gpu_devices,omitempty"`
+	Artifacts           map[string]string     `json:"artifacts"`
+	Capacity            config.WorkerDefaults `json:"capacity"`
+	NeedsRestart        bool                  `json:"needs_restart"`
+	RestartModels       []string              `json:"restart_models,omitempty"`
+	AgentBuild          BuildInfo             `json:"agent_build,omitempty"`
+	TransportLeaseID    string                `json:"transport_lease_id,omitempty"`
+	TransportGeneration uint64                `json:"transport_generation,omitempty"`
+	LastError           string                `json:"last_error"`
+	Events              []AgentEvent          `json:"events,omitempty"`
 }
 
 type HeartbeatResponse struct {
