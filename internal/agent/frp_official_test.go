@@ -50,8 +50,8 @@ func TestOfficialFRPFactoryMapsTCPOptions(t *testing.T) {
 	if got.Common.Transport.ProxyURL != "" {
 		t.Fatalf("transport proxy URL = %q, want empty", got.Common.Transport.ProxyURL)
 	}
-	if got.Common.LoginFailExit == nil || *got.Common.LoginFailExit {
-		t.Fatalf("LoginFailExit = %v, want false", got.Common.LoginFailExit)
+	if got.Common.LoginFailExit == nil || !*got.Common.LoginFailExit {
+		t.Fatalf("LoginFailExit = %v, want true", got.Common.LoginFailExit)
 	}
 	if got.Common.WebServer.Port != 0 {
 		t.Fatalf("web server port = %d, want disabled", got.Common.WebServer.Port)

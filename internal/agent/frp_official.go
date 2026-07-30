@@ -20,7 +20,6 @@ const (
 
 var (
 	errOfficialFRPAlreadyRun = errors.New("FRP client can only run once")
-	errOfficialFRPStopped    = errors.New("FRP client stopped before proxy became ready")
 	errOfficialFRPProxy      = errors.New("FRP proxy failed to start")
 )
 
@@ -78,7 +77,9 @@ func (f *officialFRPClientFactory) New(cfg FRPProxyConfig) (FRPClient, error) {
 		return nil, errors.New("invalid FRP local address")
 	}
 
-	loginFailExit := false
+	// Fail the initial login fast so the manager can fetch a rotated endpoint or
+	// credential. Once logged in, FRP's controller loop still reconnects in place.
+	loginFailExit := true
 	common := &v1.ClientCommonConfig{
 		ServerAddr: cfg.ServerAddr,
 		ServerPort: cfg.ServerPort,
@@ -169,7 +170,7 @@ func (c *officialFRPClient) Run(ctx context.Context) error {
 	if closed || ctx.Err() != nil {
 		return nil
 	}
-	return errOfficialFRPStopped
+	return errFRPClientStoppedBeforeReady
 }
 
 func (c *officialFRPClient) WaitReady(ctx context.Context) error {
@@ -188,9 +189,9 @@ func (c *officialFRPClient) WaitReady(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.closedCh:
-			return errOfficialFRPStopped
+			return errFRPClientStoppedBeforeReady
 		case <-c.runDone:
-			return errOfficialFRPStopped
+			return errFRPClientStoppedBeforeReady
 		case <-timer.C:
 		}
 
@@ -199,7 +200,7 @@ func (c *officialFRPClient) WaitReady(ctx context.Context) error {
 		finished := c.runFinished
 		c.mu.Unlock()
 		if finished {
-			return errOfficialFRPStopped
+			return errFRPClientStoppedBeforeReady
 		}
 		if started {
 			phase, ok := c.service.ProxyStatus(c.proxyName)
@@ -212,7 +213,7 @@ func (c *officialFRPClient) WaitReady(ctx context.Context) error {
 					c.mu.Lock()
 					if c.closed || c.runFinished {
 						c.mu.Unlock()
-						return errOfficialFRPStopped
+						return errFRPClientStoppedBeforeReady
 					}
 					c.ready = true
 					c.mu.Unlock()

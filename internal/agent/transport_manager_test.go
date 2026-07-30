@@ -43,7 +43,7 @@ func TestTransportManagerDecryptsAcquiresStartsAndPublishesOnlyAfterReady(t *tes
 		releaseCalls: make(chan protocol.TransportLeaseRequest, 32),
 	}
 	client := newFRPClientFake()
-	factory := &transportFactoryFake{clients: []*frpClientFake{client}, created: make(chan FRPProxyConfig, 32)}
+	factory := newTransportFactoryFake(client)
 	manager := &TransportManager{
 		AgentID: agentID, Tags: []string{"gpu-4090"}, AgentToken: agentToken,
 		SwapPort: 6006, Gateway: gateway, Factory: factory,
@@ -248,21 +248,75 @@ func TestTransportManagerBootstrapChangeWithinGenerationRestartsTransport(t *tes
 	eventually(t, func() bool { return manager.Snapshot().LeaseID == "lease-new-bootstrap" && manager.Snapshot().Ready })
 }
 
-func TestTransportManagerStartupFailureReplacesAndExcludesSuspectLease(t *testing.T) {
+func TestTransportManagerReadinessFailureReplacesAndExcludesSuspectLease(t *testing.T) {
+	const agentID, agentToken = "worker-gpu0", "agent-secret"
+	gateway := newTransportGatewayFake(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "suspect", Slot: 2, RemotePort: 2002, Generation: 7})
+	gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "replacement", Slot: 3, RemotePort: 2003, Generation: 7})
+	first, second := newFRPClientFake(), newFRPClientFake()
+	factory := newTransportFactoryFake(first, second)
+	waiter := newManualTransportWaiter()
+	manager := &TransportManager{AgentID: agentID, Tags: []string{"gpu-4090"}, AgentToken: agentToken, SwapPort: 6006,
+		Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, PollInterval: time.Hour,
+		ReleaseTimeout: time.Second, Wait: waiter.Wait}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+	receiveWithTimeout(t, gateway.configCalls)
+	firstRequest := receiveWithTimeout(t, gateway.acquireCalls)
+	if firstRequest.LeaseID != "" || len(firstRequest.ExcludeSlots) != 0 {
+		t.Fatalf("initial request = %+v", firstRequest)
+	}
+	receiveWithTimeout(t, factory.created)
+	first.ready <- errors.New("not ready")
+	receiveWithTimeout(t, first.closed)
+	waiter.advance(t)
+	receiveWithTimeout(t, gateway.configCalls)
+	replacement := receiveWithTimeout(t, gateway.acquireCalls)
+	if replacement.LeaseID != "suspect" || len(replacement.ExcludeSlots) != 1 || replacement.ExcludeSlots[0] != 2 {
+		t.Fatalf("replacement request = %+v", replacement)
+	}
+	select {
+	case release := <-gateway.releaseCalls:
+		t.Fatalf("suspect lease was released: %+v", release)
+	default:
+	}
+	receiveWithTimeout(t, factory.created)
+	second.ready <- nil
+	eventually(t, func() bool { return manager.Snapshot().LeaseID == "replacement" && manager.Snapshot().Ready })
+	stopTransportManager(t, cancel, done)
+}
+
+func TestTransportManagerBootstrapUnavailableReleasesAndRefetchesFreshConfig(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		fail func(*frpClientFake)
+		name    string
+		factory func(first, second *frpClientFake) *transportFactoryFake
+		fail    func(*frpClientFake)
 	}{
-		{name: "run exits before readiness", fail: func(client *frpClientFake) { client.runErr <- errors.New("run failed") }},
-		{name: "readiness fails", fail: func(client *frpClientFake) { client.ready <- errors.New("not ready") }},
+		{
+			name: "factory fails",
+			factory: func(_, second *frpClientFake) *transportFactoryFake {
+				return &transportFactoryFake{
+					clients: []FRPClient{second}, errors: []error{errors.New("bootstrap unavailable")},
+					created: make(chan FRPProxyConfig, 32),
+				}
+			},
+		},
+		{
+			name: "run exits before readiness",
+			factory: func(first, second *frpClientFake) *transportFactoryFake {
+				return newTransportFactoryFake(first, second)
+			},
+			fail: func(client *frpClientFake) { client.runErr <- errors.New("login failed") },
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			const agentID, agentToken = "worker-gpu0", "agent-secret"
 			gateway := newTransportGatewayFake(sealedTransportConfig(t, agentToken, agentID, 7, testTransportBootstrap("frps.example.test")))
-			gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "suspect", Slot: 2, RemotePort: 2002, Generation: 7})
-			gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "replacement", Slot: 3, RemotePort: 2003, Generation: 7})
+			gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "old-lease", Slot: 2, RemotePort: 2002, Generation: 7})
+			gateway.addLease(protocol.TransportLeaseResponse{LeaseID: "fresh-lease", Slot: 4, RemotePort: 2004, Generation: 8})
 			first, second := newFRPClientFake(), newFRPClientFake()
-			factory := newTransportFactoryFake(first, second)
+			factory := test.factory(first, second)
 			waiter := newManualTransportWaiter()
 			manager := &TransportManager{AgentID: agentID, Tags: []string{"gpu-4090"}, AgentToken: agentToken, SwapPort: 6006,
 				Gateway: gateway, Factory: factory, RetryMin: time.Second, RetryMax: time.Second, PollInterval: time.Hour,
@@ -276,22 +330,31 @@ func TestTransportManagerStartupFailureReplacesAndExcludesSuspectLease(t *testin
 				t.Fatalf("initial request = %+v", firstRequest)
 			}
 			receiveWithTimeout(t, factory.created)
-			test.fail(first)
-			receiveWithTimeout(t, first.closed)
+			if test.fail != nil {
+				test.fail(first)
+				receiveWithTimeout(t, first.closed)
+			}
+			release := receiveWithTimeout(t, gateway.releaseCalls)
+			if release.LeaseID != "old-lease" || release.Generation != 7 {
+				t.Fatalf("released lease = %+v", release)
+			}
+			nextBootstrap := testTransportBootstrap("frps-next.example.test")
+			nextBootstrap.ServerPort = 7443
+			nextBootstrap.AuthToken = "replacement-test-token"
+			gateway.setConfig(sealedTransportConfig(t, agentToken, agentID, 8, nextBootstrap))
 			waiter.advance(t)
 			receiveWithTimeout(t, gateway.configCalls)
-			replacement := receiveWithTimeout(t, gateway.acquireCalls)
-			if replacement.LeaseID != "suspect" || len(replacement.ExcludeSlots) != 1 || replacement.ExcludeSlots[0] != 2 {
-				t.Fatalf("replacement request = %+v", replacement)
+			freshRequest := receiveWithTimeout(t, gateway.acquireCalls)
+			if freshRequest.Generation != 8 || freshRequest.LeaseID != "" || len(freshRequest.ExcludeSlots) != 0 {
+				t.Fatalf("fresh lease request = %+v", freshRequest)
 			}
-			select {
-			case release := <-gateway.releaseCalls:
-				t.Fatalf("suspect lease was released: %+v", release)
-			default:
+			created := receiveWithTimeout(t, factory.created)
+			if created.ServerAddr != nextBootstrap.ServerAddr || created.ServerPort != nextBootstrap.ServerPort ||
+				created.AuthToken != nextBootstrap.AuthToken || created.ProxyName != frpProxyName(agentID, 8) {
+				t.Fatalf("fresh client config = %+v", created)
 			}
-			receiveWithTimeout(t, factory.created)
 			second.ready <- nil
-			eventually(t, func() bool { return manager.Snapshot().LeaseID == "replacement" && manager.Snapshot().Ready })
+			eventually(t, func() bool { return manager.Snapshot().LeaseID == "fresh-lease" && manager.Snapshot().Ready })
 			stopTransportManager(t, cancel, done)
 		})
 	}
@@ -905,13 +968,18 @@ func (g *transportGatewayFake) ReleaseTransportLeaseContext(ctx context.Context,
 
 type transportFactoryFake struct {
 	mu           sync.Mutex
-	clients      []*frpClientFake
+	clients      []FRPClient
+	errors       []error
 	created      chan FRPProxyConfig
 	createdCount int
 }
 
 func newTransportFactoryFake(clients ...*frpClientFake) *transportFactoryFake {
-	return &transportFactoryFake{clients: clients, created: make(chan FRPProxyConfig, 32)}
+	configured := make([]FRPClient, 0, len(clients))
+	for _, client := range clients {
+		configured = append(configured, client)
+	}
+	return &transportFactoryFake{clients: configured, created: make(chan FRPProxyConfig, 32)}
 }
 
 func (f *transportFactoryFake) New(config FRPProxyConfig) (FRPClient, error) {
@@ -922,6 +990,11 @@ func (f *transportFactoryFake) New(config FRPProxyConfig) (FRPClient, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createdCount++
+	if len(f.errors) > 0 {
+		err := f.errors[0]
+		f.errors = f.errors[1:]
+		return nil, err
+	}
 	if len(f.clients) == 0 {
 		return nil, errors.New("no fake FRP client")
 	}

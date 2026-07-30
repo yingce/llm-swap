@@ -137,7 +137,18 @@ func (m *TransportManager) Run(ctx context.Context) error {
 					m.releaseLease(lease)
 				}
 				return nil
-			default:
+			case transportStartBootstrapUnavailable:
+				if !m.stopClient(started) {
+					return m.parkUnconverged(ctx)
+				}
+				m.releaseLease(lease)
+				replacement = nil
+				m.log("transport client unavailable")
+				if !m.waitRetry(ctx, retryDelay) {
+					return nil
+				}
+				retryDelay = m.nextRetry(retryDelay)
+			case transportStartRegistrationFailed:
 				if !m.stopClient(started) {
 					return m.parkUnconverged(ctx)
 				}
@@ -227,7 +238,8 @@ type transportReplacement struct {
 type transportStartResult int
 
 const (
-	transportStartFailed transportStartResult = iota
+	transportStartBootstrapUnavailable transportStartResult = iota
+	transportStartRegistrationFailed
 	transportStartReady
 	transportStartShutdown
 )
@@ -304,7 +316,7 @@ func (m *TransportManager) start(ctx context.Context, desired desiredTransport, 
 		LocalAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(m.SwapPort)), RemotePort: lease.RemotePort,
 	})
 	if err != nil || client == nil {
-		return nil, transportStartFailed
+		return nil, transportStartBootstrapUnavailable
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	runDone := make(chan error, 1)
@@ -333,15 +345,18 @@ func (m *TransportManager) start(ctx context.Context, desired desiredTransport, 
 	case <-ctx.Done():
 		return active, transportStartShutdown
 	case <-runDone:
-		return active, transportStartFailed
+		return active, transportStartBootstrapUnavailable
 	case err := <-readyDone:
 		if err != nil {
-			return active, transportStartFailed
+			if errors.Is(err, errFRPClientStoppedBeforeReady) {
+				return active, transportStartBootstrapUnavailable
+			}
+			return active, transportStartRegistrationFailed
 		}
 	}
 	select {
 	case <-runDone:
-		return active, transportStartFailed
+		return active, transportStartRegistrationFailed
 	default:
 	}
 	m.state.publish(RuntimeTransportSnapshot{

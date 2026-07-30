@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+var errFRPClientStoppedBeforeReady = errors.New("FRP client stopped before proxy became ready")
 
 // FRPProxyConfig is the repository-owned boundary consumed by an FRP client
 // adapter. It intentionally contains no formatting helpers so credentials are
