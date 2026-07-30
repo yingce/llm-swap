@@ -312,6 +312,43 @@ func TestPrepareManagedTransportRejectsRunningEndpointThatDoesNotEnforceAPIKeys(
 	}
 }
 
+func TestPrepareManagedTransportAuthorizedRestartCanActivatePreviouslyUnenforcedAPIKeys(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	if err := os.WriteFile(configPath, []byte("models: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	authEnforced := false
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authEnforced && r.Header.Get("Authorization") != "Bearer bootstrap-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"running":[]}`))
+	}))
+	defer local.Close()
+	cfg := protocol.AgentConfigResponse{Models: map[string]config.Model{}, TagPolicy: protocol.AgentTagPolicy{Tag: "gpu-4090"}}
+	var heartbeats []protocol.HeartbeatRequest
+	gateway := reconcileGatewayWithConfig(t, cfg, &heartbeats, protocol.HeartbeatResponse{WorkerState: "draining", RestartAllowed: true})
+	defer gateway.Close()
+	service := &transportRestartService{onRestart: func() { authEnforced = true }}
+	stateClient := LlamaSwapStateClient{BaseURL: local.URL, HTTP: local.Client()}
+	reconciler := Reconciler{
+		AgentID: "worker-gpu0", Tags: []string{"gpu-4090"}, ModelRoot: t.TempDir(), LlamaSwapConfig: configPath,
+		Gateway:       ConfigClient{BaseURL: gateway.URL, Token: "agent-token", HTTP: gateway.Client()},
+		RunningModels: stateClient, Health: stateClient, Service: service,
+	}
+
+	if err := reconciler.PrepareManagedTransport(context.Background(), "bootstrap-token"); err != nil {
+		t.Fatal(err)
+	}
+	if service.restarts != 1 || !authEnforced {
+		t.Fatalf("authorized service restarts = %d, auth enforced = %v; want one activating restart", service.restarts, authEnforced)
+	}
+	if len(heartbeats) != 1 || !heartbeats[0].NeedsRestart || heartbeats[0].LlamaSwapURL != "" {
+		t.Fatalf("restart authorization heartbeats = %+v, want one not-ready restart request", heartbeats)
+	}
+}
+
 func TestLlamaSwapConfigWithAPIKeyDropsAliasedOldCredentialContributors(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
 	old := "apiKeys: &old-keys\n    - old-hidden-token\ncredential_shadow: *old-keys\nmodels: {}\n"

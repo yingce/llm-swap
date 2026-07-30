@@ -104,8 +104,8 @@ func (r *Reconciler) PrepareManagedTransport(ctx context.Context, llamaSwapToken
 	if verificationErr == nil {
 		return nil
 	}
-	if errors.Is(verificationErr, errLlamaSwapTokenNotEnforced) {
-		return errors.New("llama-swap credential enforcement unavailable")
+	if r.Gateway == nil {
+		return errors.New("managed transport restart authorization unavailable")
 	}
 
 	cfg, err := r.getConfigContext(ctx)
