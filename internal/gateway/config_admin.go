@@ -15,17 +15,12 @@ func (s *Server) handleUIConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "config manager is not enabled", http.StatusInternalServerError)
 		return
 	}
-	cfg, version := s.configManager.Snapshot()
-	raw, err := s.configManager.YAML()
+	resp, err := s.configManager.UIConfig()
 	if err != nil {
 		http.Error(w, "failed to render config", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, uiConfigResponse{
-		Version: version,
-		Config:  cfg,
-		YAML:    string(raw),
-	})
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleUIConfigValidate(w http.ResponseWriter, r *http.Request) {

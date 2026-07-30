@@ -14,6 +14,176 @@ import (
 	"llm-swap/internal/protocol"
 )
 
+func TestUIConfigRedactsFRPAuthTokenFromStructuredConfigAndYAML(t *testing.T) {
+	const secret = "frp-super-secret"
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	raw := testGatewayYAMLWithFRPSecret(secret, "qwen")
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServerWithGatewayConfigPath(cfg, configPath)
+	req := httptest.NewRequest(http.MethodGet, "/ui/api/config", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), secret) {
+		t.Fatalf("config response leaked FRP auth token: %s", rr.Body.String())
+	}
+	var resp uiConfigResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Config.Transport.FRP.AuthToken; got != uiConfigRedactedSecret {
+		t.Fatalf("structured auth token = %q, want redaction marker", got)
+	}
+	if !strings.Contains(resp.YAML, "auth_token: "+uiConfigRedactedSecret) {
+		t.Fatalf("YAML does not contain redaction marker:\n%s", resp.YAML)
+	}
+}
+
+func TestUIConfigApplyRedactedFRPAuthTokenPreservesExistingSecret(t *testing.T) {
+	const secret = "frp-super-secret"
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	raw := testGatewayYAMLWithFRPSecret(secret, "qwen")
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServerWithGatewayConfigPath(cfg, configPath)
+	redacted := strings.Replace(raw, secret, uiConfigRedactedSecret, 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/apply", strings.NewReader(redacted))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), secret) {
+		t.Fatalf("apply response leaked FRP auth token: %s", rr.Body.String())
+	}
+	if got := srv.currentConfig().Transport.FRP.AuthToken; got != secret {
+		t.Fatalf("runtime auth token = %q, want existing secret preserved", got)
+	}
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(persisted), secret) || strings.Contains(string(persisted), uiConfigRedactedSecret) {
+		t.Fatalf("persisted config did not restore existing secret:\n%s", persisted)
+	}
+}
+
+func TestUIConfigApplyRealFRPAuthTokenReplacesExistingSecret(t *testing.T) {
+	const oldSecret = "frp-old-secret"
+	const newSecret = "frp-new-secret"
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	raw := testGatewayYAMLWithFRPSecret(oldSecret, "qwen")
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServerWithGatewayConfigPath(cfg, configPath)
+	nextRaw := strings.Replace(raw, oldSecret, newSecret, 1)
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/apply", strings.NewReader(nextRaw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), oldSecret) || strings.Contains(rr.Body.String(), newSecret) {
+		t.Fatalf("apply response leaked an FRP auth token: %s", rr.Body.String())
+	}
+	if got := srv.currentConfig().Transport.FRP.AuthToken; got != newSecret {
+		t.Fatalf("runtime auth token = %q, want replacement", got)
+	}
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(persisted), newSecret) || strings.Contains(string(persisted), oldSecret) {
+		t.Fatalf("persisted config did not replace secret:\n%s", persisted)
+	}
+}
+
+func TestUIConfigApplyRedactedFRPAuthTokenWithoutExistingSecretFails(t *testing.T) {
+	srv := NewServer(testUIGatewayConfig())
+	raw := testGatewayYAMLWithFRPSecret(uiConfigRedactedSecret, "qwen")
+	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/apply", strings.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "no current secret") {
+		t.Fatalf("error = %s, want clear missing backing secret error", rr.Body.String())
+	}
+	if got := srv.currentConfig().Transport.FRP.AuthToken; got != "" {
+		t.Fatalf("runtime auth token = %q, want unchanged empty token", got)
+	}
+}
+
+func TestUIConfigDryRunAndValidateRedactedFRPAuthTokenDoNotLeak(t *testing.T) {
+	const secret = "frp-super-secret"
+	raw := testGatewayYAMLWithFRPSecret(secret, "qwen")
+	cfg, err := config.LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg)
+	redacted := strings.Replace(raw, secret, uiConfigRedactedSecret, 1)
+
+	for _, endpoint := range []string{"/ui/api/config/dry-run", "/ui/api/config/validate"} {
+		t.Run(endpoint, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(redacted))
+			req.Header.Set("Authorization", "Bearer agent-secret")
+			rr := httptest.NewRecorder()
+
+			srv.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), secret) {
+				t.Fatalf("response leaked FRP auth token: %s", rr.Body.String())
+			}
+			var resp uiConfigDryRunResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if !resp.Valid {
+				t.Fatalf("response = %+v, want valid redacted round trip", resp)
+			}
+		})
+	}
+	_, candidate := srv.configManager.DryRun([]byte(redacted))
+	if got := candidate.Transport.FRP.AuthToken; got != secret {
+		t.Fatalf("dry-run candidate auth token = %q, want existing secret restored", got)
+	}
+}
+
 func TestUIConfigDryRunReportsAddedModel(t *testing.T) {
 	srv := NewServer(testUIGatewayConfig())
 	req := httptest.NewRequest(http.MethodPost, "/ui/api/config/dry-run", strings.NewReader(testGatewayYAMLWithModels("qwen", "new-model")))
@@ -654,4 +824,18 @@ models:
 	b.WriteString("      max_concurrency: 2\n")
 	b.WriteString("      max_queue: 4\n")
 	return b.String()
+}
+
+func testGatewayYAMLWithFRPSecret(secret string, models ...string) string {
+	raw := testGatewayYAMLWithModels(models...)
+	transport := "transport:\n" +
+		"  type: frp_tcp\n" +
+		"  frp:\n" +
+		"    server_addr: frps.example.com\n" +
+		"    server_port: 7000\n" +
+		"    auth_token: " + secret + "\n" +
+		"    port_start: 2000\n" +
+		"    port_end: 3000\n" +
+		"    lease_ttl_seconds: 180\n"
+	return strings.Replace(raw, "oss:\n", transport+"oss:\n", 1)
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+const uiConfigRedactedSecret = "__LLMSWAP_REDACTED__"
 
 type ConfigManager struct {
 	mu          sync.RWMutex
@@ -150,16 +153,47 @@ func (m *ConfigManager) YAML() ([]byte, error) {
 	return yaml.Marshal(cfg)
 }
 
+func (m *ConfigManager) UIConfig() (uiConfigResponse, error) {
+	if m == nil {
+		return uiConfigResponse{}, nil
+	}
+	m.mu.RLock()
+	cfg := cloneGatewayConfig(m.cfg)
+	version := m.version
+	raw := append([]byte(nil), m.rawYAML...)
+	m.mu.RUnlock()
+
+	if len(raw) == 0 {
+		var err error
+		raw, err = yaml.Marshal(cfg)
+		if err != nil {
+			return uiConfigResponse{}, err
+		}
+	}
+	redactedYAML, err := replaceFRPAuthTokenYAML(raw, "", uiConfigRedactedSecret)
+	if err != nil {
+		return uiConfigResponse{}, err
+	}
+	if cfg.Transport.FRP.AuthToken != "" {
+		cfg.Transport.FRP.AuthToken = uiConfigRedactedSecret
+	}
+	return uiConfigResponse{Version: version, Config: cfg, YAML: string(redactedYAML)}, nil
+}
+
 func (m *ConfigManager) DryRun(raw []byte) (uiConfigDryRunResponse, config.GatewayConfig) {
-	resp, runtimeCfg, _ := m.dryRun(raw)
+	resp, runtimeCfg, _, _ := m.dryRun(raw)
 	return resp, runtimeCfg
 }
 
-func (m *ConfigManager) dryRun(raw []byte) (uiConfigDryRunResponse, config.GatewayConfig, config.GatewayConfig) {
+func (m *ConfigManager) dryRun(raw []byte) (uiConfigDryRunResponse, config.GatewayConfig, config.GatewayConfig, []byte) {
 	current, version := m.Snapshot()
-	fileCfg, err := config.LoadGateway(bytes.NewReader(raw))
+	preparedRaw, err := m.restoreRedactedFRPAuthToken(raw)
 	if err != nil {
-		return uiConfigDryRunResponse{Valid: false, Version: version, Error: err.Error()}, current, current
+		return uiConfigDryRunResponse{Valid: false, Version: version, Error: err.Error()}, current, current, nil
+	}
+	fileCfg, err := config.LoadGateway(bytes.NewReader(preparedRaw))
+	if err != nil {
+		return uiConfigDryRunResponse{Valid: false, Version: version, Error: err.Error()}, current, current, nil
 	}
 	runtimeCfg := m.applyRuntimePins(fileCfg)
 	changes := diffGatewayConfig(current, runtimeCfg)
@@ -176,11 +210,11 @@ func (m *ConfigManager) dryRun(raw []byte) (uiConfigDryRunResponse, config.Gatew
 		Changes:                changes,
 		ApplyMode:              applyModeForChanges(changes),
 		RequiresGatewayRestart: changesRequireGatewayRestart(changes),
-	}, runtimeCfg, fileCfg
+	}, runtimeCfg, fileCfg, preparedRaw
 }
 
 func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
-	dryRun, runtimeCfg, fileCfg := m.dryRun(raw)
+	dryRun, runtimeCfg, fileCfg, preparedRaw := m.dryRun(raw)
 	if !dryRun.Valid {
 		return uiConfigApplyResponse{}, errInvalidConfig{message: dryRun.Error}
 	}
@@ -188,13 +222,13 @@ func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
 		if err := os.MkdirAll(filepath.Dir(m.configPath), 0o755); err != nil {
 			return uiConfigApplyResponse{}, err
 		}
-		if err := os.WriteFile(m.configPath, raw, 0o644); err != nil {
+		if err := os.WriteFile(m.configPath, preparedRaw, 0o644); err != nil {
 			return uiConfigApplyResponse{}, err
 		}
 	}
 	if dryRun.RequiresGatewayRestart {
 		m.mu.Lock()
-		m.rawYAML = append([]byte(nil), raw...)
+		m.rawYAML = append([]byte(nil), preparedRaw...)
 		m.fileCfg = cloneGatewayConfig(fileCfg)
 		version := m.version
 		m.mu.Unlock()
@@ -208,7 +242,7 @@ func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
 	m.mu.Lock()
 	m.cfg = cloneGatewayConfig(runtimeCfg)
 	m.fileCfg = cloneGatewayConfig(fileCfg)
-	m.rawYAML = append([]byte(nil), raw...)
+	m.rawYAML = append([]byte(nil), preparedRaw...)
 	m.version++
 	version := m.version
 	m.mu.Unlock()
@@ -218,6 +252,64 @@ func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
 		ApplyMode:              dryRun.ApplyMode,
 		RequiresGatewayRestart: dryRun.RequiresGatewayRestart,
 	}, nil
+}
+
+func (m *ConfigManager) restoreRedactedFRPAuthToken(raw []byte) ([]byte, error) {
+	m.mu.RLock()
+	secret := m.fileCfg.Transport.FRP.AuthToken
+	m.mu.RUnlock()
+	return replaceFRPAuthTokenYAML(raw, uiConfigRedactedSecret, secret)
+}
+
+func replaceFRPAuthTokenYAML(raw []byte, match string, replacement string) ([]byte, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		return nil, err
+	}
+	authToken := yamlMappingValue(&document, "transport", "frp", "auth_token")
+	if authToken == nil || authToken.Value == "" {
+		return append([]byte(nil), raw...), nil
+	}
+	if match != "" && authToken.Value != match {
+		return append([]byte(nil), raw...), nil
+	}
+	if match == uiConfigRedactedSecret && (replacement == "" || replacement == uiConfigRedactedSecret) {
+		return nil, fmt.Errorf("transport.frp.auth_token uses the redaction marker but there is no current secret to preserve")
+	}
+	authToken.Kind = yaml.ScalarNode
+	authToken.Tag = "!!str"
+	authToken.Value = replacement
+	authToken.Style = 0
+	return yaml.Marshal(&document)
+}
+
+func yamlMappingValue(node *yaml.Node, path ...string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return nil
+		}
+		node = node.Content[0]
+	}
+	for _, key := range path {
+		if node.Kind != yaml.MappingNode {
+			return nil
+		}
+		var next *yaml.Node
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == key {
+				next = node.Content[i+1]
+				break
+			}
+		}
+		if next == nil {
+			return nil
+		}
+		node = next
+	}
+	return node
 }
 
 func (m *ConfigManager) applyRuntimePins(cfg config.GatewayConfig) config.GatewayConfig {
