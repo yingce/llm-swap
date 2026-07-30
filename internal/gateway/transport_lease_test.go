@@ -33,7 +33,7 @@ func TestTransportLeaseAcquireIsStickyAndRenews(t *testing.T) {
 	}
 
 	now = now.Add(time.Minute)
-	renewed, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 7, CurrentLeaseID: first.LeaseID})
+	renewed, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 7})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +42,106 @@ func TestTransportLeaseAcquireIsStickyAndRenews(t *testing.T) {
 	}
 	if want := now.Add(policy.TTL); !renewed.ExpiresAt.Equal(want) {
 		t.Fatalf("renewed expiry = %v, want %v", renewed.ExpiresAt, want)
+	}
+}
+
+func TestTransportLeaseAcquireRejectsMismatchedCurrentLeaseID(t *testing.T) {
+	store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+	manager := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence("lease-a"))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2001, TTL: time.Minute}
+	lease, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saves := store.saves
+
+	if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{
+		AgentID: "worker-a", Generation: 1, CurrentLeaseID: "wrong",
+	}); !errors.Is(err, ErrTransportLeaseConflict) {
+		t.Fatalf("mismatched sticky acquire error = %v, want %v", err, ErrTransportLeaseConflict)
+	}
+	if store.saves != saves {
+		t.Fatalf("mismatched sticky acquire saved state: saves %d -> %d", saves, store.saves)
+	}
+	renewed, err := manager.Acquire(policy, TransportLeaseAcquireRequest{
+		AgentID: "worker-a", Generation: 1, CurrentLeaseID: lease.LeaseID,
+	})
+	if err != nil || renewed.LeaseID != lease.LeaseID {
+		t.Fatalf("exact sticky acquire = %#v, %v", renewed, err)
+	}
+}
+
+func TestTransportLeaseReplacementRequiresExactCurrentLeaseID(t *testing.T) {
+	tests := []struct {
+		name        string
+		replacement func(TransportLease, TransportLeasePolicy) TransportLeaseAcquireRequest
+	}{
+		{
+			name: "excluded slot",
+			replacement: func(current TransportLease, _ TransportLeasePolicy) TransportLeaseAcquireRequest {
+				return TransportLeaseAcquireRequest{AgentID: current.AgentID, Generation: current.Generation, ExcludedSlots: []int{current.Slot}}
+			},
+		},
+		{
+			name: "new generation",
+			replacement: func(current TransportLease, _ TransportLeasePolicy) TransportLeaseAcquireRequest {
+				return TransportLeaseAcquireRequest{AgentID: current.AgentID, Generation: current.Generation + 1}
+			},
+		},
+		{
+			name: "changed policy",
+			replacement: func(current TransportLease, _ TransportLeasePolicy) TransportLeaseAcquireRequest {
+				return TransportLeaseAcquireRequest{AgentID: current.AgentID, Generation: current.Generation, ExcludedSlots: nil}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+			manager := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence("old", "new"))
+			policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2002, TTL: time.Minute}
+			current, err := manager.Acquire(policy, TransportLeaseAcquireRequest{AgentID: "worker-a", Generation: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacementPolicy := policy
+			if tt.name == "changed policy" {
+				replacementPolicy = TransportLeasePolicy{PortStart: 2001, PortEnd: 2002, TTL: time.Minute}
+			}
+			request := tt.replacement(current, replacementPolicy)
+			saves := store.saves
+			for _, leaseID := range []string{"", "wrong"} {
+				request.CurrentLeaseID = leaseID
+				if _, err := manager.Acquire(replacementPolicy, request); !errors.Is(err, ErrTransportLeaseConflict) {
+					t.Fatalf("replacement with lease id %q error = %v, want %v", leaseID, err, ErrTransportLeaseConflict)
+				}
+				if store.saves != saves {
+					t.Fatalf("rejected replacement saved state: saves %d -> %d", saves, store.saves)
+				}
+			}
+			request.CurrentLeaseID = current.LeaseID
+			replacement, err := manager.Acquire(replacementPolicy, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replacement.LeaseID == current.LeaseID || replacement.RemotePort == current.RemotePort {
+				t.Fatalf("replacement = %#v, current = %#v", replacement, current)
+			}
+		})
+	}
+}
+
+func TestTransportLeaseAcquireRejectsStaleIDWithoutCurrentLease(t *testing.T) {
+	store := &countingTransportLeaseStore{TransportLeaseStore: NewMemoryTransportLeaseStore()}
+	manager := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence("unused"))
+	policy := TransportLeasePolicy{PortStart: 2000, PortEnd: 2001, TTL: time.Minute}
+	if _, err := manager.Acquire(policy, TransportLeaseAcquireRequest{
+		AgentID: "worker-a", Generation: 1, CurrentLeaseID: "stale",
+	}); !errors.Is(err, ErrTransportLeaseConflict) {
+		t.Fatalf("stale acquire error = %v, want %v", err, ErrTransportLeaseConflict)
+	}
+	if store.saves != 0 {
+		t.Fatalf("stale acquire performed %d saves", store.saves)
 	}
 }
 
@@ -224,6 +324,24 @@ func TestTransportLeaseStoreSurvivesReloadAndRejectsCorruption(t *testing.T) {
 	}
 }
 
+func TestFileTransportLeaseStoreRejectsUnsupportedVersionAndEmptyFile(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content []byte
+	}{
+		{name: "unsupported version", content: []byte(`{"version":2,"leases":[]}`)},
+		{name: "empty file", content: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "leases.json")
+			writeTestFile(t, path, tt.content)
+			if _, err := NewFileTransportLeaseStore(path).Load(); err == nil {
+				t.Fatal("invalid persisted store loaded without error")
+			}
+		})
+	}
+}
+
 func TestTransportLeaseSaveFailureRollsBackMemory(t *testing.T) {
 	store := &failingTransportLeaseStore{failSave: true}
 	manager := newTestTransportLeaseManager(t, store, fixedClock(time.Now()), leaseIDSequence("lease-a", "lease-b"))
@@ -399,6 +517,16 @@ func writeTestFile(t *testing.T, path string, content []byte) {
 type failingTransportLeaseStore struct {
 	leases   []TransportLease
 	failSave bool
+}
+
+type countingTransportLeaseStore struct {
+	TransportLeaseStore
+	saves int
+}
+
+func (s *countingTransportLeaseStore) Save(leases []TransportLease) error {
+	s.saves++
+	return s.TransportLeaseStore.Save(leases)
 }
 
 func (s *failingTransportLeaseStore) Load() ([]TransportLease, error) {

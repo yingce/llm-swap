@@ -12,6 +12,7 @@ import (
 
 var (
 	ErrTransportLeaseCapacity = errors.New("transport lease capacity exhausted")
+	ErrTransportLeaseConflict = errors.New("transport lease conflict")
 	ErrTransportLeaseNotFound = errors.New("transport lease not found")
 )
 
@@ -148,6 +149,29 @@ func (m *TransportLeaseManager) Acquire(policy TransportLeasePolicy, request Tra
 	}
 	now := m.now()
 	candidate := pruneExpiredTransportLeases(m.leases, now)
+	currentIndex := -1
+	for i := range candidate {
+		if candidate[i].Current && candidate[i].AgentID == request.AgentID {
+			currentIndex = i
+			break
+		}
+	}
+	if currentIndex < 0 {
+		if request.CurrentLeaseID != "" {
+			return TransportLease{}, ErrTransportLeaseConflict
+		}
+	} else {
+		current := candidate[currentIndex]
+		if request.CurrentLeaseID != "" && request.CurrentLeaseID != current.LeaseID {
+			return TransportLease{}, ErrTransportLeaseConflict
+		}
+		sticky := current.Generation == request.Generation &&
+			transportLeaseMatchesPolicy(current, policy) &&
+			!containsSlot(request.ExcludedSlots, current.Slot)
+		if !sticky && request.CurrentLeaseID != current.LeaseID {
+			return TransportLease{}, ErrTransportLeaseConflict
+		}
+	}
 	for i := range candidate {
 		lease := &candidate[i]
 		if lease.Current && lease.AgentID == request.AgentID && lease.Generation == request.Generation && transportLeaseMatchesPolicy(*lease, policy) && !containsSlot(request.ExcludedSlots, lease.Slot) {
