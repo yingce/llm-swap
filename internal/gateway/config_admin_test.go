@@ -209,8 +209,10 @@ func TestUIConfigRedactsFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
 			}
-			if strings.Contains(rr.Body.String(), secret) {
-				t.Fatalf("config response leaked aliased FRP auth token: %s", rr.Body.String())
+			for _, credential := range []string{secret, "inactive-default-secret"} {
+				if strings.Contains(rr.Body.String(), credential) {
+					t.Fatalf("config response leaked FRP auth token contributor %q: %s", credential, rr.Body.String())
+				}
 			}
 			var resp uiConfigResponse
 			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
@@ -221,6 +223,9 @@ func TestUIConfigRedactsFRPAuthTokenThroughYAMLAliasesAndMerges(t *testing.T) {
 			}
 			if !strings.Contains(resp.YAML, uiConfigRedactedSecret) {
 				t.Fatalf("redacted YAML does not contain marker:\n%s", resp.YAML)
+			}
+			if shape == "merge_direct_override" && !strings.Contains(resp.YAML, "unrelated-auth-token") {
+				t.Fatalf("redaction changed an unrelated auth_token path:\n%s", resp.YAML)
 			}
 		})
 	}
@@ -252,7 +257,7 @@ func TestUIConfigApplyRoundTripRestoresFRPAuthTokenThroughYAMLAliasesAndMerges(t
 			if err := json.NewDecoder(getRR.Body).Decode(&configResp); err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(configResp.YAML, secret) || !strings.Contains(configResp.YAML, uiConfigRedactedSecret) {
+			if strings.Contains(configResp.YAML, secret) || strings.Contains(configResp.YAML, "inactive-default-secret") || !strings.Contains(configResp.YAML, uiConfigRedactedSecret) {
 				t.Fatalf("GET YAML is not safely redacted:\n%s", configResp.YAML)
 			}
 
@@ -263,7 +268,7 @@ func TestUIConfigApplyRoundTripRestoresFRPAuthTokenThroughYAMLAliasesAndMerges(t
 			if applyRR.Code != http.StatusOK {
 				t.Fatalf("apply status = %d, want 200: %s", applyRR.Code, applyRR.Body.String())
 			}
-			if strings.Contains(applyRR.Body.String(), secret) {
+			if strings.Contains(applyRR.Body.String(), secret) || strings.Contains(applyRR.Body.String(), "inactive-default-secret") {
 				t.Fatalf("apply response leaked FRP auth token: %s", applyRR.Body.String())
 			}
 			persisted, err := os.ReadFile(configPath)
@@ -273,12 +278,21 @@ func TestUIConfigApplyRoundTripRestoresFRPAuthTokenThroughYAMLAliasesAndMerges(t
 			if strings.Contains(string(persisted), uiConfigRedactedSecret) {
 				t.Fatalf("persisted YAML still contains marker:\n%s", persisted)
 			}
+			if strings.Contains(string(persisted), "inactive-default-secret") {
+				t.Fatalf("persisted YAML retained a shadowed credential:\n%s", persisted)
+			}
+			if shape == "merge_direct_override" && !strings.Contains(string(persisted), "unrelated-auth-token") {
+				t.Fatalf("persisted YAML changed an unrelated auth_token path:\n%s", persisted)
+			}
 			persistedCfg, err := config.LoadGateway(bytes.NewReader(persisted))
 			if err != nil {
 				t.Fatalf("load persisted config: %v\n%s", err, persisted)
 			}
 			if got := persistedCfg.Transport.FRP.AuthToken; got != secret {
 				t.Fatalf("persisted auth token = %q, want restored secret", got)
+			}
+			if got := srv.currentConfig().Transport.FRP.AuthToken; got != secret {
+				t.Fatalf("runtime auth token = %q, want effective current secret", got)
 			}
 		})
 	}
@@ -1013,7 +1027,9 @@ func testGatewayYAMLWithFRPShape(secret string, shape string, models ...string) 
 			"  frp:\n" +
 			"    <<: [*frp_auth, *frp_network]\n"
 	case "merge_direct_override":
-		transport = "frp_defaults: &frp_defaults\n" +
+		transport = "unrelated_credentials:\n" +
+			"  auth_token: unrelated-auth-token\n" +
+			"frp_defaults: &frp_defaults\n" +
 			"  server_addr: frps.example.com\n" +
 			"  server_port: 7000\n" +
 			"  auth_token: inactive-default-secret\n" +

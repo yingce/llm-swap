@@ -266,20 +266,28 @@ func replaceFRPAuthTokenYAML(raw []byte, match string, replacement string) ([]by
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		return nil, err
 	}
-	authToken := yamlMappingValue(&document, "transport", "frp", "auth_token")
-	if authToken == nil || authToken.Value == "" {
+	frp := yamlMappingValue(&document, "transport", "frp")
+	authTokens := yamlMappingContributors(frp, "auth_token")
+	if len(authTokens) == 0 {
 		return append([]byte(nil), raw...), nil
 	}
-	if match != "" && authToken.Value != match {
+	changed := false
+	for _, authToken := range authTokens {
+		if authToken == nil || authToken.Value == "" || (match != "" && authToken.Value != match) {
+			continue
+		}
+		if match == uiConfigRedactedSecret && (replacement == "" || replacement == uiConfigRedactedSecret) {
+			return nil, fmt.Errorf("transport.frp.auth_token uses the redaction marker but there is no current secret to preserve")
+		}
+		authToken.Kind = yaml.ScalarNode
+		authToken.Tag = "!!str"
+		authToken.Value = replacement
+		authToken.Style = 0
+		changed = true
+	}
+	if !changed {
 		return append([]byte(nil), raw...), nil
 	}
-	if match == uiConfigRedactedSecret && (replacement == "" || replacement == uiConfigRedactedSecret) {
-		return nil, fmt.Errorf("transport.frp.auth_token uses the redaction marker but there is no current secret to preserve")
-	}
-	authToken.Kind = yaml.ScalarNode
-	authToken.Tag = "!!str"
-	authToken.Value = replacement
-	authToken.Style = 0
 	return yaml.Marshal(&document)
 }
 
@@ -354,6 +362,69 @@ func yamlLookupMergedKey(node *yaml.Node, key string, visiting map[*yaml.Node]bo
 		}
 	}
 	return nil
+}
+
+func yamlMappingContributors(node *yaml.Node, key string) []*yaml.Node {
+	values := make([]*yaml.Node, 0, 1)
+	yamlCollectMappingContributors(node, key, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool), &values)
+	return values
+}
+
+func yamlCollectMappingContributors(node *yaml.Node, key string, visiting map[*yaml.Node]bool, seen map[*yaml.Node]bool, values *[]*yaml.Node) {
+	node = yamlDocumentRoot(node)
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil || visiting[node] {
+			return
+		}
+		visiting[node] = true
+		defer delete(visiting, node)
+		yamlCollectMappingContributors(node.Alias, key, visiting, seen, values)
+		return
+	}
+	if node.Kind != yaml.MappingNode || visiting[node] {
+		return
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if isYAMLMergeKey(node.Content[i]) || node.Content[i].Value != key {
+			continue
+		}
+		value := yamlResolveAlias(node.Content[i+1])
+		if value != nil && !seen[value] {
+			seen[value] = true
+			*values = append(*values, value)
+		}
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if isYAMLMergeKey(node.Content[i]) {
+			yamlCollectMergedContributors(node.Content[i+1], key, visiting, seen, values)
+		}
+	}
+}
+
+func yamlCollectMergedContributors(node *yaml.Node, key string, visiting map[*yaml.Node]bool, seen map[*yaml.Node]bool, values *[]*yaml.Node) {
+	node = yamlDocumentRoot(node)
+	if node == nil {
+		return
+	}
+	switch node.Kind {
+	case yaml.AliasNode, yaml.MappingNode:
+		yamlCollectMappingContributors(node, key, visiting, seen, values)
+	case yaml.SequenceNode:
+		if visiting[node] {
+			return
+		}
+		visiting[node] = true
+		defer delete(visiting, node)
+		for _, candidate := range node.Content {
+			yamlCollectMergedContributors(candidate, key, visiting, seen, values)
+		}
+	}
 }
 
 func yamlDocumentRoot(node *yaml.Node) *yaml.Node {
