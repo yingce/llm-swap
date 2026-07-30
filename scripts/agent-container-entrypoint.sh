@@ -18,7 +18,6 @@ LLMSWAP_GATEWAY_URL="${LLMSWAP_GATEWAY_URL:-}"
 LLMSWAP_AGENT_TOKEN="${LLMSWAP_AGENT_TOKEN:-}"
 LLMSWAP_AGENT_TOKEN_FILE="${LLMSWAP_AGENT_TOKEN_FILE:-}"
 LLMSWAP_AGENT_TOKEN_READER="${LLMSWAP_AGENT_TOKEN_READER:-$LLMSWAP_AGENT_BIN}"
-LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE="${LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE:-$LLMSWAP_ROOT/.agent-bootstrap-mode}"
 LLMSWAP_LLAMA_SWAP_TOKEN="${LLMSWAP_LLAMA_SWAP_TOKEN:-$LLMSWAP_AGENT_TOKEN}"
 LLMSWAP_FORCE_CONFIG="${LLMSWAP_FORCE_CONFIG:-0}"
 LLMSWAP_ENABLE_TAILSCALE="${LLMSWAP_ENABLE_TAILSCALE:-0}"
@@ -101,6 +100,7 @@ write_agent_config() {
     return 1
   fi
   if ! {
+    printf '# llmswap-bootstrap: %s\n' "$mode"
     printf 'agent:\n'
     if [[ "$mode" == "legacy" ]]; then
       printf '  id: %s\n' "$LLMSWAP_AGENT_ID"
@@ -115,7 +115,7 @@ write_agent_config() {
       printf '  swap_url: %s\n' "$swap_url"
     fi
     printf '  gateway_url: %s\n' "$LLMSWAP_GATEWAY_URL"
-    if [[ "$mode" == "frp" ]]; then
+    if [[ "$mode" == "gateway" ]]; then
       local escaped_token="${agent_token//\'/\'\'}"
       printf "  token: '%s'\n" "$escaped_token"
     else
@@ -154,25 +154,7 @@ read_agent_token_file() {
   printf '%s' "$token"
 }
 
-write_bootstrap_mode_marker() {
-  local marker_dir marker_name temporary old_umask
-  marker_dir="$(dirname "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE")"
-  marker_name="$(basename "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE")"
-  install -d "$marker_dir"
-  old_umask="$(umask)"
-  umask 077
-  if ! temporary="$(mktemp "$marker_dir/.${marker_name}.XXXXXX")"; then
-    umask "$old_umask"
-    return 1
-  fi
-  umask "$old_umask"
-  if ! chmod 0600 "$temporary" || ! printf 'frp\n' > "$temporary" || ! mv "$temporary" "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE"; then
-    rm -f "$temporary"
-    return 1
-  fi
-}
-
-write_frp_agent_supervisor() {
+write_gateway_agent_supervisor() {
   install -d "$LLMSWAP_LOG_DIR" "$LLMSWAP_SUPERVISOR_CONF_DIR"
   rm -f "$LLMSWAP_SUPERVISOR_CONF_DIR/llmswap-tailscaled.conf" \
     "$LLMSWAP_SUPERVISOR_CONF_DIR/llmswap-tailscale-init.conf" \
@@ -386,30 +368,32 @@ main() {
   local bootstrap_mode="legacy"
   if [[ "$LLMSWAP_FORCE_CONFIG" == "1" || ! -f "$LLMSWAP_AGENT_CONFIG" ]]; then
     if [[ -n "${LLMSWAP_AGENT_TOKEN_FILE// }" ]]; then
-      bootstrap_mode="frp"
+      bootstrap_mode="gateway"
     fi
     require_env_when_bootstrapping LLMSWAP_GATEWAY_URL "$LLMSWAP_GATEWAY_URL"
-    if [[ "$bootstrap_mode" == "frp" ]]; then
+    if [[ "$bootstrap_mode" == "gateway" ]]; then
       if [[ -n "${LLMSWAP_AGENT_TOKEN// }" ]]; then
         printf 'ambiguous agent token input\n' >&2
         exit 1
       fi
       local file_agent_token
       file_agent_token="$(read_agent_token_file "$LLMSWAP_AGENT_TOKEN_FILE")"
-      write_agent_config frp "$file_agent_token"
-      write_bootstrap_mode_marker
+      write_agent_config gateway "$file_agent_token"
       unset file_agent_token
     else
       require_env_when_bootstrapping LLMSWAP_AGENT_TOKEN "$LLMSWAP_AGENT_TOKEN"
       write_agent_config legacy "$LLMSWAP_AGENT_TOKEN"
-      rm -f "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE"
     fi
-  elif [[ -f "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE" && ! -L "$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE" ]] && [[ "$(<"$LLMSWAP_AGENT_BOOTSTRAP_MODE_FILE")" == "frp" ]]; then
-    bootstrap_mode="frp"
+  else
+    local bootstrap_marker=""
+    IFS= read -r bootstrap_marker < "$LLMSWAP_AGENT_CONFIG" || true
+    if [[ "$bootstrap_marker" == "# llmswap-bootstrap: gateway" ]]; then
+      bootstrap_mode="gateway"
+    fi
   fi
 
-  if [[ "$bootstrap_mode" == "frp" ]]; then
-    write_frp_agent_supervisor
+  if [[ "$bootstrap_mode" == "gateway" ]]; then
+    write_gateway_agent_supervisor
   else
     write_agent_supervisor_wrapper
     start_tailscale_if_requested

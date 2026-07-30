@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"llm-swap/internal/agent"
+	"llm-swap/internal/config"
 )
 
 func TestAgentContainerEntrypointUsesBundledLlamaSwapWhenNoOverrideProvided(t *testing.T) {
@@ -162,29 +164,40 @@ func TestAgentContainerEntrypointBootstrapsConfigFromRuntimeEnv(t *testing.T) {
 	}
 }
 
-func TestAgentContainerEntrypointBootstrapsFRPConfigFromTokenFile(t *testing.T) {
+func TestAgentContainerEntrypointBootstrapsGatewayConfigInOneRenameAndRestartsFromYAMLMarker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
 	}
 	root := t.TempDir()
 	binDir := filepath.Join(root, "bin")
+	fakeBinDir := filepath.Join(root, "fake-bin")
 	confDir := filepath.Join(root, "supervisor", "conf.d")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\necho agent\n")
 	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\necho bundled\n")
 	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
+	mvLog := filepath.Join(root, "mv-calls")
+	writeExecutable(t, filepath.Join(fakeBinDir, "mv"), `#!/bin/sh
+set -eu
+printf 'call\n' >> "$FAKE_MV_LOG"
+exec /usr/bin/mv "$@"
+`)
 	tokenPath := filepath.Join(root, "agent-token")
 	if err := os.WriteFile(tokenPath, []byte("file-agent-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	out := runAgentEntrypointCommand(t, root, map[string]string{
-		"PATH":                     binDir + ":/usr/bin:/bin",
+		"PATH":                     fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
 		"LLMSWAP_GATEWAY_URL":      "https://gateway.example.invalid",
 		"LLMSWAP_AGENT_TOKEN_FILE": tokenPath,
 		"LLMSWAP_AGENT_TAGS":       "gpu-4090",
+		"FAKE_MV_LOG":              mvLog,
 	})
 	if strings.Contains(out, "file-agent-token") {
 		t.Fatalf("entrypoint output leaked token: %q", out)
@@ -195,6 +208,12 @@ func TestAgentContainerEntrypointBootstrapsFRPConfigFromTokenFile(t *testing.T) 
 		t.Fatal(err)
 	}
 	text := string(data)
+	if !strings.HasPrefix(text, "# llmswap-bootstrap: gateway\nagent:\n") {
+		t.Fatalf("gateway config missing authoritative YAML marker:\n%s", text)
+	}
+	if _, err := config.LoadAgentRuntime(context.Background(), config.AgentRuntimeOptions{ConfigPath: configPath, Root: root}); err != nil {
+		t.Fatalf("generated gateway config does not load through the agent runtime schema: %v", err)
+	}
 	for _, want := range []string{"gateway_url: https://gateway.example.invalid", "token: 'file-agent-token'", "- gpu-4090", "swap_port: 6006"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("FRP config missing %q:\n%s", want, text)
@@ -212,12 +231,15 @@ func TestAgentContainerEntrypointBootstrapsFRPConfigFromTokenFile(t *testing.T) 
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("agent config mode = %o, want 600", info.Mode().Perm())
 	}
-	marker, err := os.ReadFile(filepath.Join(root, ".agent-bootstrap-mode"))
+	if _, err := os.Stat(filepath.Join(root, ".agent-bootstrap-mode")); !os.IsNotExist(err) {
+		t.Fatalf("gateway bootstrap created obsolete sidecar marker: %v", err)
+	}
+	calls, err := os.ReadFile(mvLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(marker) != "frp\n" {
-		t.Fatalf("bootstrap mode marker = %q, want frp", marker)
+	if string(calls) != "call\n" {
+		t.Fatalf("gateway config rename calls = %q, want exactly one", calls)
 	}
 	for _, path := range []string{
 		filepath.Join(confDir, "llmswap-tailscaled.conf"),
@@ -234,6 +256,21 @@ func TestAgentContainerEntrypointBootstrapsFRPConfigFromTokenFile(t *testing.T) 
 	}
 	if !strings.Contains(string(agentConf), "command="+filepath.Join(binDir, "llm-swap-agent")+" --config "+configPath) {
 		t.Fatalf("FRP agent supervisor config = %s", agentConf)
+	}
+
+	runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":        fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
+		"FAKE_MV_LOG": mvLog,
+	})
+	if _, err := os.Stat(filepath.Join(binDir, "agent-supervisor.sh")); !os.IsNotExist(err) {
+		t.Fatalf("gateway YAML marker restart created legacy wrapper: %v", err)
+	}
+	calls, err = os.ReadFile(mvLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\n" {
+		t.Fatalf("restart rewrote committed gateway config: %q", calls)
 	}
 }
 
@@ -259,15 +296,20 @@ set -eu
 exit 1
 `)
 	configPath := filepath.Join(root, "agent.yaml")
-	if err := os.WriteFile(configPath, []byte("agent:\n  id: old-config\n"), 0o600); err != nil {
+	oldConfig := "# llmswap-bootstrap: legacy\nagent:\n  id: old-config\n"
+	if err := os.WriteFile(configPath, []byte(oldConfig), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(root, "agent-token")
+	if err := os.WriteFile(tokenPath, []byte("replacement-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, err := runAgentEntrypointCommandResult(t, root, map[string]string{
-		"PATH":                 fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
-		"LLMSWAP_FORCE_CONFIG": "1",
-		"LLMSWAP_GATEWAY_URL":  "https://gateway.example.invalid",
-		"LLMSWAP_AGENT_TOKEN":  "replacement-token",
-		"FAKE_MV_MODE_LOG":     modeLog,
+		"PATH":                     fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
+		"LLMSWAP_FORCE_CONFIG":     "1",
+		"LLMSWAP_GATEWAY_URL":      "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN_FILE": tokenPath,
+		"FAKE_MV_MODE_LOG":         modeLog,
 	})
 	if err == nil {
 		t.Fatalf("entrypoint succeeded despite atomic rename failure: %s", out)
@@ -276,8 +318,15 @@ exit 1
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if string(data) != "agent:\n  id: old-config\n" {
+	if string(data) != oldConfig {
 		t.Fatalf("failed config replacement changed target:\n%s", data)
+	}
+	info, statErr := os.Stat(configPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("failed config replacement changed target mode to %o", info.Mode().Perm())
 	}
 	mode, readErr := os.ReadFile(modeLog)
 	if readErr != nil {
@@ -306,6 +355,9 @@ func TestAgentContainerEntrypointExistingLegacyConfigIgnoresExtraTokenMount(t *t
 	if err := os.WriteFile(filepath.Join(root, "agent.yaml"), []byte("agent:\n  id: legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".agent-bootstrap-mode"), []byte("frp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	tokenPath := filepath.Join(root, "extra-token")
 	if err := os.WriteFile(tokenPath, []byte("unused-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -326,7 +378,7 @@ func TestAgentContainerEntrypointExistingLegacyConfigIgnoresExtraTokenMount(t *t
 	}
 }
 
-func TestAgentContainerEntrypointFRPMarkerSurvivesRestartAndForceLegacyClearsIt(t *testing.T) {
+func TestAgentContainerEntrypointForceGatewayAndLegacyCommitModeInYAML(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("agent-container-entrypoint.sh tests require a POSIX shell")
 	}
@@ -338,16 +390,34 @@ func TestAgentContainerEntrypointFRPMarkerSurvivesRestartAndForceLegacyClearsIt(
 	writeExecutable(t, filepath.Join(binDir, "llm-swap-agent"), "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, filepath.Join(binDir, "llama-swap.bundled"), "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
-	if err := os.WriteFile(filepath.Join(root, "agent.yaml"), []byte("agent:\n  tags: [gpu-4090]\n"), 0o600); err != nil {
+	configPath := filepath.Join(root, "agent.yaml")
+	if err := os.WriteFile(configPath, []byte("# llmswap-bootstrap: legacy\nagent:\n  id: legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	markerPath := filepath.Join(root, ".agent-bootstrap-mode")
-	if err := os.WriteFile(markerPath, []byte("frp\n"), 0o600); err != nil {
+	tokenPath := filepath.Join(root, "agent-token")
+	if err := os.WriteFile(tokenPath, []byte("gateway-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runAgentEntrypointCommand(t, root, map[string]string{
+		"PATH":                     binDir + ":/usr/bin:/bin",
+		"LLMSWAP_FORCE_CONFIG":     "1",
+		"LLMSWAP_GATEWAY_URL":      "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN_FILE": tokenPath,
+	})
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "# llmswap-bootstrap: gateway\nagent:\n") {
+		t.Fatalf("force gateway did not commit gateway mode in YAML:\n%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(binDir, "agent-supervisor.sh")); !os.IsNotExist(err) {
+		t.Fatalf("force gateway created legacy wrapper: %v", err)
+	}
+
 	runAgentEntrypointCommand(t, root, map[string]string{"PATH": binDir + ":/usr/bin:/bin"})
 	if _, err := os.Stat(filepath.Join(binDir, "agent-supervisor.sh")); !os.IsNotExist(err) {
-		t.Fatalf("FRP marker restart created legacy wrapper: %v", err)
+		t.Fatalf("gateway YAML marker restart created legacy wrapper: %v", err)
 	}
 
 	runAgentEntrypointCommand(t, root, map[string]string{
@@ -356,8 +426,12 @@ func TestAgentContainerEntrypointFRPMarkerSurvivesRestartAndForceLegacyClearsIt(
 		"LLMSWAP_GATEWAY_URL":  "https://gateway.example.invalid",
 		"LLMSWAP_AGENT_TOKEN":  "legacy-token",
 	})
-	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
-		t.Fatalf("force legacy did not clear FRP marker: %v", err)
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "# llmswap-bootstrap: legacy\nagent:\n") {
+		t.Fatalf("force legacy did not commit legacy mode in YAML:\n%s", data)
 	}
 	if _, err := os.Stat(filepath.Join(binDir, "agent-supervisor.sh")); err != nil {
 		t.Fatalf("force legacy did not restore legacy wrapper: %v", err)
@@ -502,12 +576,12 @@ printf 'malicious\nsecond-line\n' > "$2"
 	logPath := filepath.Join(root, "reader-calls")
 
 	out := runAgentEntrypointCommand(t, root, map[string]string{
-		"PATH":                     fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
-		"LLMSWAP_GATEWAY_URL":      "https://gateway.example.invalid",
-		"LLMSWAP_AGENT_TOKEN_FILE": tokenPath,
+		"PATH":                       fakeBinDir + ":" + binDir + ":/usr/bin:/bin",
+		"LLMSWAP_GATEWAY_URL":        "https://gateway.example.invalid",
+		"LLMSWAP_AGENT_TOKEN_FILE":   tokenPath,
 		"LLMSWAP_AGENT_TOKEN_READER": readerPath,
-		"LLMSWAP_AGENT_TAGS":       "gpu-4090",
-		"FAKE_READER_LOG":          logPath,
+		"LLMSWAP_AGENT_TAGS":         "gpu-4090",
+		"FAKE_READER_LOG":            logPath,
 	})
 	if strings.Contains(out, "safe-token") || strings.Contains(out, "malicious") {
 		t.Fatalf("entrypoint output leaked token material: %q", out)
