@@ -116,6 +116,25 @@ read_agent_token_file() {
     printf 'invalid agent token file\n' >&2
     return 1
   fi
+  local token_size
+  token_size="$(stat -c '%s' -- "$token_file" 2>/dev/null)" || {
+    printf 'invalid agent token file\n' >&2
+    return 1
+  }
+  if (( token_size < 1 || token_size > 16384 )); then
+    printf 'invalid agent token file\n' >&2
+    return 1
+  fi
+  local token_bytes
+  if ! token_bytes="$(LC_ALL=C od -An -v -tu1 -- "$token_file" 2>/dev/null)"; then
+    printf 'invalid agent token file\n' >&2
+    return 1
+  fi
+  if grep -Eq '(^|[[:space:]])0([[:space:]]|$)' <<< "$token_bytes"; then
+    printf 'invalid agent token file\n' >&2
+    return 1
+  fi
+  unset token_bytes
   local -a token_chunks=()
   mapfile -d '' -t token_chunks < "$token_file"
   if [[ "${#token_chunks[@]}" != "1" ]]; then

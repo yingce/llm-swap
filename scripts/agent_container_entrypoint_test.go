@@ -241,6 +241,8 @@ func TestAgentContainerEntrypointRejectsAmbiguousOrInvalidFRPTokenFile(t *testin
 		{name: "empty", file: " \n", wantOutput: "invalid agent token file"},
 		{name: "multiline", file: "first\nsecond\n", wantOutput: "invalid agent token file"},
 		{name: "nul", file: "first\x00second", wantOutput: "invalid agent token file"},
+		{name: "trailing_nul", file: "first\x00", wantOutput: "invalid agent token file"},
+		{name: "oversized", file: strings.Repeat("x", 16385), wantOutput: "invalid agent token file"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
