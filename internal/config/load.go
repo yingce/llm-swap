@@ -186,7 +186,7 @@ func applyGatewayDefaults(cfg *GatewayConfig) {
 	if cfg.RecordsStore.TimeoutMS <= 0 {
 		cfg.RecordsStore.TimeoutMS = 3000
 	}
-	if cfg.Transport.Type == "frp_tcp" && !cfg.Transport.FRP.leaseTTLSet {
+	if cfg.Transport.Type == "frp_tcp" && cfg.Transport.FRP.LeaseTTLSeconds == 0 && !cfg.Transport.FRP.leaseTTLSet {
 		cfg.Transport.FRP.LeaseTTLSeconds = 180
 	}
 }

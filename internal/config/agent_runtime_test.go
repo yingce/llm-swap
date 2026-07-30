@@ -3,10 +3,14 @@ package config
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -24,7 +28,26 @@ func (p fakeAgentIdentityProvider) NewID() (string, error) {
 	return p.generated, nil
 }
 
-func TestLoadAgentRuntimeUsesHostnameWithoutAdvertisedURL(t *testing.T) {
+type pairedFallbackIdentityProvider struct {
+	arrived atomic.Int32
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *pairedFallbackIdentityProvider) Hostname() (string, error) {
+	return "", errors.New("hostname unavailable")
+}
+
+func (p *pairedFallbackIdentityProvider) NewID() (string, error) {
+	sequence := p.arrived.Add(1)
+	if sequence == 2 {
+		p.once.Do(func() { close(p.release) })
+	}
+	<-p.release
+	return fmt.Sprintf("fallback-%d", sequence), nil
+}
+
+func TestLoadAgentRuntimeUsesHostnameWithLegacyDerivedURL(t *testing.T) {
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
 		ConfigPath: filepath.Join(t.TempDir(), "missing-agent.yaml"),
 		Args: []string{
@@ -33,6 +56,12 @@ func TestLoadAgentRuntimeUsesHostnameWithoutAdvertisedURL(t *testing.T) {
 			"--token", "agent-token",
 		},
 		Identity: fakeAgentIdentityProvider{hostname: "worker-gpu0", generated: "unused"},
+		TailscaleIP: func(context.Context) (string, bool) {
+			return "100.64.0.50", true
+		},
+		LocalIP: func() (string, error) {
+			return "10.0.0.50", nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("LoadAgentRuntime returned error: %v", err)
@@ -40,11 +69,11 @@ func TestLoadAgentRuntimeUsesHostnameWithoutAdvertisedURL(t *testing.T) {
 	if cfg.Agent.ID != "worker-gpu0" {
 		t.Fatalf("agent.id = %q, want hostname", cfg.Agent.ID)
 	}
-	if cfg.Agent.SwapURL != "" || cfg.Agent.LlamaSwapURL != "" {
-		t.Fatalf("advertised URLs = %q/%q, want empty", cfg.Agent.SwapURL, cfg.Agent.LlamaSwapURL)
+	if cfg.Agent.SwapURL != "http://100.64.0.50:6006" || cfg.Agent.LlamaSwapURL != "http://100.64.0.50:6006" {
+		t.Fatalf("advertised URLs = %q/%q, want legacy tailscale URL", cfg.Agent.SwapURL, cfg.Agent.LlamaSwapURL)
 	}
-	if cfg.Agent.LlamaSwapToken != "" {
-		t.Fatalf("llama_swap_token = %q, want empty without legacy external URL", cfg.Agent.LlamaSwapToken)
+	if cfg.Agent.LlamaSwapToken != "agent-token" {
+		t.Fatalf("llama_swap_token = %q, want legacy inherited token", cfg.Agent.LlamaSwapToken)
 	}
 }
 
@@ -77,7 +106,7 @@ func TestLoadAgentRuntimePersistsFallbackIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat persisted identity: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("agent-id permissions = %04o, want 0600", info.Mode().Perm())
 	}
 
@@ -91,6 +120,98 @@ func TestLoadAgentRuntimePersistsFallbackIdentity(t *testing.T) {
 	}
 	if second.Agent.ID != provider.generated {
 		t.Fatalf("second agent.id = %q, want persisted fallback", second.Agent.ID)
+	}
+}
+
+func TestLoadAgentRuntimeReusesPersistedIdentityBeforeRecoveredHostname(t *testing.T) {
+	root := t.TempDir()
+	base := AgentRuntimeOptions{
+		ConfigPath: filepath.Join(root, "missing-agent.yaml"),
+		Root:       root,
+		Args: []string{
+			"--tags", "gpu-4090",
+			"--gateway-url", "http://gateway",
+			"--token", "agent-token",
+		},
+		TailscaleIP: func(context.Context) (string, bool) { return "100.64.0.60", true },
+		LocalIP:     func() (string, error) { return "10.0.0.60", nil },
+	}
+	base.Identity = fakeAgentIdentityProvider{
+		hostnameErr: errors.New("hostname unavailable"),
+		generated:   "7b2a9e8c-c760-4a5f-bb08-38adfd1e6496",
+	}
+	first, err := LoadAgentRuntime(context.Background(), base)
+	if err != nil {
+		t.Fatalf("first LoadAgentRuntime returned error: %v", err)
+	}
+
+	base.Identity = fakeAgentIdentityProvider{hostname: "recovered-host", generated: "must-not-replace-persisted-id"}
+	second, err := LoadAgentRuntime(context.Background(), base)
+	if err != nil {
+		t.Fatalf("second LoadAgentRuntime returned error: %v", err)
+	}
+	if second.Agent.ID != first.Agent.ID {
+		t.Fatalf("second agent.id = %q, want persisted %q", second.Agent.ID, first.Agent.ID)
+	}
+}
+
+func TestLoadAgentRuntimeCreatesFallbackIdentityAtomically(t *testing.T) {
+	root := t.TempDir()
+	provider := &pairedFallbackIdentityProvider{release: make(chan struct{})}
+	opts := AgentRuntimeOptions{
+		ConfigPath: filepath.Join(root, "missing-agent.yaml"),
+		Root:       root,
+		Args: []string{
+			"--tags", "gpu-4090",
+			"--gateway-url", "http://gateway",
+			"--token", "agent-token",
+		},
+		Identity:    provider,
+		TailscaleIP: func(context.Context) (string, bool) { return "100.64.0.70", true },
+		LocalIP:     func() (string, error) { return "10.0.0.70", nil },
+	}
+
+	start := make(chan struct{})
+	results := make(chan string, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			cfg, err := LoadAgentRuntime(context.Background(), opts)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- cfg.Agent.ID
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("LoadAgentRuntime returned error: %v", err)
+	}
+
+	var got []string
+	for id := range results {
+		got = append(got, id)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d identities, want 2", len(got))
+	}
+	if got[0] != got[1] {
+		t.Fatalf("concurrent identities = %q and %q, want one persisted winner", got[0], got[1])
+	}
+	contents, err := os.ReadFile(filepath.Join(root, "agent-id"))
+	if err != nil {
+		t.Fatalf("read persisted identity: %v", err)
+	}
+	if strings.TrimSpace(string(contents)) != got[0] {
+		t.Fatalf("persisted identity = %q, want %q", strings.TrimSpace(string(contents)), got[0])
 	}
 }
 
@@ -136,7 +257,7 @@ func TestResolveSwapURLFallsBackToLocalIP(t *testing.T) {
 	}
 }
 
-func TestLoadAgentRuntimeAppliesDefaultsWithoutDerivedSwapURL(t *testing.T) {
+func TestLoadAgentRuntimeAppliesDefaultsAndDerivedSwapURL(t *testing.T) {
 	unsetEnv(t, "LLMSWAP_SWAP_URL")
 
 	cfg, err := LoadAgentRuntime(context.Background(), AgentRuntimeOptions{
@@ -166,14 +287,14 @@ func TestLoadAgentRuntimeAppliesDefaultsWithoutDerivedSwapURL(t *testing.T) {
 	if cfg.Agent.SwapPort != 6006 {
 		t.Fatalf("swap_port = %d, want 6006", cfg.Agent.SwapPort)
 	}
-	if cfg.Agent.LlamaSwapURL != "" {
-		t.Fatalf("llama_swap_url = %q, want no derived external URL", cfg.Agent.LlamaSwapURL)
+	if cfg.Agent.LlamaSwapURL != "http://100.64.0.30:6006" {
+		t.Fatalf("llama_swap_url = %q, want derived tailscale URL", cfg.Agent.LlamaSwapURL)
 	}
 	if len(cfg.Agent.Tags) != 2 || cfg.Agent.Tags[0] != "gpu-4090" || cfg.Agent.Tags[1] != "gpu-a100" {
 		t.Fatalf("tags = %v, want parsed CLI tags", cfg.Agent.Tags)
 	}
-	if cfg.Agent.LlamaSwapToken != "" {
-		t.Fatalf("llama_swap_token = %q, want no static token in FRP mode", cfg.Agent.LlamaSwapToken)
+	if cfg.Agent.LlamaSwapToken != "agent-token" {
+		t.Fatalf("llama_swap_token = %q, want inherited agent token", cfg.Agent.LlamaSwapToken)
 	}
 }
 

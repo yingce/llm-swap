@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGatewayAcceptsModelDirectoryAndAlias(t *testing.T) {
@@ -105,6 +107,56 @@ transport:
 	if cfg.Transport.FRP.LeaseTTLSeconds != 180 {
 		t.Fatalf("lease_ttl_seconds = %d, want 180", cfg.Transport.FRP.LeaseTTLSeconds)
 	}
+}
+
+func TestApplyGatewayDefaultsPreservesNonzeroFRPTTL(t *testing.T) {
+	base := GatewayConfig{Transport: TransportConfig{
+		Type: "frp_tcp",
+		FRP:  FRPTCPConfig{LeaseTTLSeconds: 90},
+	}}
+
+	tests := []struct {
+		name string
+		cfg  GatewayConfig
+	}{
+		{name: "programmatic", cfg: base},
+		{name: "json round trip", cfg: jsonRoundTripGatewayConfig(t, base)},
+		{name: "yaml round trip", cfg: yamlRoundTripGatewayConfig(t, base)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyGatewayDefaults(&tt.cfg)
+			if tt.cfg.Transport.FRP.LeaseTTLSeconds != 90 {
+				t.Fatalf("lease_ttl_seconds = %d, want 90", tt.cfg.Transport.FRP.LeaseTTLSeconds)
+			}
+		})
+	}
+}
+
+func jsonRoundTripGatewayConfig(t *testing.T, cfg GatewayConfig) GatewayConfig {
+	t.Helper()
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out GatewayConfig
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func yamlRoundTripGatewayConfig(t *testing.T, cfg GatewayConfig) GatewayConfig {
+	t.Helper()
+	encoded, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out GatewayConfig
+	if err := yaml.Unmarshal(encoded, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestLoadGatewayRejectsInvalidModelIdentity(t *testing.T) {

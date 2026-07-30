@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -127,10 +128,24 @@ func LoadAgentRuntime(ctx context.Context, opts AgentRuntimeOptions) (AgentConfi
 	cfg.Agent.GatewayURL = configString(v, "gateway_url", "")
 	cfg.Agent.Token = configString(v, "token", "")
 	cfg.Agent.LlamaSwapToken = configString(v, "llama_swap_token", "")
-	if cfg.Agent.LlamaSwapToken == "" && cfg.Agent.SwapURL != "" {
+
+	tailscaleIP := opts.TailscaleIP
+	if tailscaleIP == nil {
+		tailscaleIP = DefaultTailscaleIP
+	}
+	localIP := opts.LocalIP
+	if localIP == nil {
+		localIP = DefaultLocalIP
+	}
+	swapURL, err := ResolveSwapURL(ctx, cfg.Agent.SwapURL, cfg.Agent.SwapPort, tailscaleIP, localIP)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Agent.SwapURL = swapURL
+	cfg.Agent.LlamaSwapURL = swapURL
+	if cfg.Agent.LlamaSwapToken == "" {
 		cfg.Agent.LlamaSwapToken = cfg.Agent.Token
 	}
-	cfg.Agent.LlamaSwapURL = cfg.Agent.SwapURL
 
 	identity := opts.Identity
 	if identity == nil {
@@ -152,20 +167,18 @@ func resolveAgentID(root, configuredID string, provider AgentIdentityProvider) (
 	if id := strings.TrimSpace(configuredID); id != "" {
 		return id, nil
 	}
-	if hostname, err := provider.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
-		return strings.TrimSpace(hostname), nil
-	}
 
 	path := filepath.Join(root, "agent-id")
-	if existing, err := os.ReadFile(path); err == nil {
-		if id := strings.TrimSpace(string(existing)); id != "" {
-			if err := os.Chmod(path, 0o600); err != nil {
-				return "", err
-			}
-			return id, nil
-		}
-	} else if !os.IsNotExist(err) {
+	if id, found, err := persistedAgentID(path); err != nil {
 		return "", err
+	} else if found {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return "", err
+		}
+		return id, nil
+	}
+	if hostname, err := provider.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		return strings.TrimSpace(hostname), nil
 	}
 
 	id, err := provider.NewID()
@@ -179,13 +192,52 @@ func resolveAgentID(root, configuredID string, provider AgentIdentityProvider) (
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return waitForPersistedAgentID(path)
+		}
+		return "", err
+	}
+	if _, err := io.WriteString(file, id+"\n"); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
 		return "", err
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+func persistedAgentID(path string) (string, bool, error) {
+	contents, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	id := strings.TrimSpace(string(contents))
+	return id, id != "", nil
+}
+
+func waitForPersistedAgentID(path string) (string, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		if id, found, err := persistedAgentID(path); err != nil {
+			return "", err
+		} else if found {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return "", err
+			}
+			return id, nil
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return "", fmt.Errorf("persisted agent identity was not initialized")
 }
 
 func AgentRuntimeUsage(opts AgentRuntimeOptions) string {
