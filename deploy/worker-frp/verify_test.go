@@ -218,6 +218,32 @@ func TestEnvExampleContainsPathsAndNoCredentials(t *testing.T) {
 	if regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`).MatchString(raw) {
 		t.Error(".env.example must use documentation hostnames, not literal IPv4 deployment addresses")
 	}
+	if !strings.Contains(raw, "WORKER_IMAGE=llmswap-agent:frp-REPLACE_WITH_GIT_SHA") {
+		t.Error(".env.example must force an immutable deployment-specific image tag")
+	}
+}
+
+func TestVerifyDefaultsToDeploymentEnv(t *testing.T) {
+	raw := string(mustRead(t, "verify.sh"))
+	if !strings.Contains(raw, `env_file="${1:-$script_dir/.env}"`) {
+		t.Error("verify.sh must default to .env, never .env.example")
+	}
+}
+
+func TestRunbookCoversImmutableRollbackAndTokenRotation(t *testing.T) {
+	raw := strings.Join(strings.Fields(string(mustRead(t, "README.md"))), " ")
+	for _, required := range []string{
+		"never rebuild or overwrite an older",
+		"docker image inspect \"$OLD_WORKER_IMAGE\"",
+		"no dual-token overlap",
+		"mv -f -- \"$new_token_file\" \"$AGENT_TOKEN_FILE\"",
+		"up -d --force-recreate --no-build",
+		"does not replace the required secure host-file mode",
+	} {
+		if !strings.Contains(raw, required) {
+			t.Errorf("README.md missing operational safeguard %q", required)
+		}
+	}
 }
 
 func mustRead(t *testing.T, name string) []byte {

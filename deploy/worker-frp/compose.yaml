@@ -1,5 +1,5 @@
 x-worker-common: &worker-common
-  image: ${WORKER_IMAGE:-llmswap-agent:frp-cu128}
+  image: ${WORKER_IMAGE:?set immutable WORKER_IMAGE}
   build:
     context: ../..
     dockerfile: Dockerfile.agent
