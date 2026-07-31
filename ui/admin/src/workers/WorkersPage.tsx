@@ -82,7 +82,9 @@ export function WorkersPage({
 
 function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () => void; onUndrain: () => void }) {
   const activeRatio = row.worker.capacity.max_concurrency > 0 ? Math.min(1, row.active_requests / row.worker.capacity.max_concurrency) : 0;
-  const queueRatio = row.worker.capacity.max_queue > 0 ? Math.min(1, row.worker.active_requests / row.worker.capacity.max_queue) : 0;
+  const queueRatio = row.worker.capacity.max_queue > 0 ? Math.min(1, row.active_requests / row.worker.capacity.max_queue) : 0;
+  const runningLabel = row.loaded_models.length === 0 ? "no loaded model" : row.loaded_models.map((modelName) => modelName.replace(/:ready$/, "")).join(" · ");
+  const hasSecondaryState = row.artifact_states.length > 0 || row.cooldowns.length > 0 || row.worker.needs_restart || row.worker.last_error;
   return (
     <article className={`worker-tile ${row.health === "healthy" ? "healthy" : "degraded"}`}>
       <header className="worker-tile-head">
@@ -90,14 +92,17 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
           <h3>{row.id}</h3>
           <p>{row.tags.join(" · ") || "untagged"}</p>
         </div>
-        <StatusIndicator tone={row.health === "healthy" ? "good" : "bad"} label={row.state} />
+        <div className="worker-head-actions">
+          <StatusIndicator tone={row.health === "healthy" ? "good" : "bad"} label={row.state} />
+          {row.state === "draining" ? <button className="compact-action" onClick={onUndrain}>Undrain</button> : <button className="danger compact-action" onClick={onDrain}>Drain</button>}
+        </div>
       </header>
 
       <div className="worker-signal-strip" aria-label="worker load signals">
-        <Meter value={activeRatio} label={`${row.active_requests}/${row.worker.capacity.max_concurrency}`} tone="teal" />
-        <Meter value={queueRatio} label={`${row.worker.active_requests}/${row.worker.capacity.max_queue}`} tone="amber" />
-        <div className="worker-signal-chip">{row.gpu_count}×</div>
-        <div className="worker-signal-chip">{row.loaded_models.length}</div>
+        <SignalChip label="REQ" value={`${row.active_requests}`} />
+        <Meter value={activeRatio} label="CONC" valueLabel={`${row.active_requests}/${row.worker.capacity.max_concurrency}`} tone="teal" />
+        <Meter value={queueRatio} label="Q CAP" valueLabel={`${row.worker.capacity.max_queue}`} tone="amber" />
+        <SignalChip label="GPU" value={`${row.gpu_count}×`} />
       </div>
 
       <div className="worker-gpu-deck">
@@ -115,53 +120,64 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       </div>
 
       <div className="worker-model-board">
-        {row.loaded_models.map((modelName) => <span key={modelName}>{modelName}</span>)}
-        {row.loaded_models.length === 0 ? <span className="muted">no loaded models</span> : null}
+        <strong>model</strong>
+        <span title={runningLabel}>{runningLabel}</span>
       </div>
 
       <div className="worker-tile-detail">
         <div>
-          <strong>{row.agent_version}</strong>
-          <span>{row.worker.agent_build.commit ? row.worker.agent_build.commit.slice(0, 12) : "no commit"}</span>
+          <span>build</span>
+          <strong title={row.agent_version}>{row.worker.agent_build.version || "unknown"}</strong>
         </div>
         <div>
-          <strong>{row.heartbeat}</strong>
-          <span>{row.connectivity}</span>
+          <span>heartbeat</span>
+          <strong title={row.heartbeat}>{row.heartbeat.replace(/^.* · /, "")}</strong>
         </div>
         <div>
-          <strong>{row.worker.llama_swap_url}</strong>
-          <span>{row.worker.scrape_failures} scrape failures</span>
+          <span>scrape</span>
+          <strong>{row.worker.scrape_failures}</strong>
         </div>
       </div>
 
-      <div className="worker-resource-sections">
-        <ResourceStrip title="Running models" items={row.loaded_models} empty="no loaded models" />
-        <ResourceStrip title="Allowed models" items={row.allowed_models} empty="no allowed models" />
-        <ResourceStrip title="Artifacts" items={row.artifact_states} empty="no artifact state" />
-        <ResourceStrip title="Cooldowns" items={row.cooldowns} empty="no replica cooldowns" />
-      </div>
-      <div className="model-actions">
-        {row.state === "draining" ? <button onClick={onUndrain}>Undrain</button> : <button className="danger" onClick={onDrain}>Drain</button>}
-      </div>
+      {hasSecondaryState ? (
+        <div className="worker-resource-sections">
+          <ResourceStrip title="Artifacts" items={row.artifact_states} />
+          <ResourceStrip title="Cooldowns" items={row.cooldowns} />
+          {row.worker.needs_restart ? <span className="worker-alert-chip">restart needed</span> : null}
+          {row.worker.last_error ? <span className="worker-alert-chip" title={row.worker.last_error}>last error</span> : null}
+        </div>
+      ) : null}
     </article>
   );
 }
 
-function Meter({ value, label, tone }: { value: number; label: string; tone: "teal" | "amber" }) {
+function Meter({ value, label, valueLabel, tone }: { value: number; label: string; valueLabel: string; tone: "teal" | "amber" }) {
   return (
     <div className={`worker-meter ${tone}`} style={{ ["--meter" as string]: `${Math.round(value * 100)}%` }}>
       <span>{label}</span>
+      <strong>{valueLabel}</strong>
     </div>
   );
 }
 
-function ResourceStrip({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+function SignalChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="worker-signal-chip">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ResourceStrip({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) {
+    return null;
+  }
   return (
     <div className="worker-resource-strip">
       <strong>{title}</strong>
       <div className="worker-model-ledger">
         {items.map((item) => <span key={item}>{item}</span>)}
-        {items.length === 0 ? <span className="muted">{empty}</span> : null}
       </div>
     </div>
   );
