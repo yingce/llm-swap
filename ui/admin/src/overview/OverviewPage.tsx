@@ -35,6 +35,14 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
         </div>
       </section>
 
+      <section className="traffic-strip" aria-label="Traffic summary">
+        <TrafficSignal label="Requests" value={compactNumber(view.traffic.requests)} />
+        <TrafficSignal label="Total tokens" value={compactNumber(view.traffic.totalTokens)} />
+        <TrafficSignal label="Cache tokens" value={compactNumber(view.traffic.cacheTokens)} />
+        <TrafficSignal label="Avg latency" value={`${view.traffic.avgLatencyMs}ms`} />
+        <TrafficSignal label="Non-200" value={compactNumber(view.traffic.non200)} tone={view.traffic.non200 > 0 ? "warn" : "normal"} />
+      </section>
+
       <section className="overview-grid">
         <div className="overview-main">
           <div className="section-heading">
@@ -159,6 +167,23 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
   );
 }
 
+function TrafficSignal({
+  label,
+  value,
+  tone = "normal"
+}: {
+  label: string;
+  value: string;
+  tone?: "normal" | "warn";
+}) {
+  return (
+    <div className={`traffic-signal ${tone}`}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 function buildModelTopology(status: StatusResponse): ModelTopologyLane[] {
   return status.models
     .map((model) => ({
@@ -173,4 +198,18 @@ function buildModelTopology(status: StatusResponse): ModelTopologyLane[] {
         .sort((left, right) => left.id.localeCompare(right.id))
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function compactNumber(value: number | bigint | undefined) {
+  const numberValue = Number(value ?? 0);
+  if (!Number.isFinite(numberValue)) {
+    return "0";
+  }
+  if (Math.abs(numberValue) >= 1_000_000) {
+    return `${(numberValue / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (Math.abs(numberValue) >= 1_000) {
+    return `${(numberValue / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return String(Math.round(numberValue));
 }

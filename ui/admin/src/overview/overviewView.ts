@@ -11,18 +11,51 @@ export type OverviewConclusion = {
 
 export type OverviewView = {
   conclusion: OverviewConclusion;
+  traffic: OverviewTrafficSummary;
   attentionItems: AttentionItem[];
   tagSummaries: TagFleetSummary[];
   relationship: RelationshipView;
+};
+
+export type OverviewTrafficSummary = {
+  requests: number;
+  totalTokens: number;
+  cacheTokens: number;
+  non200: number;
+  avgLatencyMs: number;
 };
 
 export function buildOverviewView(status: StatusResponse): OverviewView {
   const attentionItems = buildAttentionItems(status);
   return {
     conclusion: buildConclusion(status, attentionItems),
+    traffic: buildTrafficSummary(status),
     attentionItems,
     tagSummaries: buildTagFleetSummaries(status),
     relationship: buildRelationshipView(status)
+  };
+}
+
+function buildTrafficSummary(status: StatusResponse): OverviewTrafficSummary {
+  const totals = status.models.reduce(
+    (acc, model) => {
+      const traffic = model.traffic;
+      const requests = Number(traffic.requests || 0);
+      acc.requests += requests;
+      acc.totalTokens += Number(traffic.total_tokens || 0);
+      acc.cacheTokens += Number(traffic.cache_tokens || 0);
+      acc.non200 += Number(traffic.status_4xx || 0) + Number(traffic.status_5xx || 0);
+      acc.durationWeighted += Number(traffic.avg_duration_ms || 0) * requests;
+      return acc;
+    },
+    { requests: 0, totalTokens: 0, cacheTokens: 0, non200: 0, durationWeighted: 0 }
+  );
+  return {
+    requests: totals.requests,
+    totalTokens: totals.totalTokens,
+    cacheTokens: totals.cacheTokens,
+    non200: totals.non200,
+    avgLatencyMs: totals.requests > 0 ? Math.round(totals.durationWeighted / totals.requests) : 0
   };
 }
 

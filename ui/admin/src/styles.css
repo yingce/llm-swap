@@ -510,6 +510,52 @@ small {
   margin: 0;
 }
 
+.traffic-strip {
+  background: #dfe9ee;
+  border: 1px solid #c1d0da;
+  border-radius: 14px;
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.traffic-signal {
+  align-items: baseline;
+  background: #e9f1f4;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 12px;
+}
+
+.traffic-signal strong {
+  color: #17283a;
+  font-size: 18px;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+.traffic-signal span {
+  color: #607485;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.traffic-signal.warn {
+  background: #eee4d7;
+}
+
+.traffic-signal.warn strong {
+  color: #7b4e13;
+}
+
 .overview-grid {
   align-items: start;
   display: grid;
@@ -2408,6 +2454,22 @@ textarea {
 
   .overview-conclusion h2 {
     font-size: 18px;
+  }
+
+  .traffic-strip {
+    display: flex;
+    gap: 1px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .traffic-signal {
+    flex: 0 0 132px;
+    padding: 8px 10px;
+  }
+
+  .traffic-signal strong {
+    font-size: 16px;
   }
 
   .topology-heading {
