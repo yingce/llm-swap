@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 
 import type { StatusResponse } from "../api";
 import { drainWorker, undrainWorker } from "../api";
-import { ConfirmDialog, EmptyState, StatusIndicator } from "../components/primitives";
+import { ConfirmDialog, EmptyState } from "../components/primitives";
 import { buildWorkerFilters, buildWorkerRows, type WorkerRow } from "./workerView";
 
 export function WorkersPage({
@@ -92,9 +92,9 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
         <div>
           <h3>{row.id}</h3>
           <p>{row.tags.join(" · ") || "untagged"}</p>
+          <small className="worker-url" title={row.worker.llama_swap_url}>{row.worker.llama_swap_url}</small>
         </div>
         <div className="worker-head-actions">
-          <StatusIndicator tone={row.health === "healthy" ? "good" : "bad"} label={row.state} />
           {row.state === "draining" ? <button className="compact-action" onClick={onUndrain}>Undrain</button> : <button className="danger-ghost compact-action" onClick={onDrain}>Drain</button>}
         </div>
       </header>
@@ -111,9 +111,12 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
             <div>
               <strong>{gpu.index}</strong>
               <span>{gpu.name.replace(/^NVIDIA\s+/i, "")}</span>
+              <small>{gpu.utilization} · {gpu.temperature}</small>
             </div>
-            <div className="worker-gpu-bar" style={{ ["--gpu-used" as string]: `${gpu.memory_percent}%` }} />
-            <small>{gpu.utilization} · {gpu.temperature} · {gpu.memory}</small>
+            <div className="worker-gpu-load">
+              <div className="worker-gpu-bar" title={gpu.memory} style={{ ["--gpu-used" as string]: `${gpu.memory_percent}%` }} />
+              <small>{gpu.memory}</small>
+            </div>
           </div>
         ))}
         {row.gpu_devices.length === 0 ? <div className="worker-gpu-mini empty-gpu">no GPU metrics</div> : null}
