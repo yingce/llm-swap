@@ -374,6 +374,104 @@ small {
   justify-content: flex-end;
 }
 
+.overview-page {
+  display: grid;
+  gap: 18px;
+}
+
+.overview-conclusion {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.overview-conclusion h2 {
+  font-size: clamp(24px, 4vw, 42px);
+  letter-spacing: -0.03em;
+  margin-top: 12px;
+}
+
+.overview-conclusion p {
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.overview-grid {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.overview-main,
+.overview-rail {
+  display: grid;
+  gap: 14px;
+}
+
+.section-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.section-heading p {
+  color: var(--muted);
+}
+
+.tag-summary-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tag-summary,
+.topology-tag {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.tag-summary header,
+.tag-model-row,
+.topology-worker {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.tag-summary header span,
+.topology-worker small {
+  color: var(--muted);
+}
+
+.tag-summary-metrics {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.tag-models,
+.topology-list,
+.topology-tag > div {
+  display: grid;
+  gap: 8px;
+}
+
+.tag-model-row {
+  border-top: 1px solid #dde5ed;
+  padding-top: 8px;
+}
+
+.topology-heading {
+  margin-top: 6px;
+}
+
 .panel {
   min-height: 560px;
   padding: 18px;
@@ -1241,6 +1339,8 @@ textarea {
 @media (max-width: 980px) {
   .summary-grid,
   .traffic-summary,
+  .overview-grid,
+  .tag-summary-grid,
   .shell,
   .split {
     grid-template-columns: 1fr;

@@ -41,6 +41,7 @@ import { AppShell } from "./AppShell";
 import { STATUS_REFRESH_INTERVAL_MS, reduceLiveStatus } from "./liveStatus";
 import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./navigation";
 import { appendRoutePage, routeDataKeysForTab } from "./routeData";
+import { OverviewPage } from "../overview/OverviewPage";
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
@@ -336,7 +337,7 @@ export function App() {
       onSelectTab={selectTab}
     >
           {tab === "dashboard" && (
-            <Dashboard status={status} events={(status?.events ?? []).slice(0, 5)} requests={[]} onAction={runAction} />
+            <OverviewPage status={status} />
           )}
           {tab === "models" && <Models models={status?.models ?? []} onAction={runAction} />}
           {tab === "workers" && <Workers workers={status?.workers ?? []} onAction={runAction} />}
