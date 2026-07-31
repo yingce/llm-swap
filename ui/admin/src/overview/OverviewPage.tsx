@@ -108,10 +108,10 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
                     </header>
                     <div className="topology-worker-strip">
                       {tag.workers.map((worker) => (
-                        <div className="topology-worker-node" key={worker.id}>
+                        <div className={`topology-worker-node ${worker.health === "healthy" ? "healthy" : "degraded"}`} key={worker.id}>
                           <div>
                             <span>{worker.id}</span>
-                            <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+                            <small>{worker.state}</small>
                           </div>
                           <p>
                             {worker.gpu_count} GPU · {worker.loaded_models.length > 0
@@ -132,10 +132,10 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
                     </header>
                     <div className="topology-worker-strip">
                       {model.workers.length > 0 ? model.workers.map((worker) => (
-                        <div className="topology-worker-node" key={`${model.name}-${worker.id}`}>
+                        <div className={`topology-worker-node ${worker.health === "healthy" ? "healthy" : "degraded"}`} key={`${model.name}-${worker.id}`}>
                           <div>
                             <span>{worker.id}</span>
-                            <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+                            <small>{worker.state}</small>
                           </div>
                         </div>
                       )) : <div className="topology-worker-node quiet-node">No worker state</div>}

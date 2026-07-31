@@ -35,8 +35,9 @@ export function ModelsPage({
           <span>Search</span>
           <input value={query} placeholder="name, alias, runtime" onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <label className="checkbox-item compact-checkbox">
+        <label className="switch-control compact-switch">
           <input type="checkbox" checked={includeDisabled} onChange={(event) => setIncludeDisabled(event.target.checked)} />
+          <span className="switch-track" aria-hidden="true" />
           <span>Show disabled</span>
         </label>
       </section>

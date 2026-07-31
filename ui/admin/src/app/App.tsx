@@ -785,12 +785,13 @@ function Billing({
         <div className="table-heading">
           <h3>Manual model pricing</h3>
           <div className="config-toolbar-actions">
-            <label className="checkbox-item compact-checkbox">
+            <label className="switch-control compact-switch">
               <input
                 type="checkbox"
                 checked={showDisabledPricing}
                 onChange={(event) => setShowDisabledPricing(event.target.checked)}
               />
+              <span className="switch-track" aria-hidden="true" />
               <span>Show disabled</span>
             </label>
             <Badge tone={pricingDirty ? "warn" : "good"}>{pricingDirty ? "draft changed" : "in sync"}</Badge>
@@ -1248,12 +1249,13 @@ function ConfigOps({
               </div>
             }
           >
-            <label className="checkbox-item compact-checkbox">
+            <label className="switch-control compact-switch">
               <input
                 type="checkbox"
                 checked={showDisabledModels}
                 onChange={(event) => setShowDisabledModels(event.target.checked)}
               />
+              <span className="switch-track" aria-hidden="true" />
               <span>Show disabled</span>
             </label>
             {visibleModelNames.map((modelName) => {
@@ -1633,12 +1635,13 @@ function ModelEditor({
           <h3>{name}</h3>
           <p>Push policy, runtime, and artifact settings.</p>
         </div>
-        <label className="model-disabled-toggle">
+        <label className="model-disabled-toggle switch-control">
           <input
             type="checkbox"
             checked={Boolean(model.disabled)}
             onChange={(event) => onChange({ ...model, disabled: event.target.checked || undefined })}
           />
+          <span className="switch-track" aria-hidden="true" />
           <span>Disabled</span>
         </label>
         {liveStatus ? <div className="config-card-state">

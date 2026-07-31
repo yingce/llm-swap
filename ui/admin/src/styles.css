@@ -706,6 +706,22 @@ small {
   gap: 4px;
   min-width: 0;
   padding: 6px 7px;
+  position: relative;
+}
+
+.topology-worker-node::before {
+  background: #b6d8cd;
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  left: 8px;
+  position: absolute;
+  right: 8px;
+  top: -1px;
+}
+
+.topology-worker-node.degraded::before {
+  background: #e1beb9;
 }
 
 .topology-worker-node.quiet-node {
@@ -722,11 +738,18 @@ small {
 }
 
 .topology-worker-node span,
-.topology-worker-node p {
+.topology-worker-node p,
+.topology-worker-node small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.topology-worker-node small {
+  color: #6d7f8c;
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .topology-worker-node p {
@@ -1212,6 +1235,31 @@ small {
 .billing-ledger {
   display: grid;
   gap: 14px;
+}
+
+.billing-range-tabs {
+  background: #d9e4e9;
+  border: 1px solid #bdccd5;
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.billing-range-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #526778;
+  font-size: 12px;
+  min-height: 26px;
+  min-width: 42px;
+  padding: 3px 10px;
+}
+
+.billing-range-tabs button.active {
+  background: #f4f8fa;
+  color: #162638;
 }
 
 .pricing-save-row {
@@ -1825,20 +1873,16 @@ textarea {
 .model-disabled-toggle {
   align-self: flex-start;
   align-items: center;
-  background: var(--surface-raised);
+  background: #e5eef2;
   border: 1px solid #bfd0dc;
   border-radius: 999px;
   color: #536170;
   display: inline-flex;
   font-size: 12px;
-  gap: 6px;
-  padding: 7px 10px;
+  gap: 8px;
+  padding: 5px 9px;
   text-transform: none;
   white-space: nowrap;
-}
-
-.model-disabled-toggle input {
-  margin: 0;
 }
 
 .modal-backdrop {
@@ -2114,13 +2158,45 @@ textarea {
 }
 
 .checkbox-item input {
-  accent-color: #5c8f9c;
+  appearance: none;
+  background: #eef5f8;
+  border: 1px solid #aebfca;
+  border-radius: 5px;
+  cursor: pointer;
   flex: 0 0 16px;
   height: 16px;
   margin: 0;
   min-height: 0;
   padding: 0;
+  position: relative;
   width: 16px;
+}
+
+.checkbox-item input::after {
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  content: "";
+  height: 8px;
+  left: 5px;
+  opacity: 0;
+  position: absolute;
+  top: 2px;
+  transform: rotate(45deg);
+  width: 4px;
+}
+
+.checkbox-item input:checked {
+  background: #6b9fab;
+  border-color: #6b9fab;
+}
+
+.checkbox-item input:checked::after {
+  opacity: 1;
+}
+
+.checkbox-item:focus-within {
+  border-color: #7fb2c3;
+  box-shadow: 0 0 0 3px rgb(73 184 201 / 14%);
 }
 
 .checkbox-item span {
@@ -2128,57 +2204,69 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-.compact-checkbox {
+.switch-control {
   align-items: center;
   align-self: end;
   background: #e4edf2;
   border-color: #c2d1da;
+  border-style: solid;
+  border-width: 1px;
   border-radius: 999px;
   color: #465c6d;
   cursor: pointer;
   display: inline-flex;
   font-size: 12px;
   font-weight: 700;
-  gap: 7px;
+  gap: 8px;
   justify-self: start;
   min-height: 30px;
-  padding: 4px 9px 4px 5px;
+  padding: 5px 10px;
   width: fit-content;
 }
 
-.compact-checkbox input {
-  appearance: none;
+.switch-control input {
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 1px;
+}
+
+.switch-track {
   background: #cad8df;
   border: 1px solid #b5c6d0;
   border-radius: 999px;
-  cursor: pointer;
-  height: 16px;
-  margin: 0;
-  min-height: 0;
-  padding: 0;
+  flex: 0 0 auto;
+  height: 18px;
   position: relative;
-  width: 28px;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+  width: 32px;
 }
 
-.compact-checkbox input::before {
+.switch-track::before {
   background: #f7fbfd;
   border-radius: 999px;
   content: "";
-  height: 12px;
+  height: 14px;
   left: 1px;
   position: absolute;
   top: 1px;
   transition: transform 120ms ease-out;
-  width: 12px;
+  width: 14px;
 }
 
-.compact-checkbox input:checked {
+.switch-control input:checked + .switch-track {
   background: #7baeb9;
   border-color: #6aa0ac;
 }
 
-.compact-checkbox input:checked::before {
-  transform: translateX(12px);
+.switch-control input:checked + .switch-track::before {
+  transform: translateX(14px);
+}
+
+.switch-control:focus-within {
+  border-color: #7fb2c3;
+  box-shadow: 0 0 0 3px rgb(73 184 201 / 14%);
 }
 
 .advanced-readonly textarea {

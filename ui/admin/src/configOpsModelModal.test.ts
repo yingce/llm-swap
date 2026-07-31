@@ -12,7 +12,7 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain('aria-modal="true"');
     expect(source).toContain("isModelCreateDraftDirty(initialDraft, draft)");
     expect(source).toContain("MODEL_RUNTIME_OPTIONS.map");
-    expect(source).toContain('className="model-disabled-toggle"');
+    expect(source).toContain('className="model-disabled-toggle switch-control"');
   });
 
   it("manages focus inside a portaled modal while the complete app background is inert", () => {

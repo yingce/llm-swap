@@ -78,9 +78,18 @@ export function BillingPage({
           <h2>Billing</h2>
           <p>Cost and usage records. Disabled local storage is informational; auth and network errors remain visible.</p>
         </div>
-        <select value={rangeHours} onChange={(event) => onRangeChange(Number(event.target.value))}>
-          {[1, 6, 24, 72, 168].map((hours) => <option value={hours} key={hours}>{hours}h</option>)}
-        </select>
+        <div className="billing-range-tabs" aria-label="Billing time range">
+          {[1, 6, 24, 72, 168].map((hours) => (
+            <button
+              type="button"
+              key={hours}
+              className={rangeHours === hours ? "active" : ""}
+              onClick={() => onRangeChange(hours)}
+            >
+              {formatRangeLabel(hours)}
+            </button>
+          ))}
+        </div>
       </section>
       {notice ? <div className={notice.tone === "bad" ? "alert" : "notice"}><strong>{notice.title}</strong> · {notice.detail}</div> : null}
       {billing ? (
@@ -139,4 +148,8 @@ function formatNumber(value: number | undefined) {
 
 function formatMoney(value: number | undefined) {
   return `$${Number(value ?? 0).toFixed(2)}`;
+}
+
+function formatRangeLabel(hours: number) {
+  return hours < 24 ? `${hours}h` : `${hours / 24}d`;
 }
