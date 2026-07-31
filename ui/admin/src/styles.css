@@ -131,7 +131,21 @@ small {
 
 .tabs {
   display: grid;
-  gap: 8px;
+  gap: 14px;
+}
+
+.tab-group {
+  display: grid;
+  gap: 6px;
+}
+
+.tab-group-label {
+  color: #677483;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0 4px;
+  text-transform: uppercase;
 }
 
 .tabs button {
@@ -1049,7 +1063,11 @@ textarea {
   }
 
   .tabs {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .tab-group {
+    align-content: start;
   }
 
   .tabs button {

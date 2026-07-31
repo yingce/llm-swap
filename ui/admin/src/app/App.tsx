@@ -37,7 +37,10 @@ import {
   type EditableModelConfig,
   type ModelCreateDraft
 } from "../modelLifecycle";
-import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "../routes";
+import { AppShell } from "./AppShell";
+import { STATUS_REFRESH_INTERVAL_MS, reduceLiveStatus } from "./liveStatus";
+import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./navigation";
+import { appendRoutePage, routeDataKeysForTab } from "./routeData";
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
@@ -49,21 +52,13 @@ type ModelBillingPriceField = keyof ModelBillingConfig;
 type BillingInputTokenMode = "total" | "billable";
 const secondsPerDay = 86400;
 
-const tabs: Array<{ id: Tab; label: string }> = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "models", label: "Models" },
-  { id: "workers", label: "Workers" },
-  { id: "billing", label: "Billing" },
-  { id: "events", label: "Events" },
-  { id: "requests", label: "Requests" },
-  { id: "configOps", label: "Config Ops" },
-  { id: "advanced", label: "Advanced" }
-];
-
 export function App() {
   const appContentRef = useRef<HTMLElement>(null);
   const [tab, setTab] = useState<Tab>(() => tabFromPath(window.location.pathname));
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [liveStatus, setLiveStatus] = useState<{ status: StatusResponse | null; error: string }>({
+    status: null,
+    error: ""
+  });
   const [events, setEvents] = useState<WorkerEvent[]>([]);
   const [eventOffset, setEventOffset] = useState(0);
   const [hasMoreEvents, setHasMoreEvents] = useState(false);
@@ -73,7 +68,6 @@ export function App() {
   const [billing, setBilling] = useState<BillingSummary | null>(null);
   const [billingRangeHours, setBillingRangeHours] = useState(24);
   const [billingError, setBillingError] = useState("");
-  const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   const [configResponse, setConfigResponse] = useState<ConfigResponse | null>(null);
@@ -87,10 +81,11 @@ export function App() {
   async function refresh() {
     try {
       const next = await getStatus();
-      setStatus(next);
-      setError("");
+      setLiveStatus((current) => reduceLiveStatus(current, { type: "success", status: next }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLiveStatus((current) =>
+        reduceLiveStatus(current, { type: "failure", error: err instanceof Error ? err.message : String(err) })
+      );
     }
   }
 
@@ -111,14 +106,14 @@ export function App() {
 
   async function loadEvents(offset = 0) {
     const page = await getEvents(offset, 50);
-    setEvents((current) => (offset === 0 ? page.events : [...current, ...page.events]));
+    setEvents((current) => appendRoutePage(current, page.events, offset));
     setEventOffset(page.next_offset);
     setHasMoreEvents(page.has_more);
   }
 
   async function loadRequests(offset = 0) {
     const page = await getRequests(offset, 50);
-    setRequests((current) => (offset === 0 ? page.requests : [...current, ...page.requests]));
+    setRequests((current) => appendRoutePage(current, page.requests, offset));
     setRequestOffset(page.next_offset);
     setHasMoreRequests(page.has_more);
   }
@@ -139,19 +134,19 @@ export function App() {
       const result = await action();
       setNotice(`${result.action} done${result.model ? ` · ${result.model}` : ""}${result.worker_id ? ` · ${result.worker_id}` : ""}`);
       await refresh();
-      await loadEvents(0);
+      if (routeDataKeysForTab(tab).includes("events")) {
+        await loadEvents(0);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLiveStatus((current) =>
+        reduceLiveStatus(current, { type: "failure", error: err instanceof Error ? err.message : String(err) })
+      );
     }
   }
 
   useEffect(() => {
     void refresh();
-    void refreshConfig();
-    void loadEvents(0);
-    void loadRequests(0);
-    void loadBilling(24);
-    const timer = window.setInterval(refresh, 5000);
+    const timer = window.setInterval(refresh, STATUS_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -173,6 +168,24 @@ export function App() {
     setTab(next);
   }
 
+  useEffect(() => {
+    const keys = routeDataKeysForTab(tab);
+    if (keys.includes("config") && !configResponse) {
+      void refreshConfig();
+    }
+    if (keys.includes("events") && events.length === 0 && eventOffset === 0) {
+      void loadEvents(0);
+    }
+    if (keys.includes("requests") && requests.length === 0 && requestOffset === 0) {
+      void loadRequests(0);
+    }
+    if (keys.includes("billing") && !billing) {
+      void loadBilling(24);
+    }
+  }, [tab]);
+
+  const status = liveStatus.status;
+  const error = liveStatus.error;
   const summary = status?.summary;
   const renderedConfigYaml = useMemo(() => {
     if (!configResponse || !configDraft) {
@@ -288,7 +301,9 @@ export function App() {
       setConfigError("");
       await refreshConfig();
       await refresh();
-      await loadEvents(0);
+      if (routeDataKeysForTab(tab).includes("events")) {
+        await loadEvents(0);
+      }
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : String(err));
     }
@@ -310,39 +325,18 @@ export function App() {
   }
 
   return (
-    <main ref={appContentRef} className="app">
-      <header className="topbar">
-        <div>
-          <h1>LLM Swap Admin</h1>
-          <p>{status ? `Updated ${new Date(status.generated_at).toLocaleTimeString()}` : "Loading gateway state"}</p>
-        </div>
-        <button className="primary" onClick={() => void refresh()}>Refresh</button>
-      </header>
-
-      {error ? <div className="alert">Failed to load state: {error}</div> : null}
-      {notice ? <div className="notice">{notice}</div> : null}
-
-      <section className="summary-grid">
-        <Metric label="Healthy workers" value={summary ? `${summary.healthy_workers}/${summary.total_workers}` : "-"} />
-        <Metric label="Available models" value={summary ? `${summary.available_models}/${summary.configured_models}` : "-"} />
-        <Metric label="Active requests" value={summary?.active_requests ?? "-"} />
-        <Metric label="Draining workers" value={summary?.draining_workers ?? "-"} />
-        <Metric label="Stale workers" value={summary?.stale_workers ?? "-"} />
-        <Metric label="Recent errors" value={summary ? summary.recent_error_events + summary.workers_with_errors : "-"} />
-      </section>
-
-      <div className="shell">
-        <nav className="tabs" aria-label="Admin sections">
-          {tabs.map((item) => (
-            <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => selectTab(item.id)}>
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        <section className="panel">
+    <AppShell
+      appContentRef={appContentRef}
+      tab={tab}
+      summary={summary}
+      statusUpdatedAt={status?.generated_at}
+      error={error}
+      notice={notice}
+      onRefresh={() => void refresh()}
+      onSelectTab={selectTab}
+    >
           {tab === "dashboard" && (
-            <Dashboard status={status} events={events.slice(0, 5)} requests={requests.slice(0, 5)} onAction={runAction} />
+            <Dashboard status={status} events={(status?.events ?? []).slice(0, 5)} requests={[]} onAction={runAction} />
           )}
           {tab === "models" && <Models models={status?.models ?? []} onAction={runAction} />}
           {tab === "workers" && <Workers workers={status?.workers ?? []} onAction={runAction} />}
@@ -397,9 +391,7 @@ export function App() {
               onCopy={() => void copyAdvancedYAML()}
             />
           )}
-        </section>
-      </div>
-    </main>
+    </AppShell>
   );
 }
 
