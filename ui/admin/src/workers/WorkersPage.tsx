@@ -85,8 +85,9 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
   const queueRatio = row.worker.capacity.max_queue > 0 ? Math.min(1, row.active_requests / row.worker.capacity.max_queue) : 0;
   const runningLabel = row.loaded_models.length === 0 ? "no loaded model" : row.loaded_models.map((modelName) => modelName.replace(/:ready$/, "")).join(" · ");
   const hasSecondaryState = row.artifact_states.length > 0 || row.cooldowns.length > 0 || row.worker.needs_restart || row.worker.last_error;
+  const buildState = row.worker.agent_version_status === "current" ? "latest" : "old";
   return (
-    <article className={`worker-tile ${row.health === "healthy" ? "healthy" : "degraded"}`}>
+    <article className={`worker-tile ${row.health === "healthy" ? "healthy" : "degraded"} ${row.active_requests > 0 ? "busy" : "idle"}`}>
       <header className="worker-tile-head">
         <div>
           <h3>{row.id}</h3>
@@ -94,12 +95,11 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
         </div>
         <div className="worker-head-actions">
           <StatusIndicator tone={row.health === "healthy" ? "good" : "bad"} label={row.state} />
-          {row.state === "draining" ? <button className="compact-action" onClick={onUndrain}>Undrain</button> : <button className="danger compact-action" onClick={onDrain}>Drain</button>}
+          {row.state === "draining" ? <button className="compact-action" onClick={onUndrain}>Undrain</button> : <button className="danger-ghost compact-action" onClick={onDrain}>Drain</button>}
         </div>
       </header>
 
       <div className="worker-signal-strip" aria-label="worker load signals">
-        <SignalChip label="REQ" value={`${row.active_requests}`} />
         <Meter value={activeRatio} label="CONC" valueLabel={`${row.active_requests}/${row.worker.capacity.max_concurrency}`} tone="teal" />
         <Meter value={queueRatio} label="Q CAP" valueLabel={`${row.worker.capacity.max_queue}`} tone="amber" />
         <SignalChip label="GPU" value={`${row.gpu_count}×`} />
@@ -127,7 +127,7 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       <div className="worker-tile-detail">
         <div>
           <span>build</span>
-          <strong title={row.agent_version}>{row.worker.agent_build.version || "unknown"}</strong>
+          <strong title={row.agent_version}>{buildState}</strong>
         </div>
         <div>
           <span>heartbeat</span>

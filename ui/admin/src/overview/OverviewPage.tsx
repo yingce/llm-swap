@@ -55,34 +55,35 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
 
           <div className="section-heading topology-heading">
             <h3>Cluster topology</h3>
-            <p>Gateway → tag → worker → loaded model. FRP is treated as transport, not topology.</p>
+            <p>Gateway routes through tag policy to workers and their loaded models.</p>
           </div>
           <div className="topology-map" aria-label="Gateway to tag to worker topology">
             <div className="topology-gateway">Gateway</div>
-            {view.relationship.tags.map((tag) => (
-              <article className="topology-tag" key={tag.tag}>
-                <header>
-                  <strong>{tag.tag}</strong>
-                  <span>{tag.workers.length} workers</span>
-                </header>
-                <div className="topology-worker-stack">
-                  {tag.workers.map((worker) => (
-                    <div className="topology-worker" key={worker.id}>
-                      <div className="topology-worker-head">
-                        <span>{worker.id}</span>
-                        <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+            <div className="topology-tag-lanes">
+              {view.relationship.tags.map((tag) => (
+                <article className="topology-lane" key={tag.tag}>
+                  <header>
+                    <strong>{tag.tag}</strong>
+                    <span>{tag.workers.length} workers</span>
+                  </header>
+                  <div className="topology-worker-strip">
+                    {tag.workers.map((worker) => (
+                      <div className="topology-worker-node" key={worker.id}>
+                        <div>
+                          <span>{worker.id}</span>
+                          <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+                        </div>
+                        <p>
+                          {worker.gpu_count} GPU · {worker.loaded_models.length > 0
+                            ? worker.loaded_models.map((model) => `${model.name}:${model.state}`).join(" · ")
+                            : "no loaded models"}
+                        </p>
                       </div>
-                      <div className="topology-branches">
-                        <span>{worker.gpu_count} GPU</span>
-                        {worker.loaded_models.length > 0
-                          ? worker.loaded_models.map((model) => <span key={`${worker.id}-${model.name}`}>{model.name}:{model.state}</span>)
-                          : <span>no loaded models</span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
           </div>
         </div>
 

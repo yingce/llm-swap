@@ -541,90 +541,115 @@ small {
 }
 
 .topology-map {
-  background: #eef3f7;
-  border: 1px solid #c8d5df;
-  border-radius: 16px;
+  align-items: start;
+  background: #eaf2f6;
+  border: 1px solid #c5d5df;
+  border-radius: 14px;
   display: grid;
-  gap: 16px;
-  padding: 16px;
+  gap: 18px;
+  grid-template-columns: 96px minmax(0, 1fr);
+  padding: 12px;
   position: relative;
 }
 
 .topology-gateway {
-  align-self: start;
-  background: #0f1b2a;
-  border-radius: 12px;
-  color: #f8fbff;
-  font-weight: 800;
-  justify-self: start;
-  padding: 10px 14px;
-}
-
-.topology-map .topology-tag {
-  margin-left: 38px;
+  align-self: center;
+  background: #1d3447;
+  border-radius: 10px;
+  color: #eaf5f8;
+  font-weight: 760;
+  padding: 8px 10px;
   position: relative;
+  text-align: center;
 }
 
-.topology-map .topology-tag::before {
-  background: #8fa5b7;
+.topology-gateway::after {
+  background: #9aacb8;
   content: "";
   height: 1px;
-  left: -38px;
+  left: 100%;
   position: absolute;
-  top: 28px;
-  width: 38px;
+  top: 50%;
+  width: 18px;
 }
 
-.topology-tag header,
-.topology-worker-head,
-.topology-branches {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-}
-
-.topology-tag header span {
-  color: var(--muted);
-}
-
-.topology-worker-stack {
-  display: grid;
-  gap: 10px;
-}
-
-.topology-worker {
-  background: var(--surface-subtle);
-  border: 1px solid #d8e1e8;
-  border-radius: 12px;
+.topology-tag-lanes {
+  border-left: 1px solid #9aacb8;
   display: grid;
   gap: 8px;
-  padding: 10px;
+  padding-left: 18px;
+}
+
+.topology-lane {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 150px minmax(0, 1fr);
   position: relative;
 }
 
-.topology-worker::before {
-  background: #8fa5b7;
+.topology-lane::before {
+  background: #9aacb8;
   content: "";
   height: 1px;
-  left: -15px;
+  left: -18px;
   position: absolute;
-  top: 22px;
-  width: 15px;
+  top: 18px;
+  width: 18px;
 }
 
-.topology-branches {
-  flex-wrap: wrap;
-  justify-content: flex-start;
+.topology-lane header {
+  background: #f5fafb;
+  border: 1px solid #ccdae3;
+  border-radius: 10px;
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
 }
 
-.topology-branches span {
-  background: #ffffff;
-  border: 1px solid #d8e1e8;
-  border-radius: 999px;
+.topology-lane header span {
   color: var(--muted);
   font-size: 12px;
-  padding: 3px 8px;
+}
+
+.topology-worker-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.topology-worker-node {
+  background: #f8fbfd;
+  border: 1px solid #d2e0e8;
+  border-radius: 10px;
+  display: grid;
+  flex: 1 1 210px;
+  gap: 4px;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.topology-worker-node > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.topology-worker-node span,
+.topology-worker-node p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-worker-node p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
 }
 
 .models-workspace {
@@ -750,7 +775,7 @@ small {
 }
 
 .worker-tile::before {
-  background: var(--accent-2);
+  background: #9fb5c4;
   border-radius: 999px;
   content: "";
   height: 3px;
@@ -758,6 +783,10 @@ small {
   position: absolute;
   right: 12px;
   top: -2px;
+}
+
+.worker-tile.busy::before {
+  background: var(--accent);
 }
 
 .worker-tile.degraded::before {
@@ -795,7 +824,7 @@ small {
 .worker-signal-strip {
   display: grid;
   gap: 5px;
-  grid-template-columns: 0.8fr 1.15fr 0.95fr 0.75fr;
+  grid-template-columns: 1.2fr 1fr 0.72fr;
 }
 
 .worker-meter,
@@ -812,7 +841,7 @@ small {
 }
 
 .worker-meter::before {
-  background: var(--accent-2);
+  background: #a8ccd4;
   bottom: 0;
   content: "";
   left: 0;
@@ -822,7 +851,7 @@ small {
 }
 
 .worker-meter.amber::before {
-  background: var(--amber);
+  background: #d8c99f;
 }
 
 .worker-meter span,
@@ -847,15 +876,15 @@ small {
 }
 
 .worker-signal-chip {
-  background: #14293b;
+  background: #d7e5eb;
 }
 
 .worker-signal-chip span {
-  color: #90aabc;
+  color: #536878;
 }
 
 .worker-signal-chip strong {
-  color: #e8f7fb;
+  color: #0c1b27;
 }
 
 .worker-gpu-deck {
@@ -864,7 +893,7 @@ small {
 }
 
 .worker-gpu-mini {
-  background: #14293b;
+  background: #1d3447;
   border-radius: 10px;
   color: #eaf7fb;
   display: grid;
@@ -911,7 +940,7 @@ small {
 }
 
 .worker-gpu-bar::before {
-  background: linear-gradient(90deg, #5cc7d4, #f2a93b);
+  background: #83bdc8;
   border-radius: inherit;
   bottom: 0;
   content: "";
@@ -930,10 +959,10 @@ small {
 
 .worker-model-board span,
 .worker-model-ledger span {
-  background: #e6f1f5;
-  border: 1px solid #c8dce5;
+  background: #edf4f7;
+  border: 1px solid #d2e0e8;
   border-radius: 999px;
-  color: #1d4353;
+  color: #35596a;
   font-size: 12px;
   font-weight: 750;
   padding: 5px 8px;
@@ -941,8 +970,8 @@ small {
 
 .worker-model-board {
   align-items: center;
-  background: #ddebf0;
-  border: 1px solid #c8dce5;
+  background: #e7f0f4;
+  border: 1px solid #cadbe4;
   border-radius: 10px;
   display: grid;
   gap: 6px;
@@ -1020,13 +1049,24 @@ small {
 }
 
 .worker-alert-chip {
-  background: #fff5df;
-  border: 1px solid #ebc878;
+  background: #f8efd8;
+  border: 1px solid #ddc684;
   border-radius: 999px;
   color: var(--warn);
   font-size: 11px;
   font-weight: 750;
   padding: 4px 7px;
+}
+
+.danger-ghost {
+  background: transparent;
+  border-color: #d7aaa3;
+  color: #9d2a20;
+}
+
+.danger-ghost:hover {
+  background: #f6e5e2;
+  border-color: #c77f75;
 }
 
 .worker-actions {
