@@ -5,7 +5,7 @@ import { appendRoutePage, routeDataKeysForTab } from "./routeData";
 describe("route data policy", () => {
   it("keeps the overview status-only and lazy-loads route-specific data", () => {
     expect(routeDataKeysForTab("dashboard")).toEqual([]);
-    expect(routeDataKeysForTab("models")).toEqual([]);
+    expect(routeDataKeysForTab("models")).toEqual(["config"]);
     expect(routeDataKeysForTab("workers")).toEqual([]);
     expect(routeDataKeysForTab("events")).toEqual(["events"]);
     expect(routeDataKeysForTab("requests")).toEqual(["requests"]);

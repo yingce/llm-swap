@@ -4,6 +4,8 @@ export type RouteDataKey = "events" | "requests" | "billing" | "config";
 
 export function routeDataKeysForTab(tab: Tab): RouteDataKey[] {
   switch (tab) {
+    case "models":
+      return ["config"];
     case "events":
       return ["events"];
     case "requests":
@@ -14,7 +16,6 @@ export function routeDataKeysForTab(tab: Tab): RouteDataKey[] {
     case "advanced":
       return ["config"];
     case "dashboard":
-    case "models":
     case "workers":
       return [];
   }

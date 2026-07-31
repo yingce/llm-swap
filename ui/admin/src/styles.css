@@ -472,6 +472,93 @@ small {
   margin-top: 6px;
 }
 
+.models-workspace {
+  display: grid;
+  gap: 16px;
+}
+
+.model-toolbar {
+  align-items: end;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px) auto;
+}
+
+.model-toolbar p,
+.model-row small,
+.model-detail-grid span {
+  color: var(--muted);
+}
+
+.model-search {
+  display: grid;
+  gap: 6px;
+}
+
+.models-master-detail {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+}
+
+.model-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  justify-content: space-between;
+  min-height: 58px;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.model-row span {
+  display: grid;
+  gap: 4px;
+}
+
+.model-row.selected {
+  color: var(--accent);
+}
+
+.model-detail-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.model-detail-grid > div {
+  background: var(--surface-subtle);
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.model-replica-list {
+  display: grid;
+  gap: 8px;
+}
+
+.model-replica-row {
+  align-items: center;
+  border-top: 1px solid #dde5ed;
+  display: flex;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.model-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
 .panel {
   min-height: 560px;
   padding: 18px;
@@ -1341,6 +1428,9 @@ textarea {
   .traffic-summary,
   .overview-grid,
   .tag-summary-grid,
+  .models-master-detail,
+  .model-toolbar,
+  .model-detail-grid,
   .shell,
   .split {
     grid-template-columns: 1fr;
