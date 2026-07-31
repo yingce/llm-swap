@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("./app/App.tsx", import.meta.url), "utf8");
 
 describe("Config Ops model creation modal", () => {
   it("uses a reusable modal with constrained runtime and header disabled controls", () => {
