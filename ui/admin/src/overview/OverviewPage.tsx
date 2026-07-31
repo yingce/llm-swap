@@ -1,8 +1,25 @@
+import { useMemo, useState } from "react";
+
 import type { StatusResponse } from "../api";
 import { AttentionList, EmptyState, StatusIndicator } from "../components/primitives";
 import { buildOverviewView } from "./overviewView";
 
+type TopologyMode = "tag" | "model";
+
+type ModelTopologyLane = {
+  name: string;
+  summary: string;
+  workers: {
+    id: string;
+    health: string;
+    state: string;
+  }[];
+};
+
 export function OverviewPage({ status }: { status: StatusResponse | null }) {
+  const [topologyMode, setTopologyMode] = useState<TopologyMode>("tag");
+  const modelTopology = useMemo(() => (status ? buildModelTopology(status) : []), [status]);
+
   if (!status) {
     return <EmptyState title="Waiting for gateway status" body="The live status poll has not returned yet." />;
   }
@@ -54,35 +71,78 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
           </div>
 
           <div className="section-heading topology-heading">
-            <h3>Cluster topology</h3>
-            <p>Gateway routes through tag policy to workers and their loaded models.</p>
+            <div>
+              <h3>Cluster topology</h3>
+              <p>{topologyMode === "tag" ? "Tag policy is the scheduling entry point." : "Model view shows where configured replicas live."}</p>
+            </div>
+            <div className="topology-toggle" role="tablist" aria-label="Topology view">
+              <button
+                type="button"
+                className={topologyMode === "tag" ? "active" : ""}
+                aria-selected={topologyMode === "tag"}
+                role="tab"
+                onClick={() => setTopologyMode("tag")}
+              >
+                By tag
+              </button>
+              <button
+                type="button"
+                className={topologyMode === "model" ? "active" : ""}
+                aria-selected={topologyMode === "model"}
+                role="tab"
+                onClick={() => setTopologyMode("model")}
+              >
+                By model
+              </button>
+            </div>
           </div>
-          <div className="topology-map" aria-label="Gateway to tag to worker topology">
+          <div className="topology-map" aria-label={topologyMode === "tag" ? "Gateway to tag to worker topology" : "Gateway to model to worker topology"}>
             <div className="topology-gateway">Gateway</div>
             <div className="topology-tag-lanes">
-              {view.relationship.tags.map((tag) => (
-                <article className="topology-lane" key={tag.tag}>
-                  <header>
-                    <strong>{tag.tag}</strong>
-                    <span>{tag.workers.length} workers</span>
-                  </header>
-                  <div className="topology-worker-strip">
-                    {tag.workers.map((worker) => (
-                      <div className="topology-worker-node" key={worker.id}>
-                        <div>
-                          <span>{worker.id}</span>
-                          <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+              {topologyMode === "tag" ? (
+                view.relationship.tags.map((tag) => (
+                  <article className="topology-lane" key={tag.tag}>
+                    <header>
+                      <strong>{tag.tag}</strong>
+                      <span>{tag.workers.length} workers</span>
+                    </header>
+                    <div className="topology-worker-strip">
+                      {tag.workers.map((worker) => (
+                        <div className="topology-worker-node" key={worker.id}>
+                          <div>
+                            <span>{worker.id}</span>
+                            <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+                          </div>
+                          <p>
+                            {worker.gpu_count} GPU · {worker.loaded_models.length > 0
+                              ? worker.loaded_models.map((model) => `${model.name}:${model.state}`).join(" · ")
+                              : "no loaded models"}
+                          </p>
                         </div>
-                        <p>
-                          {worker.gpu_count} GPU · {worker.loaded_models.length > 0
-                            ? worker.loaded_models.map((model) => `${model.name}:${model.state}`).join(" · ")
-                            : "no loaded models"}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              ))}
+                      ))}
+                    </div>
+                  </article>
+                ))
+              ) : (
+                modelTopology.map((model) => (
+                  <article className="topology-lane model-lane" key={model.name}>
+                    <header>
+                      <strong title={model.name}>{model.name}</strong>
+                      <span>{model.summary}</span>
+                    </header>
+                    <div className="topology-worker-strip">
+                      {model.workers.length > 0 ? model.workers.map((worker) => (
+                        <div className="topology-worker-node" key={`${model.name}-${worker.id}`}>
+                          <div>
+                            <span>{worker.id}</span>
+                            <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+                          </div>
+                        </div>
+                      )) : <div className="topology-worker-node quiet-node">No worker state</div>}
+                    </div>
+                  </article>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -97,4 +157,20 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
       </section>
     </div>
   );
+}
+
+function buildModelTopology(status: StatusResponse): ModelTopologyLane[] {
+  return status.models
+    .map((model) => ({
+      name: model.name,
+      summary: `${model.ready_workers}/${model.min_loaded} ready · ${model.running_workers} running`,
+      workers: model.worker_statuses
+        .map((worker) => ({
+          id: worker.worker_id,
+          health: worker.health,
+          state: worker.running_state || worker.artifact_status || (worker.cooldown_active ? "cooldown" : "configured")
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id))
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
 }

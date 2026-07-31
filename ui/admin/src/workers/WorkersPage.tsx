@@ -101,16 +101,15 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
 
       <div className="worker-signal-strip" aria-label="worker load signals">
         <Meter value={activeRatio} label="CONC" valueLabel={`${row.active_requests}/${row.worker.capacity.max_concurrency}`} tone="teal" />
-        <Meter value={queueRatio} label="Q CAP" valueLabel={`${row.worker.capacity.max_queue}`} tone="amber" />
-        <SignalChip label="GPU" value={`${row.gpu_count}×`} />
+        <Meter value={queueRatio} label="QUEUE CAP" valueLabel={`${row.worker.capacity.max_queue}`} tone="amber" />
       </div>
 
       <div className="worker-gpu-deck">
         {row.gpu_devices.map((gpu) => (
           <div className="worker-gpu-mini" key={`${row.id}-${gpu.index}-${gpu.name}`}>
             <div>
-              <strong>{gpu.index}</strong>
-              <span>{gpu.name.replace(/^NVIDIA\s+/i, "")}</span>
+              <strong>GPU {gpu.index}</strong>
+              <span className="worker-gpu-name" title={gpu.name.replace(/^NVIDIA\s+/i, "")}>{gpu.name.replace(/^NVIDIA\s+/i, "")}</span>
               <small>{gpu.utilization} · {gpu.temperature}</small>
             </div>
             <div className="worker-gpu-load">
@@ -159,15 +158,6 @@ function Meter({ value, label, valueLabel, tone }: { value: number; label: strin
     <div className={`worker-meter ${tone}`} style={{ ["--meter" as string]: `${Math.round(value * 100)}%` }}>
       <span>{label}</span>
       <strong>{valueLabel}</strong>
-    </div>
-  );
-}
-
-function SignalChip({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="worker-signal-chip">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }
