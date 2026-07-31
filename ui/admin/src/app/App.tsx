@@ -45,6 +45,12 @@ import { OverviewPage } from "../overview/OverviewPage";
 import { ModelsPage } from "../models/ModelsPage";
 import { WorkersPage } from "../workers/WorkersPage";
 import { ActivityPage, BillingPage, RequestsPage } from "../observe/ObservePages";
+import {
+  cloneEditableConfig as cloneConfigDraft,
+  normalizeTagPolicy as normalizeConfigTagPolicy,
+  renderDraftYAML as renderConfigDraftYAML,
+  toEditableConfig as toEditableGatewayConfig
+} from "../config/configDraft";
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
@@ -97,7 +103,7 @@ export function App() {
     try {
       const next = await getConfig();
       setConfigResponse(next);
-      setConfigDraft(toEditableConfig(next));
+      setConfigDraft(toEditableGatewayConfig(next));
       setConfigChanges([]);
       setConfigImpacts([]);
       setConfigApplyMode("");
@@ -195,7 +201,7 @@ export function App() {
     if (!configResponse || !configDraft) {
       return "";
     }
-    return renderDraftYAML(configResponse.yaml, configDraft);
+    return renderConfigDraftYAML(configResponse.yaml, configDraft);
   }, [configResponse, configDraft]);
   const configDirty = Boolean(configResponse && renderedConfigYaml !== configResponse.yaml);
 
@@ -204,7 +210,7 @@ export function App() {
       if (!current) {
         return current;
       }
-      const next = cloneEditableConfig(current);
+      const next = cloneConfigDraft(current);
       mutator(next);
       return next;
     });
@@ -223,7 +229,7 @@ export function App() {
 
   function replaceTagPolicy(tagName: string, nextPolicy: TagPolicyConfig) {
     updateDraft((draft) => {
-      draft.tag_policies[tagName] = normalizeTagPolicy(nextPolicy);
+      draft.tag_policies[tagName] = normalizeConfigTagPolicy(nextPolicy);
     });
   }
 
@@ -260,7 +266,7 @@ export function App() {
     if (!configResponse) {
       return;
     }
-    setConfigDraft(toEditableConfig(configResponse));
+    setConfigDraft(toEditableGatewayConfig(configResponse));
     setConfigChanges([]);
     setConfigImpacts([]);
     setConfigApplyMode("");
