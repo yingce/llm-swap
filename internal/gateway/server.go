@@ -165,6 +165,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	s.mux.Handle("GET /ui/advanced", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUI)))
 	s.mux.Handle("GET /ui/assets/", uiAuth(cfg.Tokens.Agent, embeddedAdminAssetHandler()))
 	s.mux.Handle("GET /ui/status", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIStatus)))
+	s.mux.Handle("GET /ui/traffic", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUITraffic)))
 	s.mux.Handle("GET /ui/requests", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIRequests)))
 	s.mux.Handle("GET /ui/events", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIEvents)))
 	s.mux.Handle("GET /ui/metrics/summary", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIMetricsSummary)))

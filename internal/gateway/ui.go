@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"strconv"
@@ -144,6 +145,34 @@ type uiMetricsResponse struct {
 	Series []HistoricalSeries `json:"series"`
 }
 
+type uiTrafficSummaryResponse struct {
+	GeneratedAt      time.Time `json:"generated_at"`
+	Range            string    `json:"range"`
+	Start            time.Time `json:"start"`
+	End              time.Time `json:"end"`
+	Requests         uint64    `json:"requests"`
+	Status2xx        uint64    `json:"status_2xx"`
+	Status4xx        uint64    `json:"status_4xx"`
+	Status5xx        uint64    `json:"status_5xx"`
+	Non200           uint64    `json:"non_200"`
+	PromptTokens     uint64    `json:"prompt_tokens"`
+	CompletionTokens uint64    `json:"completion_tokens"`
+	TotalTokens      uint64    `json:"total_tokens"`
+	CacheTokens      uint64    `json:"cache_tokens"`
+	ReasoningTokens  uint64    `json:"reasoning_tokens"`
+	AvgDurationMS    uint64    `json:"avg_duration_ms"`
+	MaxDurationMS    uint64    `json:"max_duration_ms"`
+}
+
+type uiTrafficAccumulator struct {
+	summary       uiTrafficSummaryResponse
+	durationSumMS uint64
+}
+
+type uiTrafficSummaryStore interface {
+	RequestTrafficSummary(context.Context, time.Time, time.Time) (uiTrafficSummaryResponse, error)
+}
+
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -156,6 +185,21 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUIStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.buildUIStatus(time.Now()))
+}
+
+func (s *Server) handleUITraffic(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	start, end, label := parseUITrafficRange(r.URL.Query().Get("range"), now)
+	summary, err := s.requestTrafficSummary(r.Context(), start, end)
+	if err != nil {
+		http.Error(w, "failed to load request traffic", http.StatusInternalServerError)
+		return
+	}
+	summary.GeneratedAt = now.UTC()
+	summary.Range = label
+	summary.Start = start.UTC()
+	summary.End = end.UTC()
+	writeJSON(w, summary)
 }
 
 func (s *Server) handleUIEvents(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +296,74 @@ func (s *Server) handleUIRequests(w http.ResponseWriter, r *http.Request) {
 		resp.Requests = []RequestLogEntry{}
 	}
 	writeJSON(w, resp)
+}
+
+func parseUITrafficRange(raw string, now time.Time) (time.Time, time.Time, string) {
+	duration, label, ok := parseMetricsDurationWithLabel(raw)
+	if !ok {
+		duration = 24 * time.Hour
+		label = "24h"
+	}
+	const maxTrafficRange = 7 * 24 * time.Hour
+	if duration > maxTrafficRange {
+		duration = maxTrafficRange
+		label = "7d"
+	}
+	return now.Add(-duration), now, label
+}
+
+func (s *Server) requestTrafficSummary(ctx context.Context, start time.Time, end time.Time) (uiTrafficSummaryResponse, error) {
+	if s.recordsStore != nil {
+		if store, ok := s.recordsStore.(uiTrafficSummaryStore); ok {
+			return store.RequestTrafficSummary(ctx, start, end)
+		}
+	}
+	if s.requestLogPath != "" {
+		return loadRequestTrafficSummary(s.requestLogPath, start, end)
+	}
+	return aggregateRequestTrafficSummary(s.recentRequestLogs(), start, end), nil
+}
+
+func (a *uiTrafficAccumulator) add(entry RequestLogEntry) {
+	a.summary.Requests++
+	switch {
+	case entry.StatusCode >= 200 && entry.StatusCode < 300:
+		a.summary.Status2xx++
+	case entry.StatusCode >= 400 && entry.StatusCode < 500:
+		a.summary.Status4xx++
+	case entry.StatusCode >= 500 && entry.StatusCode < 600:
+		a.summary.Status5xx++
+	}
+	if entry.StatusCode < 200 || entry.StatusCode >= 300 {
+		a.summary.Non200++
+	}
+	a.summary.PromptTokens += positiveIntToUint64(entry.PromptTokens)
+	a.summary.CompletionTokens += positiveIntToUint64(entry.CompletionTokens)
+	a.summary.TotalTokens += positiveIntToUint64(entry.TotalTokens)
+	a.summary.CacheTokens += positiveIntToUint64(entry.CacheTokens)
+	a.summary.ReasoningTokens += positiveIntToUint64(entry.ReasoningTokens)
+	duration := positiveInt64ToUint64(entry.DurationMS)
+	a.durationSumMS += duration
+	if duration > a.summary.MaxDurationMS {
+		a.summary.MaxDurationMS = duration
+	}
+	if a.summary.Requests > 0 {
+		a.summary.AvgDurationMS = a.durationSumMS / a.summary.Requests
+	}
+}
+
+func positiveIntToUint64(value int) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
+func positiveInt64ToUint64(value int64) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
 }
 
 func (s *Server) handleUIMetricsSummary(w http.ResponseWriter, r *http.Request) {

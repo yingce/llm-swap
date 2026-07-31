@@ -220,6 +220,60 @@ func TestUIRequestsEndpointPaginatesPersistedRequestLogs(t *testing.T) {
 	}
 }
 
+func TestUITrafficEndpointSummarizesPersistedRequestRange(t *testing.T) {
+	requestLogPath := filepath.Join(t.TempDir(), "request-logs.jsonl")
+	now := time.Now().UTC()
+	for _, entry := range []RequestLogEntry{
+		{
+			Time:        now.Add(-25 * time.Hour),
+			RequestID:   "old",
+			Model:       "qwen",
+			StatusCode:  200,
+			DurationMS:  1000,
+			TotalTokens: 999,
+		},
+		{
+			Time:             now.Add(-2 * time.Hour),
+			RequestID:        "ok",
+			Model:            "qwen",
+			StatusCode:       200,
+			DurationMS:       100,
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+			CacheTokens:      3,
+		},
+		{
+			Time:            now.Add(-time.Hour),
+			RequestID:       "failed",
+			Model:           "qwen",
+			StatusCode:      500,
+			DurationMS:      300,
+			TotalTokens:     7,
+			ReasoningTokens: 2,
+		},
+	} {
+		if err := appendRequestLog(requestLogPath, entry); err != nil {
+			t.Fatalf("append request log: %v", err)
+		}
+	}
+
+	srv := NewServerWithGatewayPersistencePaths(testUIGatewayConfig(), requestLogPath, "")
+	traffic := getUITraffic(t, srv, "/ui/traffic?range=24h")
+	if traffic.Range != "24h" {
+		t.Fatalf("range = %q, want 24h", traffic.Range)
+	}
+	if traffic.Requests != 2 || traffic.Status2xx != 1 || traffic.Status5xx != 1 || traffic.Non200 != 1 {
+		t.Fatalf("traffic statuses = %+v, want two recent requests with one non-200", traffic)
+	}
+	if traffic.TotalTokens != 22 || traffic.CacheTokens != 3 || traffic.ReasoningTokens != 2 {
+		t.Fatalf("traffic tokens = %+v, want recent token totals", traffic)
+	}
+	if traffic.AvgDurationMS != 200 || traffic.MaxDurationMS != 300 {
+		t.Fatalf("traffic latency = %+v, want avg=200 max=300", traffic)
+	}
+}
+
 func TestUIStatusIncludesReplicaCooldownDetails(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	now := time.Now()
@@ -400,6 +454,7 @@ func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 		"/ui/advanced",
 		"/ui/assets/",
 		"/ui/status",
+		"/ui/traffic",
 		"/ui/events",
 		"/ui/requests",
 		"/ui/metrics/summary",
@@ -627,6 +682,22 @@ func getUIRequests(t *testing.T, srv *Server, path string) uiRequestsResponse {
 	var resp uiRequestsResponse
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode requests: %v", err)
+	}
+	return resp
+}
+
+func getUITraffic(t *testing.T, srv *Server, path string) uiTrafficSummaryResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp uiTrafficSummaryResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode traffic: %v", err)
 	}
 	return resp
 }

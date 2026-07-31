@@ -383,6 +383,56 @@ OFFSET $1 LIMIT $2`, offset, limit+1)
 	return uiRequestsResponse{Requests: requests, NextOffset: offset + len(requests), HasMore: hasMore}, nil
 }
 
+func (s *PostgresRecordsStore) RequestTrafficSummary(ctx context.Context, start time.Time, end time.Time) (uiTrafficSummaryResponse, error) {
+	if s == nil || s.db == nil {
+		return uiTrafficSummaryResponse{}, nil
+	}
+	runCtx, cancel := s.context(ctx)
+	defer cancel()
+
+	var requests, status2xx, status4xx, status5xx, non200 int64
+	var promptTokens, completionTokens, totalTokens, cacheTokens, reasoningTokens int64
+	var avgDurationMS float64
+	var maxDurationMS int64
+	err := s.db.QueryRowContext(runCtx, `
+SELECT
+  COUNT(*)::bigint,
+  COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0)::bigint,
+  COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0)::bigint,
+  COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0)::bigint,
+  COALESCE(SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END), 0)::bigint,
+  COALESCE(SUM(prompt_tokens), 0)::bigint,
+  COALESCE(SUM(completion_tokens), 0)::bigint,
+  COALESCE(SUM(total_tokens), 0)::bigint,
+  COALESCE(SUM(cache_tokens), 0)::bigint,
+  COALESCE(SUM(reasoning_tokens), 0)::bigint,
+  COALESCE(AVG(duration_ms), 0)::float8,
+  COALESCE(MAX(duration_ms), 0)::bigint
+FROM request_records
+WHERE event_time >= $1 AND event_time < $2`, start.UTC(), end.UTC()).Scan(
+		&requests, &status2xx, &status4xx, &status5xx, &non200,
+		&promptTokens, &completionTokens, &totalTokens, &cacheTokens, &reasoningTokens,
+		&avgDurationMS, &maxDurationMS,
+	)
+	if err != nil {
+		return uiTrafficSummaryResponse{}, err
+	}
+	return uiTrafficSummaryResponse{
+		Requests:         positiveInt64ToUint64(requests),
+		Status2xx:        positiveInt64ToUint64(status2xx),
+		Status4xx:        positiveInt64ToUint64(status4xx),
+		Status5xx:        positiveInt64ToUint64(status5xx),
+		Non200:           positiveInt64ToUint64(non200),
+		PromptTokens:     positiveInt64ToUint64(promptTokens),
+		CompletionTokens: positiveInt64ToUint64(completionTokens),
+		TotalTokens:      positiveInt64ToUint64(totalTokens),
+		CacheTokens:      positiveInt64ToUint64(cacheTokens),
+		ReasoningTokens:  positiveInt64ToUint64(reasoningTokens),
+		AvgDurationMS:    positiveInt64ToUint64(int64(avgDurationMS + 0.5)),
+		MaxDurationMS:    positiveInt64ToUint64(maxDurationMS),
+	}, nil
+}
+
 func (s *PostgresRecordsStore) PageWorkerEvents(ctx context.Context, offset int, limit int) (uiEventsResponse, error) {
 	if offset < 0 {
 		offset = 0

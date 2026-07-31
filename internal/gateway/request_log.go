@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -160,6 +161,56 @@ func loadRecentRequestLogs(path string, limit int) ([]RequestLogEntry, error) {
 		requests = append(requests, entry)
 	}
 	return requests, nil
+}
+
+func loadRequestTrafficSummary(path string, start time.Time, end time.Time) (uiTrafficSummaryResponse, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return uiTrafficSummaryResponse{}, nil
+		}
+		return uiTrafficSummaryResponse{}, err
+	}
+	defer file.Close()
+
+	var acc uiTrafficAccumulator
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry RequestLogEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if requestLogEntryInRange(entry, start, end) {
+			acc.add(entry)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return uiTrafficSummaryResponse{}, err
+	}
+	return acc.summary, nil
+}
+
+func aggregateRequestTrafficSummary(entries []RequestLogEntry, start time.Time, end time.Time) uiTrafficSummaryResponse {
+	var acc uiTrafficAccumulator
+	for _, entry := range entries {
+		if requestLogEntryInRange(entry, start, end) {
+			acc.add(entry)
+		}
+	}
+	return acc.summary
+}
+
+func requestLogEntryInRange(entry RequestLogEntry, start time.Time, end time.Time) bool {
+	if entry.Time.IsZero() {
+		return false
+	}
+	eventTime := entry.Time.UTC()
+	return !eventTime.Before(start.UTC()) && eventTime.Before(end.UTC())
 }
 
 func (s *Server) recentRequestLogs() []RequestLogEntry {

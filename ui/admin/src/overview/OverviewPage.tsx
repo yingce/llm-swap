@@ -1,10 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import type { StatusResponse } from "../api";
+import { getTrafficSummary, type StatusResponse, type TrafficSummaryResponse } from "../api";
 import { AttentionList, EmptyState, StatusIndicator } from "../components/primitives";
 import { buildOverviewView } from "./overviewView";
 
 type TopologyMode = "tag" | "model";
+type TrafficRange = "1h" | "6h" | "24h" | "3d" | "7d";
+
+const TRAFFIC_RANGES: { value: TrafficRange; label: string }[] = [
+  { value: "1h", label: "1h" },
+  { value: "6h", label: "6h" },
+  { value: "24h", label: "24h" },
+  { value: "3d", label: "3d" },
+  { value: "7d", label: "7d" }
+];
 
 type ModelTopologyLane = {
   name: string;
@@ -18,7 +27,37 @@ type ModelTopologyLane = {
 
 export function OverviewPage({ status }: { status: StatusResponse | null }) {
   const [topologyMode, setTopologyMode] = useState<TopologyMode>("tag");
+  const [trafficRange, setTrafficRange] = useState<TrafficRange>("24h");
+  const [traffic, setTraffic] = useState<TrafficSummaryResponse | null>(null);
+  const [trafficError, setTrafficError] = useState("");
+  const statusGeneratedAt = status?.generated_at ?? "";
   const modelTopology = useMemo(() => (status ? buildModelTopology(status) : []), [status]);
+
+  useEffect(() => {
+    if (!statusGeneratedAt) {
+      setTraffic(null);
+      return;
+    }
+    let cancelled = false;
+    getTrafficSummary(trafficRange)
+      .then((summary) => {
+        if (cancelled) {
+          return;
+        }
+        setTraffic(summary);
+        setTrafficError("");
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setTraffic(null);
+        setTrafficError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [trafficRange, statusGeneratedAt]);
 
   if (!status) {
     return <EmptyState title="Waiting for gateway status" body="The live status poll has not returned yet." />;
@@ -35,12 +74,35 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
         </div>
       </section>
 
-      <section className="traffic-strip" aria-label="Traffic summary">
-        <TrafficSignal label="Requests" value={compactNumber(view.traffic.requests)} />
-        <TrafficSignal label="Total tokens" value={compactNumber(view.traffic.totalTokens)} />
-        <TrafficSignal label="Cache tokens" value={compactNumber(view.traffic.cacheTokens)} />
-        <TrafficSignal label="Avg latency" value={`${view.traffic.avgLatencyMs}ms`} />
-        <TrafficSignal label="Non-200" value={compactNumber(view.traffic.non200)} tone={view.traffic.non200 > 0 ? "warn" : "normal"} />
+      <section className="traffic-panel" aria-label="Traffic summary">
+        <div className="traffic-panel-head">
+          <div>
+            <strong>Traffic</strong>
+            <span>{traffic ? formatTrafficWindow(traffic) : `Loading ${trafficRange}`}</span>
+          </div>
+          <div className="traffic-range-tabs" role="tablist" aria-label="Overview traffic range">
+            {TRAFFIC_RANGES.map((range) => (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={trafficRange === range.value}
+                className={trafficRange === range.value ? "active" : ""}
+                onClick={() => setTrafficRange(range.value)}
+                key={range.value}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="traffic-strip">
+          <TrafficSignal label="Requests" value={traffic ? compactNumber(traffic.requests) : "—"} />
+          <TrafficSignal label="Total tokens" value={traffic ? compactNumber(traffic.total_tokens) : "—"} />
+          <TrafficSignal label="Cache tokens" value={traffic ? compactNumber(traffic.cache_tokens) : "—"} />
+          <TrafficSignal label="Avg latency" value={traffic ? `${traffic.avg_duration_ms}ms` : "—"} />
+          <TrafficSignal label="Non-200" value={traffic ? compactNumber(traffic.non_200) : "—"} tone={(traffic?.non_200 ?? 0) > 0 ? "warn" : "normal"} />
+        </div>
+        {trafficError ? <p className="traffic-error">Traffic range unavailable: {trafficError}</p> : null}
       </section>
 
       <section className="overview-grid">
@@ -119,7 +181,6 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
                         <div className={`topology-worker-node ${worker.health === "healthy" ? "healthy" : "degraded"}`} key={worker.id}>
                           <div>
                             <span>{worker.id}</span>
-                            <small>{worker.state}</small>
                           </div>
                           <p>
                             {worker.gpu_count} GPU · {worker.loaded_models.length > 0
@@ -143,7 +204,6 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
                         <div className={`topology-worker-node ${worker.health === "healthy" ? "healthy" : "degraded"}`} key={`${model.name}-${worker.id}`}>
                           <div>
                             <span>{worker.id}</span>
-                            <small>{worker.state}</small>
                           </div>
                         </div>
                       )) : <div className="topology-worker-node quiet-node">No worker state</div>}
@@ -165,6 +225,10 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
       </section>
     </div>
   );
+}
+
+function formatTrafficWindow(traffic: TrafficSummaryResponse) {
+  return `${new Date(traffic.start).toLocaleString()} - ${new Date(traffic.end).toLocaleString()}`;
 }
 
 function TrafficSignal({

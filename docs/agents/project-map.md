@@ -770,6 +770,7 @@ back/forward navigation updates the active tab. The `event-log` and
 whose contracts and handlers are preserved:
 
 - `/ui/status`
+- `/ui/traffic?range=24h`
 - `/ui/requests?limit=50&offset=0`
 - `/ui/events?limit=50&offset=0`
 - `/ui/api/config`

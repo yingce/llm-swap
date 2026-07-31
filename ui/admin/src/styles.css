@@ -510,14 +510,74 @@ small {
   margin: 0;
 }
 
-.traffic-strip {
+.traffic-panel {
   background: #dfe9ee;
   border: 1px solid #c1d0da;
   border-radius: 14px;
   display: grid;
   gap: 1px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
   overflow: hidden;
+}
+
+.traffic-panel-head {
+  align-items: center;
+  background: #e6eef2;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 7px 9px;
+}
+
+.traffic-panel-head > div:first-child {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.traffic-panel-head strong {
+  color: #203244;
+  font-size: 13px;
+}
+
+.traffic-panel-head span {
+  color: #6a7b89;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.traffic-range-tabs {
+  background: #d6e2e8;
+  border: 1px solid #c0cfd8;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 2px;
+}
+
+.traffic-range-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #526778;
+  font-size: 11px;
+  min-height: 22px;
+  padding: 2px 8px;
+}
+
+.traffic-range-tabs button.active {
+  background: #f5f9fb;
+  color: #17283a;
+}
+
+.traffic-strip {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .traffic-signal {
@@ -554,6 +614,14 @@ small {
 
 .traffic-signal.warn strong {
   color: #7b4e13;
+}
+
+.traffic-error {
+  background: #eee4d7;
+  color: #76561c;
+  font-size: 12px;
+  margin: 0;
+  padding: 7px 10px;
 }
 
 .overview-grid {
@@ -700,7 +768,7 @@ small {
   align-items: start;
   display: grid;
   gap: 7px;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 116px minmax(0, 1fr);
   position: relative;
 }
 
@@ -748,7 +816,7 @@ small {
   border: 1px solid #d2e0e8;
   border-radius: 10px;
   display: grid;
-  flex: 1 1 178px;
+  flex: 1 1 136px;
   gap: 4px;
   min-width: 0;
   padding: 6px 7px;
@@ -779,23 +847,16 @@ small {
   align-items: center;
   display: flex;
   gap: 8px;
-  justify-content: space-between;
+  justify-content: flex-start;
   min-width: 0;
 }
 
 .topology-worker-node span,
-.topology-worker-node p,
-.topology-worker-node small {
+.topology-worker-node p {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.topology-worker-node small {
-  color: #6d7f8c;
-  font-size: 11px;
-  font-weight: 650;
 }
 
 .topology-worker-node p {
@@ -2461,6 +2522,26 @@ textarea {
     gap: 1px;
     overflow-x: auto;
     scrollbar-width: thin;
+  }
+
+  .traffic-panel-head {
+    align-items: stretch;
+    display: grid;
+    gap: 6px;
+  }
+
+  .traffic-panel-head > div:first-child {
+    justify-content: space-between;
+  }
+
+  .traffic-range-tabs {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    width: 100%;
+  }
+
+  .traffic-range-tabs button {
+    flex: 1 0 auto;
   }
 
   .traffic-signal {

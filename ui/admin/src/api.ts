@@ -287,6 +287,25 @@ export type MetricsResponse = {
   series: MetricsSeries[];
 };
 
+export type TrafficSummaryResponse = {
+  generated_at: string;
+  range: string;
+  start: string;
+  end: string;
+  requests: number;
+  status_2xx: number;
+  status_4xx: number;
+  status_5xx: number;
+  non_200: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cache_tokens: number;
+  reasoning_tokens: number;
+  avg_duration_ms: number;
+  max_duration_ms: number;
+};
+
 export type BillingSummary = {
   start: string;
   end: string;
@@ -435,6 +454,10 @@ export function applyConfig(yaml: string): Promise<ConfigDryRunResponse> {
 
 export function getSummaryMetrics(range: string): Promise<MetricsResponse> {
   return request<MetricsResponse>(`/ui/metrics/summary?range=${encodeURIComponent(range)}&step=1m`);
+}
+
+export function getTrafficSummary(range = "24h"): Promise<TrafficSummaryResponse> {
+  return request<TrafficSummaryResponse>(`/ui/traffic?range=${encodeURIComponent(range)}`);
 }
 
 export async function getBilling(rangeHours = 24, includeRequests = false): Promise<BillingSummary> {
