@@ -647,6 +647,62 @@ small {
   padding: 4px 8px;
 }
 
+.observe-page {
+  display: grid;
+  gap: 16px;
+}
+
+.observe-heading {
+  align-items: end;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.observe-heading p {
+  color: var(--muted);
+}
+
+.observe-table-wrap {
+  overflow-x: auto;
+}
+
+.observe-table {
+  border-collapse: collapse;
+  min-width: 760px;
+  width: 100%;
+}
+
+.observe-table th,
+.observe-table td {
+  border-bottom: 1px solid #dde5ed;
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.observe-table th {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.billing-ledger {
+  display: grid;
+  gap: 14px;
+}
+
+.pricing-save-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.danger-text {
+  color: var(--bad);
+}
+
 .panel {
   min-height: 560px;
   padding: 18px;
