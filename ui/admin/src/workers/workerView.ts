@@ -4,6 +4,7 @@ export type WorkerGpuRow = {
   index: number;
   name: string;
   memory: string;
+  memory_percent: number;
   utilization: string;
   temperature: string;
 };
@@ -28,7 +29,25 @@ export type WorkerRow = {
   worker: WorkerStatus;
 };
 
-export function buildWorkerRows(status: StatusResponse | null, options: { query: string }): WorkerRow[] {
+export type WorkerFilters = {
+  tags: string[];
+  models: string[];
+};
+
+export type WorkerRowOptions = {
+  query: string;
+  tag?: string;
+  model?: string;
+};
+
+export function buildWorkerFilters(status: StatusResponse | null): WorkerFilters {
+  return {
+    tags: [...new Set((status?.workers ?? []).flatMap((worker) => worker.tags))].sort(),
+    models: [...new Set((status?.workers ?? []).flatMap((worker) => worker.running_models.map((model) => model.model)))].sort()
+  };
+}
+
+export function buildWorkerRows(status: StatusResponse | null, options: WorkerRowOptions): WorkerRow[] {
   const query = options.query.trim().toLowerCase();
   return (status?.workers ?? [])
     .map((worker) => {
@@ -55,6 +74,8 @@ export function buildWorkerRows(status: StatusResponse | null, options: { query:
         worker
       };
     })
+    .filter((row) => !options.tag || row.tags.includes(options.tag))
+    .filter((row) => !options.model || row.worker.running_models.some((model) => model.model === options.model))
     .filter((row) => matchesQuery(row, query))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -84,10 +105,12 @@ function formatMiB(value: number): string {
 }
 
 function formatGpuDevice(gpu: GPUDevice): WorkerGpuRow {
+  const memoryPercent = gpu.memory_total_mib > 0 ? Math.round((gpu.memory_used_mib / gpu.memory_total_mib) * 100) : 0;
   return {
     index: gpu.index,
     name: gpu.name,
     memory: `${formatMiB(gpu.memory_used_mib)} / ${formatMiB(gpu.memory_total_mib)}`,
+    memory_percent: memoryPercent,
     utilization: `${gpu.utilization_percent}%`,
     temperature: `${gpu.temperature_celsius}°C`
   };

@@ -51,6 +51,7 @@ import {
   renderDraftYAML as renderConfigDraftYAML,
   toEditableConfig as toEditableGatewayConfig
 } from "../config/configDraft";
+import { tokenizeYAML } from "../config/yamlHighlight";
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
@@ -1388,8 +1389,19 @@ function AdvancedConfig({
       </div>
       {error ? <div className="alert">{error}</div> : null}
       {message ? <div className="notice">{message}</div> : null}
-      <div className="advanced-readonly">
-        <textarea spellCheck={false} readOnly value={yaml} />
+      <div className="advanced-readonly yaml-shell" aria-label="Read-only YAML">
+        <pre className="yaml-highlight">
+          {tokenizeYAML(yaml).map((line, lineIndex) => (
+            <span className="yaml-line" key={lineIndex}>
+              <span className="yaml-line-number">{lineIndex + 1}</span>
+              <span className="yaml-line-code">
+                {line.map((token, tokenIndex) => (
+                  <span className={`yaml-token ${token.kind}`} key={`${lineIndex}-${tokenIndex}`}>{token.text}</span>
+                ))}
+              </span>
+            </span>
+          ))}
+        </pre>
       </div>
     </div>
   );
