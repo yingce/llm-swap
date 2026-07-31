@@ -1,4 +1,4 @@
-import type React from "react";
+import { useState, type ReactNode, type RefObject } from "react";
 
 import type { Summary } from "../api";
 import { NAV_GROUPS, type Tab } from "./navigation";
@@ -14,7 +14,7 @@ export function AppShell({
   onSelectTab,
   children
 }: {
-  appContentRef: React.RefObject<HTMLElement | null>;
+  appContentRef: RefObject<HTMLElement | null>;
   tab: Tab;
   summary: Summary | undefined;
   statusUpdatedAt: string | undefined;
@@ -22,11 +22,21 @@ export function AppShell({
   notice: string;
   onRefresh: () => void;
   onSelectTab: (tab: Tab) => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
+  const [navOpen, setNavOpen] = useState(false);
+
+  function selectTab(nextTab: Tab) {
+    onSelectTab(nextTab);
+    setNavOpen(false);
+  }
+
   return (
     <main ref={appContentRef} className="app">
       <header className="topbar">
+        <button className="nav-toggle" type="button" aria-expanded={navOpen} aria-controls="admin-navigation" onClick={() => setNavOpen((open) => !open)}>
+          Menu
+        </button>
         <div>
           <h1>LLM Swap Admin</h1>
           <p>{statusUpdatedAt ? `Updated ${new Date(statusUpdatedAt).toLocaleTimeString()}` : "Loading gateway state"}</p>
@@ -47,12 +57,12 @@ export function AppShell({
       </section>
 
       <div className="shell">
-        <nav className="tabs" aria-label="Admin sections">
+        <nav id="admin-navigation" className={`tabs ${navOpen ? "open" : ""}`} aria-label="Admin sections">
           {NAV_GROUPS.map((group) => (
             <div className="tab-group" key={group.label}>
               <span className="tab-group-label">{group.label}</span>
               {group.items.map((item) => (
-                <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => onSelectTab(item.id)}>
+                <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => selectTab(item.id)}>
                   {item.label}
                 </button>
               ))}
@@ -66,7 +76,7 @@ export function AppShell({
   );
 }
 
-function ShellMetric({ label, value }: { label: string; value: React.ReactNode }) {
+function ShellMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="metric">
       <strong>{value}</strong>
