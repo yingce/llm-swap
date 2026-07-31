@@ -118,15 +118,15 @@ from the availability of optional Billing or historical metrics services.
 
 ### Attention queue
 
-Attention items are derived from existing status, model, event, request, and
-configuration data. Initial categories are:
+Attention items are derived from existing status, model, recent Worker event,
+and current-session configuration data. Initial categories are:
 
 1. Worker stale or unhealthy.
 2. Worker reports a health problem, last error, or required restart.
 3. Model has no ready replica, an artifact error, or is below a positive
    `min_loaded` target.
 4. Agent version is outdated or legacy.
-5. Recent request or worker events contain an error.
+5. A recent Worker event contains an error.
 6. A configuration change was saved but requires a Gateway restart.
 
 The order above is the default severity order. Within a category, newer
