@@ -43,6 +43,7 @@ import { pathForTab, shouldPushTabPath, tabFromPath, type Tab } from "./navigati
 import { appendRoutePage, routeDataKeysForTab } from "./routeData";
 import { OverviewPage } from "../overview/OverviewPage";
 import { ModelsPage } from "../models/ModelsPage";
+import { WorkersPage } from "../workers/WorkersPage";
 
 type EditableGatewayConfig = {
   models: Record<string, EditableModelConfig>;
@@ -341,7 +342,7 @@ export function App() {
             <OverviewPage status={status} />
           )}
           {tab === "models" && <ModelsPage status={status} configResponse={configResponse} onAction={runAction} />}
-          {tab === "workers" && <Workers workers={status?.workers ?? []} onAction={runAction} />}
+          {tab === "workers" && <WorkersPage status={status} onAction={runAction} />}
           {tab === "billing" && (
             <Billing
               billing={billing}
