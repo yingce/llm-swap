@@ -38,9 +38,14 @@ export function WorkersPage({
           empty={<EmptyState title="No workers match" body="Adjust search or wait for worker heartbeats." />}
           renderItem={(row) => (
             <button className={`worker-ledger-row ${selected?.id === row.id ? "selected" : ""}`} onClick={() => setSelectedId(row.id)}>
-              <span>
+              <span className="worker-ledger-identity">
                 <strong>{row.id}</strong>
                 <small>{row.tags.join(", ") || "untagged"}</small>
+              </span>
+              <span className="worker-ledger-metrics">
+                <small>{row.request_capacity}</small>
+                <small>{row.gpu_count} GPU · {row.gpu_memory}</small>
+                <small>{row.agent_version}</small>
               </span>
               <StatusIndicator tone={row.health === "healthy" ? "good" : "bad"} label={row.state} />
             </button>
@@ -91,29 +96,55 @@ function WorkerDetail({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: ()
         </div>
         <div>
           <strong>Requests</strong>
-          <span>{row.active_requests} active · queue {row.worker.capacity.max_queue}</span>
+          <span>{row.request_capacity}</span>
         </div>
         <div>
           <strong>Agent</strong>
-          <span>{row.worker.agent_build.version || "unknown"} · {row.worker.agent_version_status}</span>
+          <span>{row.agent_version}{row.worker.agent_build.commit ? ` · ${row.worker.agent_build.commit.slice(0, 12)}` : ""}</span>
+        </div>
+        <div>
+          <strong>Heartbeat</strong>
+          <span>{row.heartbeat}</span>
+        </div>
+        <div>
+          <strong>llama-swap</strong>
+          <span>{row.worker.llama_swap_url}</span>
+        </div>
+        <div>
+          <strong>Scrape</strong>
+          <span>{row.worker.scrape_failures} failures{row.worker.scrape_backoff_seconds ? ` · backoff ${row.worker.scrape_backoff_seconds}s` : ""}</span>
         </div>
       </div>
       <div className="worker-gpu-list">
-        {row.worker.gpu_devices.map((gpu) => (
-          <div className="worker-gpu-row" key={`${row.id}-${gpu.index}-${gpu.uuid || gpu.name}`}>
+        {row.gpu_devices.map((gpu) => (
+          <div className="worker-gpu-row" key={`${row.id}-${gpu.index}-${gpu.name}`}>
             <strong>{gpu.index}: {gpu.name}</strong>
-            <span>{gpu.utilization_percent}% util · {gpu.temperature_celsius}°C · {gpu.memory_used_mib}/{gpu.memory_total_mib} MiB</span>
+            <span>{gpu.utilization} util · {gpu.temperature} · {gpu.memory}</span>
           </div>
         ))}
-        {row.worker.gpu_devices.length === 0 ? <EmptyState title="No GPU metrics" body="The worker did not report GPU devices." /> : null}
+        {row.gpu_devices.length === 0 ? <EmptyState title="No GPU metrics" body="The worker did not report GPU devices." /> : null}
       </div>
-      <div className="worker-model-ledger">
-        {row.loaded_models.map((model) => <span key={model}>{model}</span>)}
-        {row.loaded_models.length === 0 ? <span className="muted">no loaded models</span> : null}
+      <div className="worker-resource-sections">
+        <ResourceStrip title="Running models" items={row.loaded_models} empty="no loaded models" />
+        <ResourceStrip title="Allowed models" items={row.allowed_models} empty="no allowed models" />
+        <ResourceStrip title="Artifacts" items={row.artifact_states} empty="no artifact state" />
+        <ResourceStrip title="Cooldowns" items={row.cooldowns} empty="no replica cooldowns" />
       </div>
       <div className="model-actions">
         {row.state === "draining" ? <button onClick={onUndrain}>Undrain</button> : <button className="danger" onClick={onDrain}>Drain</button>}
       </div>
     </DetailPanel>
+  );
+}
+
+function ResourceStrip({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  return (
+    <div className="worker-resource-strip">
+      <strong>{title}</strong>
+      <div className="worker-model-ledger">
+        {items.map((item) => <span key={item}>{item}</span>)}
+        {items.length === 0 ? <span className="muted">{empty}</span> : null}
+      </div>
+    </div>
   );
 }

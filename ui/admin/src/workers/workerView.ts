@@ -1,4 +1,12 @@
-import type { StatusResponse, WorkerStatus } from "../api";
+import type { GPUDevice, StatusResponse, WorkerStatus } from "../api";
+
+export type WorkerGpuRow = {
+  index: number;
+  name: string;
+  memory: string;
+  utilization: string;
+  temperature: string;
+};
 
 export type WorkerRow = {
   id: string;
@@ -8,8 +16,15 @@ export type WorkerRow = {
   active_requests: number;
   gpu_count: number;
   gpu_memory: string;
+  gpu_devices: WorkerGpuRow[];
   loaded_models: string[];
+  allowed_models: string[];
+  artifact_states: string[];
+  cooldowns: string[];
   connectivity: string;
+  heartbeat: string;
+  request_capacity: string;
+  agent_version: string;
   worker: WorkerStatus;
 };
 
@@ -26,8 +41,17 @@ export function buildWorkerRows(status: StatusResponse | null, options: { query:
         active_requests: worker.active_requests,
         gpu_count: worker.gpu_devices.length,
         gpu_memory: summarizeGpuMemory(worker),
+        gpu_devices: worker.gpu_devices.map(formatGpuDevice),
         loaded_models: loadedModels,
+        allowed_models: [...worker.allowed_models].sort(),
+        artifact_states: Object.entries(worker.artifacts ?? {})
+          .map(([model, state]) => `${model}:${state}`)
+          .sort(),
+        cooldowns: worker.replica_cooldowns.map((cooldown) => `${cooldown.model}:${cooldown.reason}:${cooldown.remaining_seconds}s`),
         connectivity: summarizeConnectivity(worker),
+        heartbeat: worker.last_heartbeat ? `${worker.last_heartbeat} · ${formatAge(worker.last_heartbeat_age_ms)}` : "heartbeat unavailable",
+        request_capacity: `${worker.active_requests} active · concurrency ${worker.capacity.max_concurrency} · queue ${worker.capacity.max_queue}`,
+        agent_version: `${worker.agent_build.version || "unknown"} · ${worker.agent_version_status}`,
         worker
       };
     })
@@ -57,4 +81,25 @@ function matchesQuery(row: WorkerRow, query: string): boolean {
 
 function formatMiB(value: number): string {
   return value >= 1024 ? `${(value / 1024).toFixed(1).replace(/\.0$/, "")}GiB` : `${Math.round(value)}MiB`;
+}
+
+function formatGpuDevice(gpu: GPUDevice): WorkerGpuRow {
+  return {
+    index: gpu.index,
+    name: gpu.name,
+    memory: `${formatMiB(gpu.memory_used_mib)} / ${formatMiB(gpu.memory_total_mib)}`,
+    utilization: `${gpu.utilization_percent}%`,
+    temperature: `${gpu.temperature_celsius}°C`
+  };
+}
+
+function formatAge(ageMs: number | undefined): string {
+  const seconds = Math.round(Number(ageMs ?? 0) / 1000);
+  if (seconds <= 0) {
+    return "fresh";
+  }
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+  return `${Math.round(seconds / 60)}m ago`;
 }

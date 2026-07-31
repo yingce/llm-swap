@@ -13,7 +13,15 @@ describe("buildWorkerRows", () => {
       tags: ["gpu-4090"],
       gpu_count: 1,
       loaded_models: ["joyfox-model-latest:ready"],
-      connectivity: "healthy · active · scrape ok"
+      connectivity: "healthy · active · scrape ok",
+      request_capacity: "2 active · concurrency 4 · queue 8",
+      agent_version: "1.0.0 · current"
+    });
+    expect(rows[0].gpu_devices[0]).toMatchObject({
+      index: 0,
+      memory: "15.6GiB / 24GiB",
+      utilization: "80%",
+      temperature: "70°C"
     });
     expect(JSON.stringify(rows).toLowerCase()).not.toContain("frp");
   });

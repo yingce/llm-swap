@@ -57,17 +57,27 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
             <h3>Cluster topology</h3>
             <p>Gateway → tag → worker → loaded model. FRP is treated as transport, not topology.</p>
           </div>
-          <div className="topology-list">
+          <div className="topology-map" aria-label="Gateway to tag to worker topology">
+            <div className="topology-gateway">Gateway</div>
             {view.relationship.tags.map((tag) => (
               <article className="topology-tag" key={tag.tag}>
-                <strong>{tag.tag}</strong>
-                <div>
+                <header>
+                  <strong>{tag.tag}</strong>
+                  <span>{tag.workers.length} workers</span>
+                </header>
+                <div className="topology-worker-stack">
                   {tag.workers.map((worker) => (
                     <div className="topology-worker" key={worker.id}>
-                      <span>{worker.id}</span>
-                      <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
-                      <small>{worker.gpu_count} GPU</small>
-                      <small>{worker.loaded_models.map((model) => `${model.name}:${model.state}`).join(", ") || "no loaded models"}</small>
+                      <div className="topology-worker-head">
+                        <span>{worker.id}</span>
+                        <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.state} />
+                      </div>
+                      <div className="topology-branches">
+                        <span>{worker.gpu_count} GPU</span>
+                        {worker.loaded_models.length > 0
+                          ? worker.loaded_models.map((model) => <span key={`${worker.id}-${model.name}`}>{model.name}:{model.state}</span>)
+                          : <span>no loaded models</span>}
+                      </div>
                     </div>
                   ))}
                 </div>
