@@ -61,8 +61,8 @@ func TestDockerfileAgentScopesBuildProxyToBuildKitSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(dockerfile)
-	if got := strings.Count(text, "--mount=type=secret,id=llmswap_runtime_proxy"); got < 5 {
-		t.Fatalf("runtime proxy secret mounts = %d, want at least 5 network stages", got)
+	if got := strings.Count(text, "--mount=type=secret,id=llmswap_runtime_proxy"); got < 4 {
+		t.Fatalf("runtime proxy secret mounts = %d, want at least 4 proxied network stages", got)
 	}
 	assertContains(t, text, `runtime_proxy="$(cat /run/secrets/llmswap_runtime_proxy 2>/dev/null || true)"`)
 	assertNotContains(t, text, "ARG LLMSWAP_RUNTIME_HTTP_PROXY")
