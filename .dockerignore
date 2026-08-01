@@ -3,8 +3,14 @@
 .codex/
 .superpowers/
 .tmp/
+build-probe/
+tmp/
 bin/
 dist/
+gateway/
+models/
+secrets/
+worker-state/
 internal/gateway/admin_dist/
 ui/admin/dist/
 ui/admin/node_modules/
