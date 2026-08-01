@@ -25,8 +25,9 @@ ARG LLMSWAP_BUILD_TIME=
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
-          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+RUN --mount=type=secret,id=llmswap_runtime_proxy,required=false runtime_proxy="$(cat /run/secrets/llmswap_runtime_proxy 2>/dev/null || true)" \
+ && export HTTP_PROXY="${runtime_proxy:-$HTTP_PROXY}" HTTPS_PROXY="${runtime_proxy:-$HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${runtime_proxy:-$http_proxy}" https_proxy="${runtime_proxy:-$https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
  && go mod download
 
 COPY . .

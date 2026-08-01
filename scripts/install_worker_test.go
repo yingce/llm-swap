@@ -68,6 +68,17 @@ func TestDockerfileAgentScopesBuildProxyToBuildKitSecrets(t *testing.T) {
 	assertNotContains(t, text, "ARG LLMSWAP_RUNTIME_HTTP_PROXY")
 }
 
+func TestDockerfileGatewayScopesGoProxyToBuildKitSecret(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join(repoRoot(t), "Dockerfile.gateway"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(dockerfile)
+	assertContains(t, text, "--mount=type=secret,id=llmswap_runtime_proxy")
+	assertContains(t, text, `runtime_proxy="$(cat /run/secrets/llmswap_runtime_proxy 2>/dev/null || true)"`)
+	assertNotContains(t, text, "ARG LLMSWAP_RUNTIME_HTTP_PROXY")
+}
+
 func TestDockerfileAgentInstallsAllRuntimesInOneHardlinkLayer(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join("..", "Dockerfile.agent"))
 	if err != nil {
