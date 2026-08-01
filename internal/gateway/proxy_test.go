@@ -1133,6 +1133,9 @@ func TestProxyReturnsQueueFullWhenModelLimitIsFull(t *testing.T) {
 	model.MaxConcurrency = 1
 	model.MaxQueue = 0
 	cfg.Models["qwen"] = model
+	policy := cfg.TagPolicies["gpu-4090"]
+	policy.WorkerDefaults.MaxQueue = 0
+	cfg.TagPolicies["gpu-4090"] = policy
 	srv := NewServer(cfg)
 	var logs bytes.Buffer
 	srv.logger = log.New(&logs, "", 0)

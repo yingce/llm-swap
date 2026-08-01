@@ -55,7 +55,18 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	baseLogEntry.RequestHeaders = requestXHeadersForLog(r.Header)
 	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
 	defer cancelLimit()
-	modelLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "model", "model:"+model, modelCfg.MaxConcurrency, modelCfg.MaxQueue, s.replicaStats(model, time.Now()))
+	capacityNow := time.Now()
+	capacity := s.modelCapacity(model, capacityNow)
+	modelLimitRelease, _, err := s.acquireObservedLimit(
+		limitCtx,
+		requestID,
+		model,
+		"model",
+		"model:"+model,
+		effectiveCapacity(capacity.MaxConcurrency, modelCfg.MaxConcurrency),
+		effectiveCapacity(capacity.MaxQueue, modelCfg.MaxQueue),
+		s.replicaStats(model, capacityNow),
+	)
 	if err != nil {
 		writeQueueError(w, err)
 		return

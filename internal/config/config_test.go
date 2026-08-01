@@ -634,8 +634,35 @@ tag_policies:
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "runtime must be vllm, sglang, or llamacpp") {
+	if !strings.Contains(err.Error(), "runtime must be vllm, vllm-omni, sglang, or llamacpp") {
 		t.Fatalf("error = %v, want runtime validation", err)
+	}
+}
+
+func TestLoadGatewayConfigAcceptsVLLMOmniRuntime(t *testing.T) {
+	raw := `
+oss:
+  base_url: https://oss.example.com
+tokens:
+  client: client-token
+  agent: agent-token
+models:
+  paw:
+    artifact:
+      object: paw.tar.gz
+      kind: tar_gz
+      crc64ecma: "123"
+    runtime: vllm-omni
+tag_policies:
+  gpu-4090:
+    allowed_models: [paw]
+`
+	cfg, err := LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadGateway() error = %v", err)
+	}
+	if got := cfg.Models["paw"].Runtime; got != "vllm-omni" {
+		t.Fatalf("runtime = %q, want vllm-omni", got)
 	}
 }
 

@@ -21,8 +21,23 @@ ARG LLMSWAP_INSTALL_TAILSCALE=1
 ARG LLMSWAP_LLAMA_CPP_BASE_URL=http://llmfs-bj.oss-cn-beijing.aliyuncs.com/models
 ARG LLMSWAP_LLAMA_CPP_CUDA=auto
 ARG LLMSWAP_LLAMA_CPP_ARCH=sm89
-ARG LLMSWAP_VLLM_PACKAGE=vllm[audio]
-ARG LLMSWAP_SGLANG_PACKAGE=sglang
+ARG LLMSWAP_VLLM_PACKAGE=
+ARG LLMSWAP_VLLM_OMNI_PACKAGE=
+ARG LLMSWAP_VLLM_OMNI_VLLM_PACKAGE=
+ARG LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO=
+ARG LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF=
+ARG LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE=
+ARG LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL=
+ARG LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE=
+ARG LLMSWAP_VLLM_SOURCE_MAX_JOBS=
+ARG LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION=2
+ARG LLMSWAP_TORCH_CUDA_ARCH_LIST=8.9
+ARG LLMSWAP_SGLANG_PACKAGE=
+ARG LLMSWAP_SGLANG_TORCH_VERSION=
+ARG LLMSWAP_SGLANG_TORCHAUDIO_VERSION=
+ARG LLMSWAP_SGLANG_TORCHVISION_VERSION=
+ARG LLMSWAP_SGLANG_TORCHAO_VERSION=
+ARG LLMSWAP_SGLANG_TORCHCODEC_VERSION=
 ARG LLAMA_SWAP_DOWNLOAD_URL=
 ARG LLAMA_SWAP_REF=v232
 ARG LLAMA_SWAP_RELEASE_URL=
@@ -46,29 +61,19 @@ WORKDIR /src
 RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
           http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
  && apt-get update \
- && apt-get install -y --no-install-recommends build-essential ninja-build \
+ && apt-get install -y --no-install-recommends build-essential ninja-build python3-jinja2 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/install-worker.sh /usr/local/bin/install-worker.sh
 
-RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+RUN --mount=type=secret,id=llmswap_runtime_proxy,required=false runtime_proxy="$(cat /run/secrets/llmswap_runtime_proxy 2>/dev/null || true)" \
+ && export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
           http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
-          LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH}" \
-          LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE}" \
-          LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE}" \
+          LLMSWAP_RUNTIME_HTTP_PROXY="${runtime_proxy}" \
+          UV_HTTP_RETRIES="${UV_HTTP_RETRIES}" UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT}" UV_HTTP_CONNECT_TIMEOUT="${UV_HTTP_CONNECT_TIMEOUT}" \
+          UV_INDEX_URL="${UV_INDEX_URL}" UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}" PIP_INDEX_URL="${PIP_INDEX_URL}" PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
           LLMSWAP_UV_PYTHON_INSTALL_MIRROR="${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}" \
-          LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL}" \
-          LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE}" \
-          UV_INDEX_URL="${UV_INDEX_URL}" \
-          UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}" \
-          UV_HTTP_RETRIES="${UV_HTTP_RETRIES}" \
-          UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT}" \
-          UV_HTTP_CONNECT_TIMEOUT="${UV_HTTP_CONNECT_TIMEOUT}" \
-          PIP_INDEX_URL="${PIP_INDEX_URL}" \
-          PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
-          UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" \
-          UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" \
-          UV_LINK_MODE=copy \
+          UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" UV_LINK_MODE=hardlink \
  && sed -i 's/\r$//' /usr/local/bin/install-worker.sh \
  && chmod 0755 /usr/local/bin/install-worker.sh \
  && /usr/local/bin/install-worker.sh \
@@ -77,24 +82,40 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
       --cuda-version "${LLMSWAP_CUDA_VERSION}" \
       --python "${LLMSWAP_PYTHON}"
 
-RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
-          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+ARG LLMSWAP_TORCH_VERSION=
+ARG LLMSWAP_TORCHAUDIO_VERSION=
+ARG LLMSWAP_TORCHVISION_VERSION=
+
+RUN --mount=type=secret,id=llmswap_runtime_proxy,required=false runtime_proxy="$(cat /run/secrets/llmswap_runtime_proxy 2>/dev/null || true)" \
+ && export HTTP_PROXY="${runtime_proxy:-$HTTP_PROXY}" HTTPS_PROXY="${runtime_proxy:-$HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${runtime_proxy:-$http_proxy}" https_proxy="${runtime_proxy:-$https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
+          LLMSWAP_RUNTIME_HTTP_PROXY="${runtime_proxy}" \
           LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH}" \
           LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE}" \
+          LLMSWAP_VLLM_OMNI_PACKAGE="${LLMSWAP_VLLM_OMNI_PACKAGE}" \
+          LLMSWAP_VLLM_OMNI_VLLM_PACKAGE="${LLMSWAP_VLLM_OMNI_VLLM_PACKAGE}" \
+          LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO="${LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO}" \
+          LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF="${LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF}" \
+          LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE="${LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE}" \
+          LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL="${LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL}" \
+          LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE="${LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE}" \
+          LLMSWAP_VLLM_SOURCE_MAX_JOBS="${LLMSWAP_VLLM_SOURCE_MAX_JOBS}" \
+          LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION="${LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION}" \
+          LLMSWAP_TORCH_CUDA_ARCH_LIST="${LLMSWAP_TORCH_CUDA_ARCH_LIST}" \
+          LLMSWAP_TORCH_VERSION="${LLMSWAP_TORCH_VERSION}" \
+          LLMSWAP_TORCHAUDIO_VERSION="${LLMSWAP_TORCHAUDIO_VERSION}" \
+          LLMSWAP_TORCHVISION_VERSION="${LLMSWAP_TORCHVISION_VERSION}" \
           LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE}" \
+          LLMSWAP_SGLANG_TORCH_VERSION="${LLMSWAP_SGLANG_TORCH_VERSION}" \
+          LLMSWAP_SGLANG_TORCHAUDIO_VERSION="${LLMSWAP_SGLANG_TORCHAUDIO_VERSION}" \
+          LLMSWAP_SGLANG_TORCHVISION_VERSION="${LLMSWAP_SGLANG_TORCHVISION_VERSION}" \
+          LLMSWAP_SGLANG_TORCHAO_VERSION="${LLMSWAP_SGLANG_TORCHAO_VERSION}" \
+          LLMSWAP_SGLANG_TORCHCODEC_VERSION="${LLMSWAP_SGLANG_TORCHCODEC_VERSION}" \
+          LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL}" LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE}" \
           LLMSWAP_UV_PYTHON_INSTALL_MIRROR="${LLMSWAP_UV_PYTHON_INSTALL_MIRROR}" \
-          LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL}" \
-          LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE}" \
-          UV_INDEX_URL="${UV_INDEX_URL}" \
-          UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}" \
-          UV_HTTP_RETRIES="${UV_HTTP_RETRIES}" \
-          UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT}" \
-          UV_HTTP_CONNECT_TIMEOUT="${UV_HTTP_CONNECT_TIMEOUT}" \
-          PIP_INDEX_URL="${PIP_INDEX_URL}" \
-          PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
-          UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" \
-          UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" \
-          UV_LINK_MODE=copy \
+          UV_HTTP_RETRIES="${UV_HTTP_RETRIES}" UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT}" UV_HTTP_CONNECT_TIMEOUT="${UV_HTTP_CONNECT_TIMEOUT}" \
+          UV_INDEX_URL="${UV_INDEX_URL}" UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}" PIP_INDEX_URL="${PIP_INDEX_URL}" PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
+          UV_CACHE_DIR="${LLMSWAP_ROOT}/cache/uv" UV_PYTHON_INSTALL_DIR="${LLMSWAP_ROOT}/python" UV_LINK_MODE=hardlink \
  && /usr/local/bin/install-worker.sh \
       --root "${LLMSWAP_ROOT}" \
       --only runtime \
@@ -103,6 +124,10 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
       --python "${LLMSWAP_PYTHON}" \
       --llamacpp-base-url "${LLMSWAP_LLAMA_CPP_BASE_URL}" \
       --llamacpp-cuda "${LLMSWAP_LLAMA_CPP_CUDA}" \
+ && rm -rf "${LLMSWAP_ROOT}/cache" "${LLMSWAP_ROOT}/src" /root/.cache/pip /root/.cache/uv
+
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
+          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
  && release_url="${LLAMA_SWAP_RELEASE_URL:-https://github.com/mostlygeek/llama-swap/releases/download/${LLAMA_SWAP_REF}/llama-swap_${LLAMA_SWAP_REF#v}_linux_amd64.tar.gz}" \
  && curl -fL --retry 5 --retry-delay 5 -o /tmp/llama-swap-release.tar.gz "$release_url" \
  && mkdir -p /tmp/llama-swap-release \
@@ -111,9 +136,10 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
  && install -m 0755 /tmp/llama-swap-release/llama-swap "${LLMSWAP_ROOT}/bin/llama-swap" \
  && if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]; then \
       /usr/local/bin/install-worker.sh \
-        --root "${LLMSWAP_ROOT}" \
-        --only tailscale \
-        --cuda-version "${LLMSWAP_CUDA_VERSION}" ; \
+      --root "${LLMSWAP_ROOT}" \
+      --only tailscale \
+      --cuda-version "${LLMSWAP_CUDA_VERSION}" \
+      --python "${LLMSWAP_PYTHON}" ; \
     fi \
  && if [[ -n "${LLAMA_SWAP_DOWNLOAD_URL}" ]]; then \
       curl -fL --retry 5 --retry-delay 5 -o "${LLMSWAP_ROOT}/bin/llama-swap.bundled" "${LLAMA_SWAP_DOWNLOAD_URL}" \
@@ -124,6 +150,7 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
     else \
       printf 'WARN no preinstalled %s/bin/llama-swap was found after downloading llama-swap ref %s; provide LLAMA_SWAP_DOWNLOAD_URL or inspect the release URL.\n' "${LLMSWAP_ROOT}" "${LLAMA_SWAP_REF}" ; \
     fi \
+ && rm -rf "${LLMSWAP_ROOT}/cache/uv/archive-v0" "${LLMSWAP_ROOT}/cache/runtimes" \
  && rm -rf /tmp/llama-swap-release /tmp/llama-swap-release.tar.gz
 
 FROM golang:1.23-bookworm AS agent-build
@@ -160,9 +187,22 @@ FROM runtime-base AS final
 
 SHELL ["/bin/bash", "-lc"]
 
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG ALL_PROXY=
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+ARG all_proxy=
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LLMSWAP_ROOT=/opt/llmswap
 ARG LLMSWAP_CUDA_VERSION=12.8
 ARG LLMSWAP_SWAP_PORT=6006
 
+ENV LLMSWAP_ROOT=${LLMSWAP_ROOT}
+ENV HOME=/root
+ENV PATH=${LLMSWAP_ROOT}/bin:/root/.local/bin:${PATH}
 COPY scripts/agent-container-entrypoint.sh /usr/local/bin/agent-container-entrypoint.sh
 COPY --from=agent-build /out/llm-swap-agent /tmp/llm-swap-agent
 

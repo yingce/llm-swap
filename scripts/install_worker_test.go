@@ -14,13 +14,13 @@ func TestInstallWorkerDryRunUsesCuda124TorchIndexAndSupervisor(t *testing.T) {
 
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm[audio]")
-	assertNotContains(t, out, "--torch-backend=cu124")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm --torch-backend=cu124")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm-omni[minicpmo]==0.24.0 --torch-backend=cu124")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python librosa soundfile torchcodec av")
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang --torch-backend=cu124")
 	assertContains(t, out, "sglang_minicpmv46_patch=applied")
-	assertNotContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torch torchvision torchaudio")
 	assertContains(t, out, "/etc/supervisor/conf.d/llmswap-agent.conf")
 	assertContains(t, out, "/etc/supervisor/conf.d/llmswap-llama-swap.conf")
 	assertNotContains(t, out, "systemctl")
@@ -34,6 +34,7 @@ func TestDockerfileAgentInstallsJITBuildTools(t *testing.T) {
 	text := string(dockerfile)
 	assertContains(t, text, "build-essential")
 	assertContains(t, text, "ninja-build")
+	assertContains(t, text, "python3-jinja2")
 }
 
 func TestDockerfileAgentConfiguresUvNetworkRetries(t *testing.T) {
@@ -54,6 +55,20 @@ func TestDockerfileAgentConfiguresUvNetworkRetries(t *testing.T) {
 	}
 }
 
+func TestDockerfileAgentInstallsAllRuntimesInOneHardlinkLayer(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "Dockerfile.agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(dockerfile)
+	assertContains(t, text, "UV_LINK_MODE=hardlink")
+	assertContains(t, text, `--runtime "${LLMSWAP_RUNTIME}"`)
+	if got := strings.Count(text, "--only runtime"); got != 1 {
+		t.Fatalf("Dockerfile --only runtime count = %d, want 1", got)
+	}
+	assertContains(t, text, `rm -rf "${LLMSWAP_ROOT}/cache" "${LLMSWAP_ROOT}/src"`)
+}
+
 func TestInstallWorkerExportsUvNetworkRetryDefaults(t *testing.T) {
 	out := runInstallWorker(t, "12.8", "--only", "base")
 
@@ -63,8 +78,8 @@ func TestInstallWorkerExportsUvNetworkRetryDefaults(t *testing.T) {
 func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
-	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git")
-	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git build-essential ninja-build ffmpeg libavdevice58")
+	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip python3-jinja2 supervisor git")
+	assertContains(t, out, "apt-get install -y ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip python3-jinja2 supervisor git build-essential ninja-build ffmpeg libavdevice58")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/llama-swap-supervisor.sh")
 	assertNotContains(t, out, "while [[ ! -s \"$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; do")
 	assertContains(t, out, "models: {}")
@@ -81,26 +96,81 @@ func TestInstallWorkerDryRunUsesSystemSupervisor(t *testing.T) {
 func TestInstallWorkerDryRunSelectsCuda128AndCuda130Indexes(t *testing.T) {
 	cuda128 := runInstallWorker(t, "12.8")
 	assertContains(t, cuda128, "https://download.pytorch.org/whl/cu128")
-	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm[audio]")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128")
 	assertNotContains(t, cuda128, "vllm-0.24.0+cu128")
-	assertNotContains(t, cuda128, "--torch-backend=cu128")
-	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, cuda128, "git clone --depth 1 --branch v0.22.0 https://github.com/vllm-project/vllm.git /opt/llmswap/src/vllm-v0.22.0")
+	assertContains(t, cuda128, "grep -Ev '^(torch|torchaudio|torchvision|nvidia-cutlass-dsl|humming-kernels)(\\[|[<>=[:space:]]|$)' requirements/cuda.txt > requirements/cuda.llmswap-filtered.txt")
+	assertContains(t, cuda128, "uv pip install --python '/opt/llmswap/venvs/vllm/bin/python' -r requirements/cuda.llmswap-filtered.txt --torch-backend='cu128'")
+	assertContains(t, cuda128, "VLLM_FLASH_ATTN_VERSION=2")
+	assertContains(t, cuda128, "uv build --python '/opt/llmswap/venvs/vllm/bin/python' --wheel --no-build-isolation")
+	assertNotContains(t, cuda128, "--editable .")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm-omni[minicpmo]==0.22.0 --torch-backend=cu128")
+	assertNotContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm==0.22.0 --torch-backend=cu128")
+	assertNotContains(t, cuda128, "uv venv /opt/llmswap/venvs/vllm-omni")
+	assertNotContains(t, cuda128, "WRITE /opt/llmswap/bin/vllm-omni.server")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torchao==0.9.0")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang==0.5.5.post3 cuda-python<13")
+	assertContains(t, cuda128, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python librosa soundfile torchcodec==0.5.0 av")
 	assertNotContains(t, cuda128, "https://docs.sglang.ai/whl/cu128/")
 	assertNotContains(t, cuda128, "sglang-kernel")
 
 	cuda130 := runInstallWorker(t, "13.0")
 	assertContains(t, cuda130, "https://download.pytorch.org/whl/cu130")
-	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm[audio]")
+	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm --torch-backend=cu130")
 	assertNotContains(t, cuda130, "vllm-0.24.0+cu130")
-	assertNotContains(t, cuda130, "--torch-backend=cu130")
-	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm-omni[minicpmo]==0.24.0 --torch-backend=cu130")
+	assertNotContains(t, cuda130, "uv venv /opt/llmswap/venvs/vllm-omni")
+	assertContains(t, cuda130, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang --torch-backend=cu130")
 	assertNotContains(t, cuda130, "sglang[all]")
+}
+
+func TestInstallWorkerDryRunSupportsRuntimeList(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--runtime", "vllm,llamacpp")
+
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm-omni[minicpmo]==0.22.0 --torch-backend=cu128")
+	assertContains(t, out, "llamacpp-linux-cu128-sm89.tar.gz")
+	assertNotContains(t, out, "/opt/llmswap/venvs/vllm-omni")
+	assertNotContains(t, out, "/opt/llmswap/venvs/sglang")
+}
+
+func TestInstallWorkerVLLMRuntimeIncludesOmniInUnifiedVenv(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--runtime", "vllm")
+
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128")
+	assertContains(t, out, "git clone --depth 1 --branch v0.22.0 https://github.com/vllm-project/vllm.git /opt/llmswap/src/vllm-v0.22.0")
+	assertContains(t, out, "uv pip install --python '/opt/llmswap/venvs/vllm/bin/python' -r requirements/cuda.llmswap-filtered.txt --torch-backend='cu128'")
+	assertContains(t, out, "uv build --python '/opt/llmswap/venvs/vllm/bin/python' --wheel --no-build-isolation")
+	assertContains(t, out, "uv pip install --python '/opt/llmswap/venvs/vllm/bin/python' --no-deps")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm-omni[minicpmo]==0.22.0 --torch-backend=cu128")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm.server")
+	assertContains(t, out, "--omni")
+	assertNotContains(t, out, "/opt/llmswap/venvs/vllm-omni")
+	assertNotContains(t, out, "WRITE /opt/llmswap/bin/vllm-omni.server")
+	assertNotContains(t, out, "--editable .")
+}
+
+func TestInstallWorkerDryRunSupportsVLLMOmniRuntime(t *testing.T) {
+	out := runInstallWorker(t, "12.8", "--runtime", "vllm-omni")
+
+	assertContains(t, out, "INFO cuda_version=12.8 torch_backend=cu128 root=/opt/llmswap runtime=vllm-omni")
+	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128")
+	assertContains(t, out, "git clone --depth 1 --branch v0.22.0 https://github.com/vllm-project/vllm.git /opt/llmswap/src/vllm-v0.22.0")
+	assertContains(t, out, "uv pip install --python '/opt/llmswap/venvs/vllm/bin/python' -r requirements/cuda.llmswap-filtered.txt --torch-backend='cu128'")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python vllm-omni[minicpmo]==0.22.0 --torch-backend=cu128")
+	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm.server")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm-omni --python")
+	assertNotContains(t, out, "WRITE /opt/llmswap/bin/vllm-omni.server")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python")
 }
 
 func TestInstallWorkerDryRunChecksSGLangResolvedCudaRuntime(t *testing.T) {
 	out := runInstallWorker(t, "13.0", "--runtime", "sglang")
 
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang --torch-backend=cu130")
 	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python librosa soundfile torchcodec av")
 	assertContains(t, out, `kwargs.pop(\"hidden_size\", None)`)
 	assertContains(t, out, `/opt/llmswap/venvs/sglang/bin/python - <<'PY'`)
@@ -111,23 +181,34 @@ func TestInstallWorkerDryRunChecksSGLangResolvedCudaRuntime(t *testing.T) {
 func TestInstallWorkerDryRunDefaultsToPython312AndAllowsOverride(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm-omni --python 3.12 --managed-python --clear")
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
 
 	override := runInstallWorker(t, "12.8", "--python", "3.11")
 	assertContains(t, override, "uv venv /opt/llmswap/venvs/vllm --python 3.11 --managed-python --clear")
+	assertNotContains(t, override, "uv venv /opt/llmswap/venvs/vllm-omni --python 3.11 --managed-python --clear")
 	assertContains(t, override, "uv venv /opt/llmswap/venvs/sglang --python 3.11 --managed-python --clear")
 }
 
 func TestInstallWorkerDryRunInstallsUvWithPipFallback(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
-	assertContains(t, out, "timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv")
+	assertContains(t, out, "if [ -n \"${LLMSWAP_RUNTIME_HTTP_PROXY:-}\" ]; then export HTTP_PROXY=\"$LLMSWAP_RUNTIME_HTTP_PROXY\" HTTPS_PROXY=\"$LLMSWAP_RUNTIME_HTTP_PROXY\" http_proxy=\"$LLMSWAP_RUNTIME_HTTP_PROXY\" https_proxy=\"$LLMSWAP_RUNTIME_HTTP_PROXY\"; fi; timeout 120 sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv")
+}
+
+func TestInstallWorkerDryRunScopesRuntimeProxyToUvInstaller(t *testing.T) {
+	t.Setenv("LLMSWAP_RUNTIME_HTTP_PROXY", "http://proxy.example.invalid:6008")
+
+	out := runInstallWorker(t, "12.8", "--only", "base")
+
+	assertContains(t, out, "LLMSWAP_RUNTIME_HTTP_PROXY")
+	assertNotContains(t, out, "http://proxy.example.invalid:6008")
 }
 
 func TestInstallWorkerDryRunConfiguresUvCacheUnderRoot(t *testing.T) {
 	out := runInstallWorker(t, "12.8")
 
-	assertContains(t, out, "INFO uv_cache_dir=/opt/llmswap/cache/uv uv_python_install_dir=/opt/llmswap/python uv_link_mode=copy")
+	assertContains(t, out, "INFO uv_cache_dir=/opt/llmswap/cache/uv uv_python_install_dir=/opt/llmswap/python uv_link_mode=hardlink")
 	assertContains(t, out, "RUN mkdir -p /opt/llmswap/bin /opt/llmswap/models /opt/llmswap/venvs /opt/llmswap/logs /opt/llmswap/cache/uv /opt/llmswap/python")
 	assertNotContains(t, out, "/root/.cache/uv")
 	assertNotContains(t, out, "/root/.local/share/uv/python")
@@ -146,7 +227,7 @@ func TestInstallWorkerDryRunAcceptsTorchIndexOverride(t *testing.T) {
 
 	out := runInstallWorker(t, "12.8", "--runtime", "vllm")
 
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch torchvision torchaudio --index-url https://mirror.example.invalid/pytorch/cu128")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/vllm/bin/python torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://mirror.example.invalid/pytorch/cu128")
 	assertNotContains(t, out, "https://download.pytorch.org/whl/cu128")
 }
 
@@ -155,6 +236,8 @@ func TestInstallWorkerCanSkipTailscaleAndSelectRuntime(t *testing.T) {
 
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/vllm --python 3.12 --managed-python --clear")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm.server")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm-omni --python 3.12 --managed-python --clear")
+	assertNotContains(t, out, "WRITE /opt/llmswap/bin/vllm-omni.server")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
 	assertNotContains(t, out, "WRITE /opt/llmswap/bin/sglang.server")
 	assertNotContains(t, out, "tailscale")
@@ -166,7 +249,8 @@ func TestInstallWorkerOnlyRuntimeInstallsSelectedRuntimeWithoutBaseAgentOrSuperv
 	assertContains(t, out, "INFO cuda_version=13.0 torch_backend=cu130 root=/opt/llmswap runtime=sglang only=runtime")
 	assertContains(t, out, "RUN mkdir -p /opt/llmswap/bin /opt/llmswap/models /opt/llmswap/venvs /opt/llmswap/logs /opt/llmswap/cache/uv /opt/llmswap/python")
 	assertContains(t, out, "uv venv /opt/llmswap/venvs/sglang --python 3.12 --managed-python --clear")
-	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130")
+	assertContains(t, out, "uv pip install --python /opt/llmswap/venvs/sglang/bin/python --prerelease=allow sglang --torch-backend=cu130")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/sglang.server")
 	assertNotContains(t, out, "apt-get update")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
@@ -186,6 +270,7 @@ func TestInstallWorkerOnlyAgentSkipsRuntimeAndSupervisor(t *testing.T) {
 	assertContains(t, out, "install -m 0755 /tmp/llm-swap-agent /opt/llmswap/bin/llm-swap-agent")
 	assertNotContains(t, out, "apt-get update")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm-omni")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang")
 	assertNotContains(t, out, "tailscale")
 	assertNotContains(t, out, "WRITE /etc/supervisor/conf.d/llmswap-agent.conf")
@@ -201,6 +286,7 @@ func TestInstallWorkerOnlySupervisorSkipsRuntimeAndAgent(t *testing.T) {
 	assertContains(t, out, "supervisorctl reread")
 	assertNotContains(t, out, "apt-get update")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm-omni")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang")
 	assertNotContains(t, out, "WRITE /opt/llmswap/agent.yaml")
 	assertNotContains(t, out, "go build -o /opt/llmswap/bin/llm-swap-agent")
@@ -267,6 +353,7 @@ func TestInstallWorkerDryRunInstallsLlamaCppRuntimeAndBinWrappers(t *testing.T) 
 	assertContains(t, out, "exec \"$LLAMACPP_BIN/llama-server\" \"$@\"")
 	assertContains(t, out, "test -x /opt/llmswap/bin/llamacpp.server")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm")
+	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/vllm-omni")
 	assertNotContains(t, out, "uv venv /opt/llmswap/venvs/sglang")
 }
 
@@ -284,11 +371,15 @@ func TestInstallWorkerDryRunWritesRuntimeServerWrappers(t *testing.T) {
 	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm.server")
 	assertContains(t, out, "MODEL_PATH=\"${MODEL_PATH:-}\"")
 	assertContains(t, out, "MODEL_PATH=\"$1\"")
-	assertContains(t, out, "exec /opt/llmswap/venvs/vllm/bin/vllm serve \"$MODEL_PATH\" --host \"$HOST\" --port \"$PORT\"")
+	assertContains(t, out, "VLLM_MODE_ARGS=()")
+	assertContains(t, out, "HAS_DEPLOY_CONFIG=0")
+	assertContains(t, out, "VLLM_MODE_ARGS=(--omni)")
+	assertContains(t, out, "exec /opt/llmswap/venvs/vllm/bin/vllm serve \"$MODEL_PATH\" \"${VLLM_MODE_ARGS[@]}\" --host \"$HOST\" --port \"$PORT\" \"$@\"")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/sglang.server")
 	assertContains(t, out, "exec /opt/llmswap/venvs/sglang/bin/python -m sglang.launch_server --model-path \"$MODEL_PATH\" --host \"$HOST\" --port \"$PORT\"")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/sglang-python")
 	assertContains(t, out, "WRITE /opt/llmswap/bin/vllm-python")
+	assertNotContains(t, out, "WRITE /opt/llmswap/bin/vllm-omni-python")
 	assertContains(t, out, "LLMSWAP_CUDA_LIBS=\"${LLMSWAP_CUDA_LIBS:+$LLMSWAP_CUDA_LIBS:}$dir\"")
 }
 

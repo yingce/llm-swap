@@ -12,7 +12,10 @@ import (
 	"llm-swap/internal/protocol"
 )
 
-const runtimeLogPath = "/opt/llmswap/logs/model-runtime.log"
+const (
+	runtimeLogPath                = "/opt/llmswap/logs/model-runtime.log"
+	defaultHealthCheckTimeoutSecs = 900
+)
 
 type llamaSwapConfig struct {
 	HealthCheckTimeout int                       `yaml:"healthCheckTimeout"`
@@ -48,7 +51,7 @@ func (s literalString) MarshalYAML() (any, error) {
 
 func RenderLlamaSwapConfig(resp protocol.AgentConfigResponse, modelRoot string, token string) ([]byte, error) {
 	out := llamaSwapConfig{
-		HealthCheckTimeout: 300,
+		HealthCheckTimeout: defaultHealthCheckTimeoutSecs,
 		StartPort:          10001,
 		GlobalTTL:          0,
 		Performance: llamaSwapPerformance{
@@ -109,7 +112,7 @@ func modelCommand(modelName string, model config.Model, modelPath string) (model
 	}
 
 	switch strings.ToLower(strings.TrimSpace(model.Runtime)) {
-	case "vllm":
+	case "vllm", "vllm-omni":
 		return runtimeCommand("/opt/llmswap/bin/vllm.server", append([]string{
 			modelPath,
 			"--served-model-name", modelName,

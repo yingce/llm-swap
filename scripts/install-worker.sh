@@ -30,6 +30,10 @@ LLMSWAP_UV_PYTHON_INSTALL_DIR="${LLMSWAP_UV_PYTHON_INSTALL_DIR:-$LLMSWAP_ROOT/py
 LLMSWAP_UV_PYTHON_INSTALL_MIRROR="${LLMSWAP_UV_PYTHON_INSTALL_MIRROR:-}"
 LLMSWAP_TORCH_INDEX_URL="${LLMSWAP_TORCH_INDEX_URL:-}"
 LLMSWAP_TORCH_INDEX_URL_BASE="${LLMSWAP_TORCH_INDEX_URL_BASE:-https://download.pytorch.org/whl}"
+LLMSWAP_RUNTIME_HTTP_PROXY="${LLMSWAP_RUNTIME_HTTP_PROXY:-}"
+LLMSWAP_TORCH_VERSION="${LLMSWAP_TORCH_VERSION:-}"
+LLMSWAP_TORCHAUDIO_VERSION="${LLMSWAP_TORCHAUDIO_VERSION:-}"
+LLMSWAP_TORCHVISION_VERSION="${LLMSWAP_TORCHVISION_VERSION:-}"
 UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-10}"
 UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-120}"
 UV_HTTP_CONNECT_TIMEOUT="${UV_HTTP_CONNECT_TIMEOUT:-30}"
@@ -37,9 +41,24 @@ LLMSWAP_LLAMA_CPP_BASE_URL="${LLMSWAP_LLAMA_CPP_BASE_URL:-http://llmfs-bj.oss-cn
 LLMSWAP_LLAMA_CPP_CUDA="${LLMSWAP_LLAMA_CPP_CUDA:-auto}"
 LLMSWAP_LLAMA_CPP_ARCH="${LLMSWAP_LLAMA_CPP_ARCH:-sm89}"
 LLMSWAP_RUNTIME_CACHE_DIR="${LLMSWAP_RUNTIME_CACHE_DIR:-$LLMSWAP_ROOT/cache/runtimes}"
-LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-vllm[audio]}"
-LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE:-sglang}"
-UV_LINK_MODE="${UV_LINK_MODE:-copy}"
+LLMSWAP_VLLM_PACKAGE="${LLMSWAP_VLLM_PACKAGE:-}"
+LLMSWAP_VLLM_OMNI_PACKAGE="${LLMSWAP_VLLM_OMNI_PACKAGE:-}"
+LLMSWAP_VLLM_OMNI_VLLM_PACKAGE="${LLMSWAP_VLLM_OMNI_VLLM_PACKAGE:-}"
+LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO="${LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO:-https://github.com/vllm-project/vllm.git}"
+LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF="${LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF:-v0.22.0}"
+LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE="${LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE:-auto}"
+LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL="${LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL:-}"
+LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE="${LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE:-}"
+LLMSWAP_VLLM_SOURCE_MAX_JOBS="${LLMSWAP_VLLM_SOURCE_MAX_JOBS:-}"
+LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION="${LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION:-2}"
+LLMSWAP_TORCH_CUDA_ARCH_LIST="${LLMSWAP_TORCH_CUDA_ARCH_LIST:-8.9}"
+LLMSWAP_SGLANG_PACKAGE="${LLMSWAP_SGLANG_PACKAGE:-}"
+LLMSWAP_SGLANG_TORCH_VERSION="${LLMSWAP_SGLANG_TORCH_VERSION:-2.8.0}"
+LLMSWAP_SGLANG_TORCHAUDIO_VERSION="${LLMSWAP_SGLANG_TORCHAUDIO_VERSION:-2.8.0}"
+LLMSWAP_SGLANG_TORCHVISION_VERSION="${LLMSWAP_SGLANG_TORCHVISION_VERSION:-0.23.0}"
+LLMSWAP_SGLANG_TORCHAO_VERSION="${LLMSWAP_SGLANG_TORCHAO_VERSION:-0.9.0}"
+LLMSWAP_SGLANG_TORCHCODEC_VERSION="${LLMSWAP_SGLANG_TORCHCODEC_VERSION:-0.5.0}"
+UV_LINK_MODE="${UV_LINK_MODE:-hardlink}"
 export UV_CACHE_DIR="$LLMSWAP_UV_CACHE_DIR"
 export UV_PYTHON_INSTALL_DIR="$LLMSWAP_UV_PYTHON_INSTALL_DIR"
 export UV_HTTP_RETRIES
@@ -59,8 +78,9 @@ Options:
   --root PATH               Installation root. Default: /opt/llmswap.
   --only all|base|runtime|agent|supervisor|tailscale
                             Run only one install stage. Default: all.
-  --runtime all|vllm|sglang|llamacpp
+  --runtime all|vllm|sglang|llamacpp[,runtime...]
                             Runtime environments to install.
+                            vllm-omni is accepted as a legacy alias for vllm.
   --cuda-version X.Y        Override detected CUDA version, e.g. 12.4, 12.8, 13.0.
   --llamacpp-base-url URL   Base URL containing llamacpp-linux-<variant>.tar.gz.
   --llamacpp-cuda auto|cu124|cu128|cu130
@@ -278,15 +298,30 @@ torch_backend_for_cuda() {
 
 runtime_enabled() {
   local runtime="$1"
-  case "$LLMSWAP_RUNTIME" in
-    all) return 0 ;;
-    "$runtime") return 0 ;;
-    vllm|sglang|llamacpp) return 1 ;;
-    *)
-      echo "unsupported runtime '$LLMSWAP_RUNTIME'; use all, vllm, sglang, or llamacpp" >&2
-      exit 1
-      ;;
-  esac
+  local selected
+  IFS=',' read -r -a selected <<< "$LLMSWAP_RUNTIME"
+  for item in "${selected[@]}"; do
+    item="${item//[[:space:]]/}"
+    case "$item" in
+      all) return 0 ;;
+      "$runtime") return 0 ;;
+      vllm-omni)
+        if [[ "$runtime" == "vllm" ]]; then
+          return 0
+        fi
+        ;;
+      vllm|vllm-omni|sglang|llamacpp) ;;
+      "")
+        echo "unsupported runtime '$LLMSWAP_RUNTIME'; use all, vllm, vllm-omni, sglang, llamacpp, or a comma-separated list" >&2
+        exit 1
+        ;;
+      *)
+        echo "unsupported runtime '$LLMSWAP_RUNTIME'; use all, vllm, vllm-omni, sglang, llamacpp, or a comma-separated list" >&2
+        exit 1
+        ;;
+    esac
+  done
+  return 1
 }
 
 stage_enabled() {
@@ -337,7 +372,7 @@ LLMSWAP_LLAMA_SWAP_TOKEN=\"\${LLMSWAP_LLAMA_SWAP_TOKEN:-\${LLMSWAP_AGENT_TOKEN:-
 if [[ ! -s \"\$LLMSWAP_LLAMA_SWAP_CONFIG\" ]]; then
   mkdir -p \"\$(dirname \"\$LLMSWAP_LLAMA_SWAP_CONFIG\")\"
   {
-    printf 'healthCheckTimeout: 300\n'
+    printf 'healthCheckTimeout: 900\n'
     printf 'startPort: 10001\n'
     printf 'globalTTL: 0\n'
     if [[ -n \"\${LLMSWAP_LLAMA_SWAP_TOKEN// }\" ]]; then
@@ -454,7 +489,7 @@ install_base_packages() {
   print_uv_info
   ensure_runtime_dirs
   if command -v apt-get >/dev/null 2>&1 || [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
-    local packages=(ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip supervisor git build-essential ninja-build ffmpeg)
+    local packages=(ca-certificates curl gnupg procps python3 python3-venv python3-dev python3-pip python3-jinja2 supervisor git build-essential ninja-build ffmpeg)
     if [[ "$LLMSWAP_DRY_RUN" == "1" ]] || apt-cache show libavdevice58 >/dev/null 2>&1; then
       packages+=(libavdevice58)
     fi
@@ -478,7 +513,7 @@ install_uv() {
       return 0
     fi
   done
-  run sh -c "timeout $LLMSWAP_UV_INSTALL_TIMEOUT sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv"
+  run sh -c "if [ -n \"\${LLMSWAP_RUNTIME_HTTP_PROXY:-}\" ]; then export HTTP_PROXY=\"\$LLMSWAP_RUNTIME_HTTP_PROXY\" HTTPS_PROXY=\"\$LLMSWAP_RUNTIME_HTTP_PROXY\" http_proxy=\"\$LLMSWAP_RUNTIME_HTTP_PROXY\" https_proxy=\"\$LLMSWAP_RUNTIME_HTTP_PROXY\"; fi; timeout $LLMSWAP_UV_INSTALL_TIMEOUT sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || python3 -m pip install --upgrade uv"
   if [[ "$LLMSWAP_DRY_RUN" == "1" ]]; then
     return 0
   fi
@@ -551,6 +586,17 @@ install_torch() {
   local backend="$2"
   local index_url
   index_url="$(torch_index_url_for_backend "$backend")"
+  if [[ "$backend" == "cu128" ]]; then
+    local torch_version="${LLMSWAP_TORCH_VERSION:-2.8.0}"
+    local torchaudio_version="${LLMSWAP_TORCHAUDIO_VERSION:-2.8.0}"
+    local torchvision_version="${LLMSWAP_TORCHVISION_VERSION:-0.23.0}"
+    run uv pip install --python "$python" \
+      "torch==$torch_version" \
+      "torchaudio==$torchaudio_version" \
+      "torchvision==$torchvision_version" \
+      --index-url "$index_url"
+    return 0
+  fi
   run uv pip install --python "$python" torch torchvision torchaudio --index-url "$index_url"
 }
 
@@ -559,31 +605,169 @@ torch_index_url_for_backend() {
   printf '%s\n' "${LLMSWAP_TORCH_INDEX_URL:-$LLMSWAP_TORCH_INDEX_URL_BASE/$backend}"
 }
 
+vllm_omni_torch_index_url_for_backend() {
+  local backend="$1"
+  if [[ -n "$LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL" ]]; then
+    printf '%s\n' "$LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL"
+    return 0
+  fi
+  if [[ -n "$LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE" ]]; then
+    printf '%s\n' "$LLMSWAP_VLLM_OMNI_TORCH_INDEX_URL_BASE/$backend"
+    return 0
+  fi
+  torch_index_url_for_backend "$backend"
+}
+
+install_vllm_omni_torch() {
+  local python="$1"
+  local backend="$2"
+  local index_url
+  index_url="$(vllm_omni_torch_index_url_for_backend "$backend")"
+  if [[ "$backend" == "cu128" ]]; then
+    local torch_version="${LLMSWAP_TORCH_VERSION:-2.11.0}"
+    local torchaudio_version="${LLMSWAP_TORCHAUDIO_VERSION:-2.11.0}"
+    local torchvision_version="${LLMSWAP_TORCHVISION_VERSION:-0.26.0}"
+    run uv pip install --python "$python" \
+      "torch==$torch_version" \
+      "torchaudio==$torchaudio_version" \
+      "torchvision==$torchvision_version" \
+      --index-url "$index_url"
+    return 0
+  fi
+  run uv pip install --python "$python" torch torchvision torchaudio --index-url "$index_url"
+}
+
+install_sglang_torch() {
+  local python="$1"
+  local backend="$2"
+  local index_url
+  index_url="$(torch_index_url_for_backend "$backend")"
+  run uv pip install --python "$python" \
+    "torch==$LLMSWAP_SGLANG_TORCH_VERSION" \
+    "torchaudio==$LLMSWAP_SGLANG_TORCHAUDIO_VERSION" \
+    "torchvision==$LLMSWAP_SGLANG_TORCHVISION_VERSION" \
+    --index-url "$index_url"
+  run uv pip install --python "$python" "torchao==$LLMSWAP_SGLANG_TORCHAO_VERSION"
+}
+
 install_multimodal_audio_deps() {
   local python="$1"
   run uv pip install --python "$python" librosa soundfile torchcodec av
 }
 
+install_sglang_audio_deps() {
+  local python="$1"
+  run uv pip install --python "$python" librosa soundfile "torchcodec==$LLMSWAP_SGLANG_TORCHCODEC_VERSION" av
+}
+
 install_vllm() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/vllm"
+  local package="$LLMSWAP_VLLM_OMNI_PACKAGE"
+  local vllm_package="${LLMSWAP_VLLM_PACKAGE:-$LLMSWAP_VLLM_OMNI_VLLM_PACKAGE}"
+  local check_script="import torch, vllm, vllm_omni; print('torch', torch.__version__); print('torch_cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); print('vllm', vllm.__version__); print('vllm_omni', getattr(vllm_omni, '__version__', 'unknown'))"
+  if [[ -z "$package" ]]; then
+    case "$backend" in
+      cu128)
+        package="vllm-omni[minicpmo]==0.22.0"
+        ;;
+      *)
+        package="vllm-omni[minicpmo]==0.24.0"
+        ;;
+    esac
+  fi
   run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
-  install_torch "$venv/bin/python" "$backend"
-  run uv pip install --python "$venv/bin/python" "$LLMSWAP_VLLM_PACKAGE"
+  install_vllm_omni_torch "$venv/bin/python" "$backend"
+  if vllm_omni_should_build_vllm_from_source "$backend"; then
+    install_vllm_from_source_for_venv "$venv/bin/python" "$LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO" "$LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF" "$backend"
+  else
+    if [[ -z "$vllm_package" ]]; then
+      if [[ "$backend" == "cu128" ]]; then
+        vllm_package="vllm==0.22.0"
+      else
+        vllm_package="vllm"
+      fi
+    fi
+    run uv pip install --python "$venv/bin/python" "$vllm_package" --torch-backend="$backend"
+  fi
+  run uv pip install --python "$venv/bin/python" "$package" --torch-backend="$backend"
   install_multimodal_audio_deps "$venv/bin/python"
+  printf 'INFO vllm_resolved_runtime backend_hint=%s vllm_ref=%s vllm_package=%s package=%s\n' "$backend" "$LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF" "${vllm_package:-source}" "$package"
+  run "$venv/bin/python" -c "$check_script"
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/vllm.server" "$venv/bin/python" vllm
   write_python_wrapper "$LLMSWAP_ROOT/bin/vllm-python" "$venv/bin/python"
+}
+
+vllm_omni_should_build_vllm_from_source() {
+  local backend="$1"
+  case "$LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE" in
+    1|true|yes) return 0 ;;
+    0|false|no) return 1 ;;
+    auto)
+      if [[ "$backend" == "cu128" ]]; then
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      echo "unsupported LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE='$LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE'; use auto, true, or false" >&2
+      exit 1
+      ;;
+  esac
+}
+
+install_vllm_from_source_for_venv() {
+  local python="$1"
+  local repo="$2"
+  local ref="$3"
+  local backend="$4"
+  local src="$LLMSWAP_ROOT/src/vllm-${ref//\//-}"
+  local wheelhouse="$LLMSWAP_ROOT/cache/wheels"
+  local max_jobs_prefix=""
+  if [[ -n "$LLMSWAP_VLLM_SOURCE_MAX_JOBS" ]]; then
+    max_jobs_prefix="MAX_JOBS=$LLMSWAP_VLLM_SOURCE_MAX_JOBS "
+  fi
+  local flash_attn_prefix=""
+  if [[ -n "$LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION" ]]; then
+    flash_attn_prefix="VLLM_FLASH_ATTN_VERSION=$LLMSWAP_VLLM_SOURCE_FLASH_ATTN_VERSION "
+  fi
+  run rm -rf "$src"
+  run rm -rf "$wheelhouse"
+  run mkdir -p "$wheelhouse"
+  run git clone --depth 1 --branch "$ref" "$repo" "$src"
+  run bash -lc "cd '$src' && '$python' use_existing_torch.py"
+  run bash -lc "cd '$src' && uv pip install --python '$python' -r requirements/build/cuda.txt"
+  run bash -lc "cd '$src' && grep -Ev '^(torch|torchaudio|torchvision|nvidia-cutlass-dsl|humming-kernels)(\\[|[<>=[:space:]]|$)' requirements/cuda.txt > requirements/cuda.llmswap-filtered.txt && uv pip install --python '$python' -r requirements/cuda.llmswap-filtered.txt --torch-backend='$backend'"
+  run bash -lc "cd '$src' && TORCH_CUDA_ARCH_LIST='$LLMSWAP_TORCH_CUDA_ARCH_LIST' ${flash_attn_prefix}${max_jobs_prefix}uv build --python '$python' --wheel --no-build-isolation --out-dir '$wheelhouse'"
+  run bash -lc "wheel=\$(find '$wheelhouse' -maxdepth 1 -name 'vllm-*.whl' -print -quit); test -n \"\$wheel\"; uv pip install --python '$python' --no-deps \"\$wheel\""
+  run rm -rf "$src" "$wheelhouse"
+}
+
+install_vllm_omni() {
+  install_vllm "$1"
 }
 
 install_sglang() {
   local backend="$1"
   local venv="$LLMSWAP_ROOT/venvs/sglang"
+  local package="$LLMSWAP_SGLANG_PACKAGE"
   local check_script="import torch, sglang; print('torch', torch.__version__); print('torch_cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); print('sglang', sglang.__version__)"
   run uv venv "$venv" --python "$LLMSWAP_PYTHON" --managed-python --clear
-  run uv pip install --python "$venv/bin/python" --prerelease=allow "$LLMSWAP_SGLANG_PACKAGE"
-  install_multimodal_audio_deps "$venv/bin/python"
+  if [[ -z "$package" && "$backend" == "cu128" ]]; then
+    package="sglang==0.5.5.post3"
+    install_sglang_torch "$venv/bin/python" "$backend"
+    run uv pip install --python "$venv/bin/python" --prerelease=allow "$package" "cuda-python<13"
+    install_sglang_audio_deps "$venv/bin/python"
+  else
+    if [[ -z "$package" ]]; then
+      package="sglang"
+    fi
+    install_torch "$venv/bin/python" "$backend"
+    run uv pip install --python "$venv/bin/python" --prerelease=allow "$package" --torch-backend="$backend"
+    install_multimodal_audio_deps "$venv/bin/python"
+  fi
   patch_sglang_minicpmv46_config "$venv/bin/python"
-  printf 'INFO sglang_resolved_runtime backend_hint=%s\n' "$backend"
+  printf 'INFO sglang_resolved_runtime backend_hint=%s package=%s\n' "$backend" "$package"
   run "$venv/bin/python" -c "$check_script"
   write_runtime_wrapper "$LLMSWAP_ROOT/bin/sglang.server" "$venv/bin/python" sglang
   write_python_wrapper "$LLMSWAP_ROOT/bin/sglang-python" "$venv/bin/python"
@@ -802,6 +986,22 @@ HOST=\"\${HOST:-0.0.0.0}\"
 PORT=\"\${PORT:-8000}\"
 PYTHON_BIN=\"$python_bin\"
 VENV_DIR=\"\$(cd \"\$(dirname \"\$PYTHON_BIN\")/..\" && pwd)\"
+VLLM_MODE_ARGS=()
+HAS_OMNI=0
+HAS_DEPLOY_CONFIG=0
+for arg in \"\$@\"; do
+  case \"\$arg\" in
+    --omni)
+      HAS_OMNI=1
+      ;;
+    --deploy-config|--deploy-config=*)
+      HAS_DEPLOY_CONFIG=1
+      ;;
+  esac
+done
+if [[ \"\$HAS_DEPLOY_CONFIG\" == \"1\" && \"\$HAS_OMNI\" != \"1\" ]]; then
+  VLLM_MODE_ARGS=(--omni)
+fi
 LLMSWAP_CUDA_LIBS=\"\"
 for dir in \"\$VENV_DIR\"/lib/python*/site-packages/nvidia/*/lib; do
   if [[ -d \"\$dir\" ]]; then
@@ -811,7 +1011,34 @@ done
 if [[ -n \"\$LLMSWAP_CUDA_LIBS\" ]]; then
   export LD_LIBRARY_PATH=\"\$LLMSWAP_CUDA_LIBS:\${LD_LIBRARY_PATH:-}\"
 fi
-exec $(dirname "$python_bin")/vllm serve \"\$MODEL_PATH\" --host \"\$HOST\" --port \"\$PORT\" \"\$@\""
+exec $(dirname "$python_bin")/vllm serve \"\$MODEL_PATH\" \"\${VLLM_MODE_ARGS[@]}\" --host \"\$HOST\" --port \"\$PORT\" \"\$@\""
+      ;;
+    vllm-omni)
+      content="#!/usr/bin/env bash
+set -euo pipefail
+MODEL_PATH=\"\${MODEL_PATH:-}\"
+if [[ -z \"\$MODEL_PATH\" && \$# -gt 0 ]]; then
+  MODEL_PATH=\"\$1\"
+  shift
+fi
+if [[ -z \"\$MODEL_PATH\" ]]; then
+  echo \"usage: vllm-omni.server MODEL_PATH [vllm-omni args...]\" >&2
+  exit 2
+fi
+HOST=\"\${HOST:-0.0.0.0}\"
+PORT=\"\${PORT:-8000}\"
+PYTHON_BIN=\"$python_bin\"
+VENV_DIR=\"\$(cd \"\$(dirname \"\$PYTHON_BIN\")/..\" && pwd)\"
+LLMSWAP_CUDA_LIBS=\"\"
+for dir in \"\$VENV_DIR\"/lib/python*/site-packages/nvidia/*/lib; do
+  if [[ -d \"\$dir\" ]]; then
+    LLMSWAP_CUDA_LIBS=\"\${LLMSWAP_CUDA_LIBS:+\$LLMSWAP_CUDA_LIBS:}\$dir\"
+  fi
+done
+if [[ -n \"\$LLMSWAP_CUDA_LIBS\" ]]; then
+  export LD_LIBRARY_PATH=\"\$LLMSWAP_CUDA_LIBS:\${LD_LIBRARY_PATH:-}\"
+fi
+exec $(dirname "$python_bin")/vllm serve \"\$MODEL_PATH\" --omni --host \"\$HOST\" --port \"\$PORT\" \"\$@\""
       ;;
     sglang)
       content="#!/usr/bin/env bash

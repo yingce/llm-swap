@@ -1,12 +1,12 @@
 # LLM Swap Project Map
 
-Last updated: 2026-07-31.
+Last updated: 2026-08-02.
 
 This document is the current high-level map for future agents. It reflects the
 code state after the gateway UI, token unification, worker event persistence,
-request accounting, scheduling, install script, vLLM/SGLang wrappers, and
-llama.cpp runtime wrapper, versioned model directory, public model alias, and
-refresh-safe admin UI routing work.
+request accounting, scheduling, install script, vLLM/SGLang/llama.cpp runtime
+wrappers, versioned model directory, public model alias, and refresh-safe admin
+UI routing work. The vLLM environment also contains vLLM-Omni support.
 
 ## System Shape
 
@@ -20,7 +20,7 @@ client
     -> gateway validates the worker's advertised FRPS endpoint, then proxies to
        the gateway-side FRP dial address plus the gateway-leased TCP port
       -> llama-swap starts/switches local runtime command from rendered config
-        -> vLLM, SGLang, or llama.cpp runtime wrapper
+        -> vLLM (including Omni), SGLang, or llama.cpp runtime wrapper
 
 worker agent
   -> polls gateway config
@@ -274,8 +274,9 @@ disabled the gateway still runs with no external database.
     inspection and includes `Copy YAML` for copy/paste.
   - New blank models start disabled with the `vLLM` runtime and
     `min_loaded: 0`. Runtime selection is limited to `vLLM`, `SGLang`, and
-    `llama.cpp`. Legacy models configured with a raw `run` command remain
-    compatible as a read-only `Custom command` state.
+    `llama.cpp`. The old `vllm-omni` value remains a config compatibility alias
+    for the unified vLLM runtime. Legacy models configured with a raw `run`
+    command remain compatible as a read-only `Custom command` state.
   - Saving the modal updates only the local configuration draft. Canceling it
     (including a dirty-draft discard) cannot change gateway configuration;
     validation and persistence remain explicit Dry run and Apply actions.
@@ -469,13 +470,15 @@ It can:
   `llmswap-tailscaled` and one-shot `llmswap-tailscale-init` programs;
 - create uv-managed Python venvs for vLLM and SGLang using Python 3.12 by
   default;
-- install torch for vLLM with CUDA-aware PyTorch index selection;
-- install vLLM from `LLMSWAP_VLLM_PACKAGE` without passing a vLLM CUDA backend
-  or CUDA-specific wheel URL; CUDA selection is limited to the torch install
-  step;
+- install one CUDA-aware vLLM environment containing vLLM, vLLM-Omni, and the
+  audio dependencies. CUDA 12.8 builds compile the selected vLLM source ref
+  against the pinned PyTorch CUDA 12.8 environment, install the resulting
+  wheel, and then remove source, wheel, and uv caches;
 - install audio parser dependencies separately for vLLM so OpenAI audio payloads
   are supported;
-- install SGLang and patch MiniCPMV4.6 config compatibility;
+- install SGLang from the pinned CUDA-compatible default package, using an
+  isolated SGLang torch/torchao compatibility set for the selected backend,
+  and patch MiniCPMV4.6 config compatibility;
 - install prebuilt llama.cpp CUDA runtime archives from OSS;
 - write wrappers into `/opt/llmswap/bin`;
 - initialize agent config without overwriting an existing one unless
@@ -499,7 +502,16 @@ Important env vars:
 - `LLMSWAP_UV_PYTHON_INSTALL_MIRROR`
 - `LLMSWAP_TORCH_INDEX_URL`
 - `LLMSWAP_TORCH_INDEX_URL_BASE`
+- `LLMSWAP_TORCH_VERSION`
+- `LLMSWAP_TORCHAUDIO_VERSION`
+- `LLMSWAP_TORCHVISION_VERSION`
 - `LLMSWAP_VLLM_PACKAGE`
+- `LLMSWAP_VLLM_OMNI_PACKAGE`
+- `LLMSWAP_VLLM_OMNI_VLLM_PACKAGE`
+- `LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REPO`
+- `LLMSWAP_VLLM_OMNI_VLLM_SOURCE_REF`
+- `LLMSWAP_VLLM_OMNI_BUILD_VLLM_FROM_SOURCE`
+- `LLMSWAP_TORCH_CUDA_ARCH_LIST`
 
 ## Agent Container Image
 
@@ -521,7 +533,9 @@ Important properties:
 - The build runs `install-worker.sh` inside the image, so runtime installation
   logic stays in one place.
 - The image preinstalls `vllm`, `sglang`, or `llamacpp` based on
-  `--build-arg LLMSWAP_RUNTIME=...`.
+  `--build-arg LLMSWAP_RUNTIME=...`; `all` includes every supported runtime for
+  stateless workers that may dynamically switch models. `vllm-omni` is
+  accepted only as a legacy alias for `vllm`.
 - The image installs the Tailscale binaries by default, but does not run
   `tailscale up` at build time.
 - The image removes the placeholder `agent.yaml` after build. At container

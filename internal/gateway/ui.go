@@ -40,7 +40,9 @@ type uiModelStatus struct {
 	Priority         int             `json:"priority"`
 	MinLoaded        int             `json:"min_loaded"`
 	MaxLoaded        int             `json:"max_loaded"`
+	ActiveRequests   int             `json:"active_requests"`
 	MaxConcurrency   int             `json:"max_concurrency"`
+	QueuedRequests   int             `json:"queued_requests"`
 	MaxQueue         int             `json:"max_queue"`
 	QueueTimeoutMS   int             `json:"queue_timeout_ms"`
 	TTL              int             `json:"ttl"`
@@ -397,13 +399,16 @@ func (s *Server) buildUIModels(workers []Worker, cooldowns ReplicaCooldownSnapsh
 	cfg := activeGatewayConfig(s.currentConfig())
 	models := make([]uiModelStatus, 0, len(cfg.Models))
 	for name, model := range cfg.Models {
+		capacity := s.modelCapacity(name, now)
 		item := uiModelStatus{
 			Name:           name,
 			Priority:       model.Priority,
 			MinLoaded:      model.MinLoaded,
 			MaxLoaded:      model.EffectiveMaxLoaded(),
-			MaxConcurrency: model.MaxConcurrency,
-			MaxQueue:       model.MaxQueue,
+			ActiveRequests: s.accounting.ModelActive(name),
+			MaxConcurrency: effectiveCapacity(capacity.MaxConcurrency, model.MaxConcurrency),
+			QueuedRequests: s.limiter.Queued("model:" + name),
+			MaxQueue:       effectiveCapacity(capacity.MaxQueue, model.MaxQueue),
 			QueueTimeoutMS: model.QueueTimeoutMS,
 			TTL:            model.TTL,
 			Artifact:       model.Artifact,

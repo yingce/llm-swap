@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,61 @@ import (
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
+
+func TestUIModelsExposeLiveCapacityAndPressure(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	now := time.Now()
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+
+	releaseAccounting := srv.accounting.Acquire("req-active", "qwen", "gpu-4090", "gpu-01")
+	defer releaseAccounting()
+	releaseA, err := srv.limiter.Acquire(context.Background(), "model:qwen", 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseA()
+	releaseB, err := srv.limiter.Acquire(context.Background(), "model:qwen", 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseB()
+
+	queueCtx, cancelQueue := context.WithCancel(context.Background())
+	defer cancelQueue()
+	queuedDone := make(chan struct{})
+	go func() {
+		defer close(queuedDone)
+		release, acquireErr := srv.limiter.Acquire(queueCtx, "model:qwen", 2, 4)
+		if acquireErr == nil {
+			release()
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.limiter.Queued("model:qwen") != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := srv.limiter.Queued("model:qwen"); got != 1 {
+		t.Fatalf("queued requests = %d, want 1", got)
+	}
+
+	models := srv.buildUIModels(srv.workers.Snapshot(now), srv.replicaCooldowns.Snapshot(now), now)
+	model, ok := findUIModel(models, "qwen")
+	if !ok {
+		t.Fatalf("models = %+v, want qwen", models)
+	}
+	if model.ActiveRequests != 1 || model.MaxConcurrency != 2 || model.QueuedRequests != 1 || model.MaxQueue != 4 {
+		t.Fatalf("model pressure = active %d/%d queued %d/%d, want active 1/2 queued 1/4", model.ActiveRequests, model.MaxConcurrency, model.QueuedRequests, model.MaxQueue)
+	}
+
+	cancelQueue()
+	<-queuedDone
+}
 
 func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	srv := NewServer(testGatewayConfig())

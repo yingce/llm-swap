@@ -88,7 +88,7 @@ func validateGateway(cfg GatewayConfig) error {
 			return fmt.Errorf("model %s run or runtime is required", name)
 		}
 		if strings.TrimSpace(model.Runtime) != "" && !validModelRuntime(model.Runtime) {
-			return fmt.Errorf("model %s runtime must be vllm, sglang, or llamacpp", name)
+			return fmt.Errorf("model %s runtime must be vllm, vllm-omni, sglang, or llamacpp", name)
 		}
 		if model.MaxLoadedSet && model.MinLoaded > model.MaxLoaded {
 			return fmt.Errorf("model %s min_loaded cannot exceed max_loaded", name)
@@ -179,7 +179,7 @@ func validFRPDialAddr(value string) bool {
 
 func validModelRuntime(runtime string) bool {
 	switch strings.ToLower(strings.TrimSpace(runtime)) {
-	case "vllm", "sglang", "llamacpp":
+	case "vllm", "vllm-omni", "sglang", "llamacpp":
 		return true
 	default:
 		return false

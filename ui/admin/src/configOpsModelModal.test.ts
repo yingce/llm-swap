@@ -2,7 +2,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("./app/App.tsx", import.meta.url), "utf8");
+const shellSource = readFileSync(new URL("./app/AppShell.tsx", import.meta.url), "utf8");
 
 describe("Config Ops model creation modal", () => {
   it("uses a reusable modal with constrained runtime and header disabled controls", () => {
@@ -11,7 +12,7 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain('aria-modal="true"');
     expect(source).toContain("isModelCreateDraftDirty(initialDraft, draft)");
     expect(source).toContain("MODEL_RUNTIME_OPTIONS.map");
-    expect(source).toContain('className="model-disabled-toggle"');
+    expect(source).toContain('className="model-disabled-toggle switch-control"');
   });
 
   it("manages focus inside a portaled modal while the complete app background is inert", () => {
@@ -21,7 +22,8 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain("modalFocusableElements(dialog)");
     expect(source).toContain("onKeyDown={handleKeyDown}");
     expect(source).toContain('import { createPortal } from "react-dom"');
-    expect(source).toContain('ref={appContentRef}');
+    expect(source).toContain("appContentRef={appContentRef}");
+    expect(shellSource).toContain('ref={appContentRef}');
     expect(source).toContain("appContentRef.current");
     expect(source).toContain("app.inert = Boolean(createDraft)");
     expect(source).toContain("createPortal(");

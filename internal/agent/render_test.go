@@ -38,8 +38,8 @@ func TestRenderLlamaSwapConfigRendersAllowedModels(t *testing.T) {
 	}
 
 	doc := parseYAML(t, out)
-	if got := doc["healthCheckTimeout"]; got != 300 {
-		t.Fatalf("healthCheckTimeout = %#v, want 300", got)
+	if got := doc["healthCheckTimeout"]; got != 900 {
+		t.Fatalf("healthCheckTimeout = %#v, want 900", got)
 	}
 	if got := doc["startPort"]; got != 10001 {
 		t.Fatalf("startPort = %#v, want 10001", got)
@@ -207,6 +207,81 @@ func TestRenderLlamaSwapConfigUsesModelDir(t *testing.T) {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("runtime cmd missing %q: %q", want, cmd)
 		}
+	}
+}
+
+func TestRenderLlamaSwapConfigBuildsVLLMOmniRuntimeCommand(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"JoyFox-Omni": {
+				Runtime: "vllm-omni",
+				RuntimeArgs: []string{
+					"--trust-remote-code",
+					"--limit-mm-per-prompt '{\"image\": 2, \"audio\": 1}'",
+				},
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"JoyFox-Omni"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	cmd := models["JoyFox-Omni"].(map[string]any)["cmd"].(string)
+	for _, want := range []string{
+		`PORT="${PORT}" "$@"`,
+		"/opt/llmswap/bin/vllm.server",
+		"/models/JoyFox-Omni",
+		"--served-model-name",
+		"JoyFox-Omni",
+		"--limit-mm-per-prompt",
+		`{"image": 2, "audio": 1}`,
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("legacy vllm-omni runtime cmd missing %q: %q", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "vllm-omni.server") {
+		t.Fatalf("legacy vllm-omni runtime rendered removed wrapper: %q", cmd)
+	}
+}
+
+func TestRenderLlamaSwapConfigTreatsLegacyVLLMOmniAsUnifiedVLLMRuntime(t *testing.T) {
+	resp := protocol.AgentConfigResponse{
+		Models: map[string]config.Model{
+			"JoyFox-Omni": {
+				Runtime: "vllm-omni",
+				RuntimeArgs: []string{
+					"--deploy-config",
+					"/opt/llmswap/venvs/vllm/lib/python3.12/site-packages/vllm_omni/deploy/minicpmo_4_5.yaml",
+				},
+			},
+		},
+		TagPolicy: protocol.AgentTagPolicy{
+			AllowedModels: []string{"JoyFox-Omni"},
+		},
+	}
+
+	out, err := RenderLlamaSwapConfig(resp, "/models", "")
+	if err != nil {
+		t.Fatalf("RenderLlamaSwapConfig() error = %v", err)
+	}
+
+	models := parseYAML(t, out)["models"].(map[string]any)
+	cmd := models["JoyFox-Omni"].(map[string]any)["cmd"].(string)
+	if !strings.Contains(cmd, "/opt/llmswap/bin/vllm.server") {
+		t.Fatalf("legacy vllm-omni runtime should use unified vllm.server: %q", cmd)
+	}
+	if strings.Contains(cmd, "vllm-omni.server") {
+		t.Fatalf("legacy vllm-omni runtime rendered removed wrapper: %q", cmd)
+	}
+	if !strings.Contains(cmd, "--deploy-config") {
+		t.Fatalf("legacy vllm-omni runtime dropped deploy config: %q", cmd)
 	}
 }
 

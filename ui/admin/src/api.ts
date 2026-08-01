@@ -16,11 +16,18 @@ export type ModelStatus = {
   priority: number;
   min_loaded: number;
   max_loaded: number;
+  active_requests: number;
   max_concurrency: number;
+  queued_requests: number;
   max_queue: number;
+  queue_timeout_ms: number;
+  ttl: number;
   available: boolean;
   ready_workers: number;
   running_workers: number;
+  installing_workers: number;
+  missing_workers: number;
+  error_workers: number;
   artifact: { object: string; kind: string };
   availability_note: string;
   traffic: {
@@ -43,7 +50,21 @@ export type ModelStatus = {
     running_state?: string;
     health: string;
     cooldown_active: boolean;
+    cooldown_reason?: string;
+    cooldown_remaining_seconds?: number;
+    cooldown_until?: string;
   }[];
+};
+
+export type ReplicaCooldown = {
+  worker_id: string;
+  model: string;
+  reason: string;
+  first_failure: string;
+  last_failure: string;
+  failure_count: number;
+  cooldown_until: string;
+  remaining_seconds: number;
 };
 
 export type WorkerStatus = {
@@ -63,8 +84,10 @@ export type WorkerStatus = {
   needs_restart?: boolean;
   last_error?: string;
   scrape_failures: number;
+  scrape_backoff_until?: string;
   scrape_backoff_seconds?: number;
   health_problem?: string;
+  replica_cooldowns: ReplicaCooldown[];
   agent_build: BuildInfo;
   agent_version_status: "current" | "outdated" | "legacy";
 };
@@ -90,11 +113,13 @@ export type GPUDevice = {
 export type WorkerEvent = {
   received_at: string;
   worker_id: string;
+  time?: string;
   event: string;
   model?: string;
   from_state?: string;
   to_state?: string;
   object?: string;
+  kind?: string;
   error?: string;
   downloaded_bytes?: number;
   total_bytes?: number;
@@ -264,6 +289,25 @@ export type MetricsResponse = {
   series: MetricsSeries[];
 };
 
+export type TrafficSummaryResponse = {
+  generated_at: string;
+  range: string;
+  start: string;
+  end: string;
+  requests: number;
+  status_2xx: number;
+  status_4xx: number;
+  status_5xx: number;
+  non_200: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cache_tokens: number;
+  reasoning_tokens: number;
+  avg_duration_ms: number;
+  max_duration_ms: number;
+};
+
 export type BillingSummary = {
   start: string;
   end: string;
@@ -354,12 +398,13 @@ function normalizeWorker(worker: WorkerStatus): WorkerStatus {
     gpu_devices: worker.gpu_devices ?? [],
     capacity: worker.capacity ?? { max_concurrency: 0, max_queue: 0 },
     allowed_models: worker.allowed_models ?? [],
+    replica_cooldowns: worker.replica_cooldowns ?? [],
     agent_build: worker.agent_build ?? {},
     agent_version_status: worker.agent_version_status ?? "legacy"
   };
 }
 
-function normalizeStatus(status: StatusResponse): StatusResponse {
+export function normalizeStatus(status: StatusResponse): StatusResponse {
   return {
     ...status,
     models: (status.models ?? []).map((model) => ({
@@ -411,6 +456,10 @@ export function applyConfig(yaml: string): Promise<ConfigDryRunResponse> {
 
 export function getSummaryMetrics(range: string): Promise<MetricsResponse> {
   return request<MetricsResponse>(`/ui/metrics/summary?range=${encodeURIComponent(range)}&step=1m`);
+}
+
+export function getTrafficSummary(range = "24h"): Promise<TrafficSummaryResponse> {
+  return request<TrafficSummaryResponse>(`/ui/traffic?range=${encodeURIComponent(range)}`);
 }
 
 export async function getBilling(rangeHours = 24, includeRequests = false): Promise<BillingSummary> {
