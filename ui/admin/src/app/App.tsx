@@ -1614,190 +1614,198 @@ function ModelEditor({
       </div>
 
       {isRawRunModel ? <div className="notice">This model uses a raw `run` command. Runtime command text stays read-only in Ops.</div> : null}
-      <div className="config-field-groups">
-        <fieldset className="config-field-group">
-          <legend>Identity</legend>
-          <div className="detail-grid">
-            {editableName ? (
-              <label>
-                <span>Canonical model name</span>
-                <input
-                  ref={editableName.inputRef}
-                  value={editableName.value}
-                  required
-                  onChange={(event) => editableName.onChange(event.target.value)}
-                />
-                <small>Required. Existing model names are immutable.</small>
-                {editableName.error ? <span className="field-error">{editableName.error}</span> : null}
-              </label>
-            ) : null}
-            <label>
-              <span>Model directory</span>
-              <input
-                value={model.model_dir ?? ""}
-                placeholder={canonicalName}
-                onChange={(event) => onChange({ ...model, model_dir: event.target.value })}
-              />
-              <small>Empty uses {canonicalName}.</small>
-            </label>
-          </div>
-        </fieldset>
-
-        <fieldset className="config-field-group">
-          <legend>Runtime</legend>
-          <div className="detail-grid">
-            {isRawRunModel ? (
-              <label>
-                <span>Runtime</span>
-                <input value="Custom command" readOnly />
-              </label>
-            ) : (
-              <label>
-                <span>Runtime</span>
-                <select value={model.runtime ?? "vllm"} onChange={(event) => onChange({ ...model, runtime: event.target.value })}>
-                  {MODEL_RUNTIME_OPTIONS.map((runtime) => <option key={runtime} value={runtime}>{runtime}</option>)}
-                </select>
-              </label>
-            )}
-            <label>
-              <span>Check endpoint</span>
-              <input value={model.check_endpoint ?? ""} onChange={(event) => onChange({ ...model, check_endpoint: event.target.value })} />
-            </label>
-            <label className="field-span wide-field">
-              <span>Runtime args</span>
-              <textarea
-                className="mini-textarea"
-                spellCheck={false}
-                value={runtimeArgsText}
-                disabled={isRawRunModel}
-                onChange={(event) => {
-                  const nextText = event.target.value;
-                  const nextRuntimeArgs = splitLines(nextText);
-                  setRuntimeArgsText(nextText);
-                  lastRuntimeArgsValue.current = nextRuntimeArgs.join("\n");
-                  onChange({ ...model, runtime_args: nextRuntimeArgs });
-                }}
-              />
-            </label>
-          </div>
-        </fieldset>
-
-        <fieldset className="config-field-group">
-          <legend>Replica policy</legend>
-          <div className="detail-grid">
-            <NumberField label="Min loaded" value={model.min_loaded} onChange={(value) => onChange({ ...model, min_loaded: value })} />
-            <label>
-              <span>Max loaded mode</span>
-              <select
-                value={model.max_loaded_auto ? "auto" : "fixed"}
-                onChange={(event) => onChange({ ...model, max_loaded_auto: event.target.value === "auto" })}
-              >
-                <option value="auto">Auto</option>
-                <option value="fixed">Fixed</option>
-              </select>
-            </label>
-            <NumberField
-              label="Max loaded"
-              value={model.max_loaded_auto ? "" : model.max_loaded}
-              disabled={model.max_loaded_auto}
-              onChange={(value) => onChange({ ...model, max_loaded: value })}
-            />
-            <NumberField label="Queue timeout ms" value={model.queue_timeout_ms} onChange={(value) => onChange({ ...model, queue_timeout_ms: value })} />
-            <NumberField label="TTL seconds" value={model.ttl} onChange={(value) => onChange({ ...model, ttl: value })} />
-          </div>
-          {hasLegacyCapacityCeiling(model.max_concurrency, model.max_queue) ? (
-            <p className="compatibility-note">Legacy model capacity ceilings are preserved. Edit them in Advanced YAML only.</p>
-          ) : null}
-        </fieldset>
-
-        <fieldset className="config-field-group model-tag-capacity-group">
-          <legend>Runnable tags &amp; capacity</legend>
-          <p className="field-group-help">Limits apply to this model on each selected GPU worker.</p>
-          <div className="model-tag-capacity-list">
-            {tagNames.map((tagName) => {
-              const checked = selectedTags.includes(tagName);
-              const capacity = modelTagCapacity(model, tagName, tagPolicies[tagName]);
-              return (
-                <div className={`model-tag-capacity-row ${checked ? "selected" : ""}`} key={tagName}>
-                  <label className="model-tag-choice">
+      <div className="model-config-layout">
+        <div className="model-config-base">
+          <div className="model-config-column">
+            <fieldset className="config-field-group">
+              <legend>Identity</legend>
+              <div className="detail-grid">
+                {editableName ? (
+                  <label>
+                    <span>Canonical model name</span>
                     <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => {
-                        const nextModel = setModelTagEnabled(model, tagName, !checked);
-                        const nextTags = checked
-                          ? selectedTags.filter((tag) => tag !== tagName)
-                          : [...selectedTags, tagName].sort();
-                        onTagsChange?.(nextModel, nextTags);
-                      }}
+                      ref={editableName.inputRef}
+                      value={editableName.value}
+                      required
+                      onChange={(event) => editableName.onChange(event.target.value)}
                     />
-                    <strong>{tagName}</strong>
+                    <small>Required. Existing model names are immutable.</small>
+                    {editableName.error ? <span className="field-error">{editableName.error}</span> : null}
                   </label>
-                  {checked ? (
-                    <div className="model-tag-limit-fields">
-                      <CompactNumberField
-                        label="Concurrent"
-                        value={capacity.max_concurrency}
-                        min={1}
-                        onChange={(value) => onTagsChange?.(
-                          setModelTagCapacity(model, tagName, { ...capacity, max_concurrency: value }),
-                          selectedTags
-                        )}
-                      />
-                      <CompactNumberField
-                        label="Queue"
-                        value={capacity.max_queue}
-                        min={0}
-                        onChange={(value) => onTagsChange?.(
-                          setModelTagCapacity(model, tagName, { ...capacity, max_queue: value }),
-                          selectedTags
-                        )}
-                      />
-                    </div>
-                  ) : <span className="model-tag-disabled">not selected</span>}
-                </div>
-              );
-            })}
-            {tagNames.length === 0 ? <div className="empty">No worker tags are configured.</div> : null}
-          </div>
-        </fieldset>
+                ) : null}
+                <label>
+                  <span>Model directory</span>
+                  <input
+                    value={model.model_dir ?? ""}
+                    placeholder={canonicalName}
+                    onChange={(event) => onChange({ ...model, model_dir: event.target.value })}
+                  />
+                  <small>Empty uses {canonicalName}.</small>
+                </label>
+              </div>
+            </fieldset>
 
-        <fieldset className="config-field-group">
-          <legend>Artifact</legend>
-          <div className="detail-grid">
-            <label className="field-span wide-field">
-              <span>Artifact object</span>
-              <input
-                value={model.artifact.object}
-                onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, object: event.target.value } })}
-              />
-            </label>
-            <label>
-              <span>Artifact kind</span>
-              <select
-                value={model.artifact.kind}
-                onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, kind: event.target.value } })}
-              >
-                <option value="tar_gz">tar_gz</option>
-                <option value="file">file</option>
-              </select>
-            </label>
-            <label>
-              <span>CRC64 ECMA</span>
-              <input
-                value={model.artifact.crc64ecma}
-                onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, crc64ecma: event.target.value } })}
-              />
-            </label>
-          </div>
-        </fieldset>
+            <fieldset className="config-field-group">
+              <legend>Replica policy</legend>
+              <div className="detail-grid">
+                <NumberField label="Min loaded" value={model.min_loaded} onChange={(value) => onChange({ ...model, min_loaded: value })} />
+                <label>
+                  <span>Max loaded mode</span>
+                  <select
+                    value={model.max_loaded_auto ? "auto" : "fixed"}
+                    onChange={(event) => onChange({ ...model, max_loaded_auto: event.target.value === "auto" })}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="fixed">Fixed</option>
+                  </select>
+                </label>
+                <NumberField
+                  label="Max loaded"
+                  value={model.max_loaded_auto ? "" : model.max_loaded}
+                  disabled={model.max_loaded_auto}
+                  onChange={(value) => onChange({ ...model, max_loaded: value })}
+                />
+                <NumberField label="Queue timeout ms" value={model.queue_timeout_ms} onChange={(value) => onChange({ ...model, queue_timeout_ms: value })} />
+                <NumberField label="TTL seconds" value={model.ttl} onChange={(value) => onChange({ ...model, ttl: value })} />
+              </div>
+              {hasLegacyCapacityCeiling(model.max_concurrency, model.max_queue) ? (
+                <p className="compatibility-note">Legacy model capacity ceilings are preserved. Edit them in Advanced YAML only.</p>
+              ) : null}
+            </fieldset>
 
-        <fieldset className="config-field-group">
-          <legend>Placement</legend>
-          <div className="detail-grid">
-            <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
+            <fieldset className="config-field-group">
+              <legend>Placement</legend>
+              <div className="detail-grid">
+                <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
+              </div>
+            </fieldset>
           </div>
-        </fieldset>
+
+          <div className="model-config-column">
+            <fieldset className="config-field-group">
+              <legend>Runtime</legend>
+              <div className="detail-grid">
+                {isRawRunModel ? (
+                  <label>
+                    <span>Runtime</span>
+                    <input value="Custom command" readOnly />
+                  </label>
+                ) : (
+                  <label>
+                    <span>Runtime</span>
+                    <select value={model.runtime ?? "vllm"} onChange={(event) => onChange({ ...model, runtime: event.target.value })}>
+                      {MODEL_RUNTIME_OPTIONS.map((runtime) => <option key={runtime} value={runtime}>{runtime}</option>)}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  <span>Check endpoint</span>
+                  <input value={model.check_endpoint ?? ""} onChange={(event) => onChange({ ...model, check_endpoint: event.target.value })} />
+                </label>
+                <label className="field-span wide-field">
+                  <span>Runtime args</span>
+                  <textarea
+                    className="mini-textarea"
+                    spellCheck={false}
+                    value={runtimeArgsText}
+                    disabled={isRawRunModel}
+                    onChange={(event) => {
+                      const nextText = event.target.value;
+                      const nextRuntimeArgs = splitLines(nextText);
+                      setRuntimeArgsText(nextText);
+                      lastRuntimeArgsValue.current = nextRuntimeArgs.join("\n");
+                      onChange({ ...model, runtime_args: nextRuntimeArgs });
+                    }}
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset className="config-field-group">
+              <legend>Artifact</legend>
+              <div className="detail-grid">
+                <label className="field-span wide-field">
+                  <span>Artifact object</span>
+                  <input
+                    value={model.artifact.object}
+                    onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, object: event.target.value } })}
+                  />
+                </label>
+                <label>
+                  <span>Artifact kind</span>
+                  <select
+                    value={model.artifact.kind}
+                    onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, kind: event.target.value } })}
+                  >
+                    <option value="tar_gz">tar_gz</option>
+                    <option value="file">file</option>
+                  </select>
+                </label>
+                <label>
+                  <span>CRC64 ECMA</span>
+                  <input
+                    value={model.artifact.crc64ecma}
+                    onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, crc64ecma: event.target.value } })}
+                  />
+                </label>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+
+        <aside className="model-capacity-rail">
+          <fieldset className="config-field-group model-tag-capacity-group">
+            <legend>Runnable tags &amp; capacity</legend>
+            <p className="field-group-help">Limits apply to this model on each selected GPU worker.</p>
+            <div className="model-tag-capacity-list">
+              {tagNames.map((tagName) => {
+                const checked = selectedTags.includes(tagName);
+                const capacity = modelTagCapacity(model, tagName, tagPolicies[tagName]);
+                return (
+                  <div className={`model-tag-capacity-row ${checked ? "selected" : ""}`} key={tagName}>
+                    <label className="model-tag-choice">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const nextModel = setModelTagEnabled(model, tagName, !checked);
+                          const nextTags = checked
+                            ? selectedTags.filter((tag) => tag !== tagName)
+                            : [...selectedTags, tagName].sort();
+                          onTagsChange?.(nextModel, nextTags);
+                        }}
+                      />
+                      <strong>{tagName}</strong>
+                    </label>
+                    {checked ? (
+                      <div className="model-tag-limit-fields">
+                        <CompactNumberField
+                          label="Concurrent"
+                          value={capacity.max_concurrency}
+                          min={1}
+                          onChange={(value) => onTagsChange?.(
+                            setModelTagCapacity(model, tagName, { ...capacity, max_concurrency: value }),
+                            selectedTags
+                          )}
+                        />
+                        <CompactNumberField
+                          label="Queue"
+                          value={capacity.max_queue}
+                          min={0}
+                          onChange={(value) => onTagsChange?.(
+                            setModelTagCapacity(model, tagName, { ...capacity, max_queue: value }),
+                            selectedTags
+                          )}
+                        />
+                      </div>
+                    ) : <span className="model-tag-disabled">not selected</span>}
+                  </div>
+                );
+              })}
+              {tagNames.length === 0 ? <div className="empty">No worker tags are configured.</div> : null}
+            </div>
+          </fieldset>
+        </aside>
       </div>
       {children}
     </div>
@@ -1854,7 +1862,7 @@ function ModelAliasesEditor({
           return (
             <div className="alias-row" key={alias}>
               <strong>{alias}</strong>
-              <select value={aliasTarget} onChange={(event) => onChange(setAliasTarget(aliases, alias, event.target.value))}>
+              <select title={aliasTarget} value={aliasTarget} onChange={(event) => onChange(setAliasTarget(aliases, alias, event.target.value))}>
                 {modelNames.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}
               </select>
               <div className="alias-status">
@@ -1885,6 +1893,7 @@ function ModelAliasesEditor({
         <label>
           <span>Concrete target</span>
           <select
+            title={target}
             value={target}
             disabled={modelNames.length === 0}
             onChange={(event) => {

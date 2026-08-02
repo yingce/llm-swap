@@ -35,4 +35,12 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain('data-model-create-trigger="new"');
     expect(source).toContain("Copy YAML");
   });
+
+  it("uses independent model config columns with a capacity rail and titled alias targets", () => {
+    expect(source.match(/className="model-config-base"/g) ?? []).toHaveLength(1);
+    expect(source.match(/className="model-config-column"/g) ?? []).toHaveLength(2);
+    expect(source.match(/className="model-capacity-rail"/g) ?? []).toHaveLength(1);
+    expect(source).toContain("title={aliasTarget}");
+    expect(source).toContain("title={target}");
+  });
 });

@@ -1219,13 +1219,15 @@ small {
 }
 
 .worker-tile-grid {
+  align-items: start;
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 320px));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 238px), 278px));
   justify-content: start;
 }
 
 .worker-tile {
+  align-content: start;
   background: #eaf1f4;
   border: 1px solid #bacbd4;
   border-radius: var(--radius-card);
@@ -1255,6 +1257,10 @@ small {
   display: flex;
   gap: 8px;
   justify-content: space-between;
+}
+
+.worker-tile-head > div:first-child {
+  min-width: 0;
 }
 
 .worker-head-actions {
@@ -1290,6 +1296,7 @@ small {
   font-size: 15px;
   letter-spacing: -0.02em;
   margin: 0;
+  overflow-wrap: anywhere;
   text-transform: none;
 }
 
@@ -1297,67 +1304,18 @@ small {
   color: var(--muted);
   font-size: 11px;
   margin-top: 1px;
+  overflow-wrap: anywhere;
 }
 
 .worker-url {
   color: #7890a0;
+  display: block;
   font-size: 10px;
   margin-top: 1px;
-  max-width: 190px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.worker-signal-strip {
-  display: grid;
-  gap: 5px;
-  grid-template-columns: 1fr 1fr;
-}
-
-.worker-meter {
-  background: #d9e4e9;
-  border-radius: 10px;
-  display: grid;
-  font-weight: 850;
-  gap: 2px;
-  min-height: 34px;
-  overflow: hidden;
-  padding: 6px 7px;
-  position: relative;
-}
-
-.worker-meter::before {
-  background: #b8d3d9;
-  bottom: 0;
-  content: "";
-  left: 0;
-  position: absolute;
-  top: 0;
-  width: var(--meter);
-}
-
-.worker-meter.amber::before {
-  background: #d8cfb8;
-}
-
-.worker-meter span {
-  color: #536878;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  position: relative;
-  text-transform: uppercase;
-  z-index: 1;
-}
-
-.worker-meter strong {
-  color: #0c1b27;
-  font-size: 14px;
-  line-height: 1.05;
-  position: relative;
-  z-index: 1;
 }
 
 .worker-gpu-deck {
@@ -1418,6 +1376,12 @@ small {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.worker-gpu-load small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .worker-gpu-bar {
   background: #cad8df;
   border-radius: 999px;
@@ -1443,6 +1407,7 @@ small {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .worker-model-board span,
@@ -1453,6 +1418,8 @@ small {
   color: #35596a;
   font-size: 12px;
   font-weight: 750;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 5px 8px;
 }
 
@@ -1543,6 +1510,8 @@ small {
   color: var(--warn);
   font-size: 11px;
   font-weight: 750;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 4px 7px;
 }
 
@@ -2180,13 +2149,14 @@ textarea {
 .config-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(340px, 360px) minmax(0, 1fr);
 }
 
 .config-stack {
-  display: grid;
   align-content: start;
+  display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .config-card {
@@ -2206,6 +2176,10 @@ textarea {
   justify-content: space-between;
   margin-bottom: 0;
   padding: 9px 11px;
+}
+
+.config-card-head > div:first-child {
+  min-width: 0;
 }
 
 .config-card-head h3 {
@@ -2230,7 +2204,7 @@ textarea {
 }
 
 .config-card > .detail-grid,
-.config-card > .config-field-groups,
+.config-card > .model-config-layout,
 .config-card > .alias-list,
 .config-card > .picker-list,
 .config-card > .checkbox-block,
@@ -2239,45 +2213,88 @@ textarea {
 }
 
 .worker-request-strip {
-  align-items: center;
   background: #dfe9ed;
   border-radius: 8px;
   display: grid;
+  gap: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  min-height: 28px;
+  min-height: 27px;
+  overflow: hidden;
 }
 
-.worker-request-strip > div {
+.worker-pressure-meter {
   align-items: baseline;
-  display: flex;
-  gap: 6px;
-  justify-content: center;
+  display: grid;
+  gap: 2px 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
-  padding: 4px 7px;
+  padding: 4px 7px 3px;
 }
 
-.worker-request-strip > div + div {
+.worker-pressure-meter + .worker-pressure-meter {
   border-left: 1px solid #c8d6dc;
 }
 
-.worker-request-strip span {
+.worker-pressure-meter span {
   color: #647986;
   font-size: 9px;
   font-weight: 850;
   letter-spacing: 0.05em;
 }
 
-.worker-request-strip strong {
+.worker-pressure-meter strong {
   color: #173043;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.config-field-groups {
+.worker-pressure-meter small {
+  color: #758894;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.worker-pressure-meter i {
+  background: #cbd8de;
+  display: block;
+  grid-column: 1 / -1;
+  height: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.worker-pressure-meter i::before {
+  background: #8eaab4;
+  content: "";
+  inset: 0 auto 0 0;
+  position: absolute;
+  width: var(--pressure);
+}
+
+.model-config-layout {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(248px, 260px);
+  min-width: 0;
+}
+
+.model-config-base {
   align-items: start;
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.model-config-column,
+.model-capacity-rail {
+  align-content: start;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .config-field-group {
@@ -2399,6 +2416,10 @@ textarea {
 
 .model-create-modal-body .config-card {
   margin: 0;
+}
+
+.model-create-modal .model-config-layout {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .modal-discard-confirm {
@@ -2531,24 +2552,20 @@ textarea {
   min-height: 92px;
 }
 
-.model-tag-capacity-group {
-  grid-column: 1 / -1;
-}
-
 .model-tag-capacity-list {
   display: grid;
   gap: 5px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .model-tag-capacity-row {
-  align-items: center;
+  align-items: start;
   background: #e8f0f3;
   border: 1px solid #d1dde3;
   border-radius: 9px;
   display: grid;
   gap: 7px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 38px;
   padding: 5px 7px;
 }
@@ -2580,6 +2597,7 @@ textarea {
 }
 
 .model-tag-choice strong {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2588,7 +2606,7 @@ textarea {
 .model-tag-limit-fields {
   display: grid;
   gap: 5px;
-  grid-template-columns: repeat(2, 78px);
+  grid-template-columns: repeat(2, minmax(0, 78px));
 }
 
 .compact-number-field {
@@ -2628,14 +2646,32 @@ textarea {
   border-radius: 10px;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1fr) minmax(170px, 0.9fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
   padding: 8px 10px;
 }
 
+.alias-row > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alias-row > select {
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+}
+
+.alias-row > button {
+  justify-self: end;
+}
+
 .alias-status {
-  align-items: start;
-  display: grid;
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
   gap: 5px;
+  min-width: 0;
 }
 
 .alias-status span {
@@ -2649,8 +2685,9 @@ textarea {
   border-top: 1px solid #dce7ee;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(140px, 0.8fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   margin-top: 10px;
+  min-width: 0;
   padding: 10px;
 }
 
@@ -2660,7 +2697,18 @@ textarea {
   font-size: 12px;
   font-weight: 700;
   gap: 6px;
+  min-width: 0;
   text-transform: uppercase;
+}
+
+.alias-add input,
+.alias-add select {
+  min-width: 0;
+  width: 100%;
+}
+
+.alias-add > button {
+  justify-self: start;
 }
 
 .alias-validation {
@@ -2877,6 +2925,12 @@ textarea {
   color: #dce8ef;
 }
 
+@media (max-width: 1280px) {
+  .model-config-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 980px) {
   .traffic-summary,
   .overview-grid,
@@ -3060,7 +3114,6 @@ textarea {
   .change,
   .impact-summary,
   .config-grid,
-  .config-field-groups,
   .detail-grid {
     grid-template-columns: 1fr;
   }
@@ -3206,15 +3259,6 @@ textarea {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .worker-signal-strip {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .worker-meter {
-    min-height: 30px;
-    padding: 5px 6px;
-  }
-
   .worker-gpu-mini {
     padding: 5px 6px;
   }
@@ -3223,10 +3267,18 @@ textarea {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .alias-row,
-  .alias-add {
+  .model-config-base,
+  .alias-row {
     align-items: stretch;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .alias-row > select {
+    grid-column: auto;
+  }
+
+  .alias-row > button {
+    justify-self: start;
   }
 
   .alias-validation {
