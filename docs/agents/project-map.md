@@ -59,7 +59,12 @@ disabled the gateway still runs with no external database.
 - `artifact`: downloadable model payload. Supported kinds are `file` and
   `tar_gz`.
 - `tag_policy`: gateway policy for workers with a tag. It defines installable
-  models, warm model, worker defaults, and tag-level concurrency.
+  models, a legacy warm hint, compatibility worker defaults, and optional
+  tag-wide concurrency ceilings.
+- `tag_capacity`: model-specific per-ready-worker concurrency and queue limits
+  keyed by runnable tag. The gateway defaults a newly selected model/tag pair
+  to `max_concurrency: 1` and `max_queue: 1`; legacy `worker_defaults` remain a
+  fallback for configurations that have not migrated.
 - `running_model`: llama-swap reported model state, usually `loading` or
   `ready`.
 - `min_loaded`: target floor for replicas. Ready plus starting/loading replicas
@@ -154,7 +159,9 @@ disabled the gateway still runs with no external database.
 
 - `internal/gateway/limits.go`
   - Keyed in-memory queue/concurrency limiter.
-  - Used for model, tag, and worker gates.
+  - Used for model, tag, and `worker + model` gates. Model capacity is the sum
+    of the selected tag capacity across healthy, ready replicas; each replica
+    is independently protected by that model/tag limit.
   - `AcquireWithStats` reports admitted, admitted-after-wait, queue-full, and
     queue-timeout outcomes with wait time and active/queued depth at admission.
 
@@ -237,6 +244,9 @@ disabled the gateway still runs with no external database.
     running the frontend build.
   - Shows model availability, traffic, workers, health, GPU memory/utilization,
     running models, artifacts, and recent worker events.
+  - Worker cards expose current executing and queued request counts but do not
+    own capacity policy. Config Ops edits runnable tags and per-GPU limits on
+    each model because serving capacity depends on both model and hardware tag.
   - Config Ops exposes the optional local model directory and a Model aliases
     card for adding, retargeting, or removing stable names. Alias rows show the
     canonical target's ready/running replica counts and warn on zero-ready

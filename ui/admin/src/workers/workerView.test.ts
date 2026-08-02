@@ -13,6 +13,8 @@ describe("buildWorkerRows", () => {
       tags: ["gpu-4090"],
       gpu_count: 1,
       loaded_models: ["joyfox-model-latest:ready"],
+      active_requests: 2,
+      queued_requests: 1,
       connectivity: "healthy · active · scrape ok",
       agent_version: "1.0.0 · current",
       diagnostics: "build 1.0.0 (latest) · heartbeat 2s ago · scrape failures 0"

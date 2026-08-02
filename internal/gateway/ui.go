@@ -93,6 +93,7 @@ type uiWorker struct {
 	LastHeartbeat        time.Time               `json:"last_heartbeat"`
 	LastHeartbeatAgeMS   int64                   `json:"last_heartbeat_age_ms"`
 	ActiveRequests       int                     `json:"active_requests"`
+	QueuedRequests       int                     `json:"queued_requests"`
 	RunningModels        []protocol.RunningModel `json:"running_models"`
 	GPUDevices           []protocol.GPUDevice    `json:"gpu_devices"`
 	Artifacts            map[string]string       `json:"artifacts"`
@@ -485,6 +486,7 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 			LastHeartbeat:        worker.LastHeartbeat.UTC(),
 			LastHeartbeatAgeMS:   now.Sub(worker.LastHeartbeat).Milliseconds(),
 			ActiveRequests:       active[worker.ID],
+			QueuedRequests:       s.limiter.QueuedPrefix(workerModelLimitPrefix(worker.ID)),
 			RunningModels:        runningModelsOrEmpty(worker.RunningModels),
 			GPUDevices:           gpuDevicesOrEmpty(worker.GPUDevices),
 			Artifacts:            copyStringMap(worker.Artifacts),

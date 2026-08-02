@@ -5,6 +5,8 @@ export type EditableModelConfig = Omit<ModelConfig, "runtime_args"> & {
   max_loaded_auto: boolean;
 };
 
+export const DEFAULT_MODEL_TAG_CAPACITY = { max_concurrency: 1, max_queue: 1 } as const;
+
 export const MODEL_RUNTIME_OPTIONS = ["vllm", "sglang", "llamacpp"] as const;
 
 export type ModelCreateDraft = {
@@ -23,12 +25,49 @@ export function emptyEditableModel(): EditableModelConfig {
     max_loaded_auto: true,
     max_concurrency: 0,
     max_queue: 0,
+    tag_capacity: {},
     queue_timeout_ms: 0,
     ttl: 0,
     artifact: { object: "", kind: "tar_gz", crc64ecma: "" },
     run: "",
     runtime: "vllm",
     runtime_args: []
+  };
+}
+
+export function modelTagCapacity(model: EditableModelConfig, tag: string, policy?: TagPolicyConfig) {
+  const configured = model.tag_capacity?.[tag];
+  if (configured) {
+    return { ...configured };
+  }
+  const legacy = policy?.worker_defaults;
+  if (legacy && (legacy.max_concurrency > 0 || legacy.max_queue > 0)) {
+    return { ...legacy };
+  }
+  return { ...DEFAULT_MODEL_TAG_CAPACITY };
+}
+
+export function setModelTagEnabled(model: EditableModelConfig, tag: string, enabled: boolean): EditableModelConfig {
+  const tagCapacity = { ...(model.tag_capacity ?? {}) };
+  if (enabled) {
+    tagCapacity[tag] ??= { ...DEFAULT_MODEL_TAG_CAPACITY };
+  } else {
+    delete tagCapacity[tag];
+  }
+  return { ...model, tag_capacity: tagCapacity };
+}
+
+export function setModelTagCapacity(
+  model: EditableModelConfig,
+  tag: string,
+  capacity: { max_concurrency: number; max_queue: number }
+): EditableModelConfig {
+  return {
+    ...model,
+    tag_capacity: {
+      ...(model.tag_capacity ?? {}),
+      [tag]: { ...capacity }
+    }
   };
 }
 

@@ -109,7 +109,8 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 			writeQueueError(w, err)
 			return
 		}
-		workerLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "worker", "worker:"+worker.ID, policy.WorkerDefaults.MaxConcurrency, policy.WorkerDefaults.MaxQueue, replicaStatsFromDecision(decision))
+		workerCapacity := modelTagCapacity(cfg, model, tag)
+		workerLimitRelease, _, err := s.acquireObservedLimit(limitCtx, requestID, model, "worker_model", workerModelLimitKey(worker.ID, model), workerCapacity.MaxConcurrency, workerCapacity.MaxQueue, replicaStatsFromDecision(decision))
 		if err != nil {
 			tagLimitRelease()
 			if errors.Is(err, ErrQueueFull) {

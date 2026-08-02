@@ -637,6 +637,7 @@ func cloneGatewayConfig(cfg config.GatewayConfig) config.GatewayConfig {
 	out.Models = make(map[string]config.Model, len(cfg.Models))
 	for name, model := range cfg.Models {
 		model.RuntimeArgs = append([]string(nil), model.RuntimeArgs...)
+		model.TagCapacity = cloneWorkerDefaultsMap(model.TagCapacity)
 		out.Models[name] = model
 	}
 	out.ModelAliases = make(map[string]string, len(cfg.ModelAliases))
@@ -647,6 +648,17 @@ func cloneGatewayConfig(cfg config.GatewayConfig) config.GatewayConfig {
 	for tag, policy := range cfg.TagPolicies {
 		policy.AllowedModels = append([]string(nil), policy.AllowedModels...)
 		out.TagPolicies[tag] = policy
+	}
+	return out
+}
+
+func cloneWorkerDefaultsMap(values map[string]config.WorkerDefaults) map[string]config.WorkerDefaults {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]config.WorkerDefaults, len(values))
+	for tag, capacity := range values {
+		out[tag] = capacity
 	}
 	return out
 }

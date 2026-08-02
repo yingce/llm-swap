@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import YAML from "yaml";
 import {
   applyConfig,
   BillingSummary,
@@ -8,14 +7,12 @@ import {
   ConfigImpact,
   ConfigResponse,
   drainWorker,
-  GatewayConfigView,
   getConfig,
   getBilling,
   getEvents,
   getStatus,
   getRequests,
   ModelBillingConfig,
-  ModelConfig,
   ModelStatus,
   RequestLogEntry,
   StatusResponse,
@@ -32,6 +29,9 @@ import {
   MODEL_RUNTIME_OPTIONS,
   emptyEditableModel,
   isModelCreateDraftDirty,
+  modelTagCapacity,
+  setModelTagCapacity,
+  setModelTagEnabled,
   setModelTagMembership,
   validateNewModelName,
   type EditableModelConfig,
@@ -48,7 +48,6 @@ import { ActivityPage, BillingPage, RequestsPage } from "../observe/ObservePages
 import {
   cloneEditableConfig as cloneConfigDraft,
   hasLegacyCapacityCeiling,
-  normalizeTagPolicy as normalizeConfigTagPolicy,
   renderDraftYAML as renderConfigDraftYAML,
   toEditableConfig as toEditableGatewayConfig
 } from "../config/configDraft";
@@ -229,15 +228,16 @@ export function App() {
     });
   }
 
-  function replaceTagPolicy(tagName: string, nextPolicy: TagPolicyConfig) {
-    updateDraft((draft) => {
-      draft.tag_policies[tagName] = normalizeConfigTagPolicy(nextPolicy);
-    });
-  }
-
   function createModel(modelName: string, model: EditableModelConfig, selectedTags: string[]) {
     updateDraft((draft) => {
       draft.models[modelName] = model;
+      draft.tag_policies = setModelTagMembership(draft.tag_policies, modelName, selectedTags);
+    });
+  }
+
+  function replaceModelTags(modelName: string, nextModel: EditableModelConfig, selectedTags: string[]) {
+    updateDraft((draft) => {
+      draft.models[modelName] = nextModel;
       draft.tag_policies = setModelTagMembership(draft.tag_policies, modelName, selectedTags);
     });
   }
@@ -386,9 +386,9 @@ export function App() {
               onDryRun={() => void dryRunDraft()}
               onApply={() => void applyDraft()}
               onModelChange={replaceModel}
+              onModelTagsChange={replaceModelTags}
               onCreateModel={createModel}
               onAliasesChange={replaceModelAliases}
-              onTagChange={replaceTagPolicy}
               appContentRef={appContentRef}
             />
           )}
@@ -1104,9 +1104,9 @@ function ConfigOps({
   onDryRun,
   onApply,
   onModelChange,
+  onModelTagsChange,
   onCreateModel,
   onAliasesChange,
-  onTagChange,
   appContentRef
 }: {
   status: StatusResponse | null;
@@ -1122,9 +1122,9 @@ function ConfigOps({
   onDryRun: () => void;
   onApply: () => void;
   onModelChange: (modelName: string, nextModel: EditableModelConfig) => void;
+  onModelTagsChange: (modelName: string, nextModel: EditableModelConfig, selectedTags: string[]) => void;
   onCreateModel: (modelName: string, model: EditableModelConfig, selectedTags: string[]) => void;
   onAliasesChange: (nextAliases: Record<string, string>) => void;
-  onTagChange: (tagName: string, nextPolicy: TagPolicyConfig) => void;
   appContentRef: React.RefObject<HTMLElement | null>;
 }) {
   const modelNames = useMemo(() => sortedKeys(draft?.models), [draft]);
@@ -1135,7 +1135,6 @@ function ConfigOps({
   );
   const tagNames = useMemo(() => sortedKeys(draft?.tag_policies), [draft]);
   const [selectedModel, setSelectedModel] = useState("");
-  const [selectedTag, setSelectedTag] = useState("");
   const [createDraft, setCreateDraft] = useState<ModelCreateDraft | null>(null);
   const [createInitialDraft, setCreateInitialDraft] = useState<ModelCreateDraft | null>(null);
   const [discardCreateConfirm, setDiscardCreateConfirm] = useState(false);
@@ -1147,12 +1146,6 @@ function ConfigOps({
       setSelectedModel(visibleModelNames[0] ?? "");
     }
   }, [selectedModel, visibleModelNames]);
-
-  useEffect(() => {
-    if (!selectedTag || !draft?.tag_policies[selectedTag]) {
-      setSelectedTag(tagNames[0] ?? "");
-    }
-  }, [draft, selectedTag, tagNames]);
 
   useEffect(() => {
     const app = appContentRef.current;
@@ -1178,7 +1171,7 @@ function ConfigOps({
 
   const currentDraft = draft;
   const selectedModelConfig = currentDraft.models[selectedModel];
-  const selectedTagPolicy = currentDraft.tag_policies[selectedTag];
+  const selectedModelTags = tagNames.filter((tagName) => currentDraft.tag_policies[tagName].allowed_models.includes(selectedModel));
   const liveModelMap = new Map((status?.models ?? []).map((model) => [model.name, model]));
 
   function startCreate(trigger: HTMLButtonElement) {
@@ -1226,7 +1219,7 @@ function ConfigOps({
       <div className="config-toolbar">
         <div>
           <h2>Config Ops</h2>
-          <p className="toolbar-sub">Version {configResponse.version} · model directories, aliases + tag policies</p>
+          <p className="toolbar-sub">Version {configResponse.version} · models, aliases, placement, and capacity</p>
         </div>
         <div className="config-toolbar-actions">
           <Badge tone={dirty ? "warn" : "good"}>{dirty ? "draft changed" : "in sync"}</Badge>
@@ -1243,7 +1236,7 @@ function ConfigOps({
         <div className="config-stack">
           <ConfigListCard
             title="Models"
-            subtitle="Select a model to edit its directory, artifact, runtime, push, and replica policy."
+            subtitle="Select a model to edit runtime, placement, capacity, and artifacts."
             actions={
               <div className="model-card-actions">
                 <button type="button" data-model-create-trigger="new" onClick={(event) => startCreate(event.currentTarget)}>New model</button>
@@ -1285,16 +1278,6 @@ function ConfigOps({
             })}
           </ConfigListCard>
 
-          {selectedModelConfig ? (
-            <ModelEditor
-              key={selectedModel}
-              name={selectedModel}
-              model={selectedModelConfig}
-              liveStatus={liveModelMap.get(selectedModel)}
-              onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
-            />
-          ) : null}
-
           <ModelAliasesEditor
             aliases={draft.model_aliases}
             modelNames={modelNames}
@@ -1304,34 +1287,17 @@ function ConfigOps({
         </div>
 
         <div className="config-stack">
-          <ConfigListCard title="Tag Policies" subtitle="Edit routing and concurrency for each worker tag.">
-            {tagNames.map((tagName) => {
-              const policy = draft.tag_policies[tagName];
-              return (
-                <button
-                  key={tagName}
-                  className={`picker-item ${selectedTag === tagName ? "selected" : ""}`}
-                  onClick={() => setSelectedTag(tagName)}
-                >
-                  <div>
-                    <strong>{tagName}</strong>
-                    <small>{policy.allowed_models.length} models allowed</small>
-                  </div>
-                  <div className="picker-meta">
-                    <span>{policy.worker_defaults.max_concurrency || 0} concurrent / GPU</span>
-                    <span>{policy.worker_defaults.max_queue || 0} queued / GPU</span>
-                  </div>
-                </button>
-              );
-            })}
-          </ConfigListCard>
-
-          {selectedTagPolicy ? (
-            <TagPolicyEditor
-              name={selectedTag}
-              policy={selectedTagPolicy}
-              modelNames={modelNames}
-              onChange={(nextPolicy) => onTagChange(selectedTag, nextPolicy)}
+          {selectedModelConfig ? (
+            <ModelEditor
+              key={selectedModel}
+              name={selectedModel}
+              model={selectedModelConfig}
+              liveStatus={liveModelMap.get(selectedModel)}
+              tagNames={tagNames}
+              selectedTags={selectedModelTags}
+              tagPolicies={currentDraft.tag_policies}
+              onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
+              onTagsChange={(nextModel, nextTags) => onModelTagsChange(selectedModel, nextModel, nextTags)}
             />
           ) : null}
 
@@ -1345,6 +1311,7 @@ function ConfigOps({
           draft={createDraft}
           initialDraft={createInitialDraft}
           tagNames={tagNames}
+          tagPolicies={currentDraft.tag_policies}
           nameError={createError}
           discardConfirm={discardCreateConfirm}
           onChange={(nextDraft) => {
@@ -1442,6 +1409,9 @@ function cloneModelCreateDraft(draft: ModelCreateDraft): ModelCreateDraft {
       ...draft.model,
       artifact: { ...draft.model.artifact },
       runtime_args: [...draft.model.runtime_args],
+      tag_capacity: Object.fromEntries(
+        Object.entries(draft.model.tag_capacity ?? {}).map(([tag, capacity]) => [tag, { ...capacity }])
+      ),
       billing: draft.model.billing ? { ...draft.model.billing } : undefined
     },
     tags: [...draft.tags]
@@ -1452,6 +1422,7 @@ function ModelCreateModal({
   draft,
   initialDraft,
   tagNames,
+  tagPolicies,
   nameError,
   discardConfirm,
   onChange,
@@ -1463,6 +1434,7 @@ function ModelCreateModal({
   draft: ModelCreateDraft;
   initialDraft: ModelCreateDraft;
   tagNames: string[];
+  tagPolicies: Record<string, TagPolicyConfig>;
   nameError: string;
   discardConfirm: boolean;
   onChange: (next: ModelCreateDraft) => void;
@@ -1544,30 +1516,12 @@ function ModelCreateModal({
               error: nameError,
               inputRef: canonicalNameInputRef
             }}
+            tagNames={tagNames}
+            selectedTags={draft.tags}
+            tagPolicies={tagPolicies}
             onChange={(model) => onChange({ ...draft, model })}
+            onTagsChange={(model, tags) => onChange({ ...draft, model, tags })}
           >
-            <div className="checkbox-block">
-              <strong>Allowed tags</strong>
-              <div className="tag-checkbox-list">
-                {tagNames.map((tagName) => {
-                  const checked = draft.tags.includes(tagName);
-                  return (
-                    <label key={tagName} className="checkbox-item">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => onChange({
-                          ...draft,
-                          tags: checked ? draft.tags.filter((tag) => tag !== tagName) : [...draft.tags, tagName].sort()
-                        })}
-                      />
-                      <span>{tagName}</span>
-                    </label>
-                  );
-                })}
-                {tagNames.length === 0 ? <div className="empty">No tag policies are configured.</div> : null}
-              </div>
-            </div>
             <div className="model-card-actions">
               <button type="button" className="primary" onClick={onSave}>Save to draft</button>
               <button type="button" onClick={onRequestClose}>Cancel</button>
@@ -1606,15 +1560,23 @@ function ModelEditor({
   model,
   liveStatus,
   editableName,
+  tagNames = [],
+  selectedTags = [],
+  tagPolicies = {},
   children,
-  onChange
+  onChange,
+  onTagsChange
 }: {
   name: string;
   model: EditableModelConfig;
   liveStatus?: ModelStatus;
   editableName?: { value: string; onChange: (value: string) => void; error: string; inputRef?: React.Ref<HTMLInputElement> };
+  tagNames?: string[];
+  selectedTags?: string[];
+  tagPolicies?: Record<string, TagPolicyConfig>;
   children?: React.ReactNode;
   onChange: (nextModel: EditableModelConfig) => void;
+  onTagsChange?: (nextModel: EditableModelConfig, selectedTags: string[]) => void;
 }) {
   const isRawRunModel = Boolean(model.run && !model.runtime);
   const runtimeArgsValue = model.runtime_args.join("\n");
@@ -1634,7 +1596,7 @@ function ModelEditor({
       <div className="config-card-head">
         <div>
           <h3>{name}</h3>
-          <p>Push policy, runtime, and artifact settings.</p>
+          <p>Runtime, replicas, runnable tags, and artifacts.</p>
         </div>
         <label className="model-disabled-toggle switch-control">
           <input
@@ -1746,6 +1708,58 @@ function ModelEditor({
           {hasLegacyCapacityCeiling(model.max_concurrency, model.max_queue) ? (
             <p className="compatibility-note">Legacy model capacity ceilings are preserved. Edit them in Advanced YAML only.</p>
           ) : null}
+        </fieldset>
+
+        <fieldset className="config-field-group model-tag-capacity-group">
+          <legend>Runnable tags &amp; capacity</legend>
+          <p className="field-group-help">Limits apply to this model on each selected GPU worker.</p>
+          <div className="model-tag-capacity-list">
+            {tagNames.map((tagName) => {
+              const checked = selectedTags.includes(tagName);
+              const capacity = modelTagCapacity(model, tagName, tagPolicies[tagName]);
+              return (
+                <div className={`model-tag-capacity-row ${checked ? "selected" : ""}`} key={tagName}>
+                  <label className="model-tag-choice">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        const nextModel = setModelTagEnabled(model, tagName, !checked);
+                        const nextTags = checked
+                          ? selectedTags.filter((tag) => tag !== tagName)
+                          : [...selectedTags, tagName].sort();
+                        onTagsChange?.(nextModel, nextTags);
+                      }}
+                    />
+                    <strong>{tagName}</strong>
+                  </label>
+                  {checked ? (
+                    <div className="model-tag-limit-fields">
+                      <CompactNumberField
+                        label="Concurrent"
+                        value={capacity.max_concurrency}
+                        min={1}
+                        onChange={(value) => onTagsChange?.(
+                          setModelTagCapacity(model, tagName, { ...capacity, max_concurrency: value }),
+                          selectedTags
+                        )}
+                      />
+                      <CompactNumberField
+                        label="Queue"
+                        value={capacity.max_queue}
+                        min={0}
+                        onChange={(value) => onTagsChange?.(
+                          setModelTagCapacity(model, tagName, { ...capacity, max_queue: value }),
+                          selectedTags
+                        )}
+                      />
+                    </div>
+                  ) : <span className="model-tag-disabled">not selected</span>}
+                </div>
+              );
+            })}
+            {tagNames.length === 0 ? <div className="empty">No worker tags are configured.</div> : null}
+          </div>
         </fieldset>
 
         <fieldset className="config-field-group">
@@ -1890,85 +1904,6 @@ function ModelAliasesEditor({
   );
 }
 
-function TagPolicyEditor({
-  name,
-  policy,
-  modelNames,
-  onChange
-}: {
-  name: string;
-  policy: TagPolicyConfig;
-  modelNames: string[];
-  onChange: (nextPolicy: TagPolicyConfig) => void;
-}) {
-  return (
-    <div className="config-card">
-      <div className="config-card-head">
-        <div>
-          <h3>{name}</h3>
-          <p>Routing, queueing, and allowed models for this worker tag.</p>
-        </div>
-      </div>
-
-      <div className="config-field-groups">
-        <fieldset className="config-field-group">
-          <legend>Per-GPU capacity</legend>
-          <p className="field-group-help">One Worker container maps to one GPU. Model totals are calculated from ready Workers.</p>
-          <div className="detail-grid">
-            <NumberField
-              label="Max concurrent requests per GPU"
-              value={policy.worker_defaults.max_concurrency}
-              onChange={(value) => onChange({ ...policy, worker_defaults: { ...policy.worker_defaults, max_concurrency: value } })}
-            />
-            <NumberField
-              label="Max queued requests per GPU"
-              value={policy.worker_defaults.max_queue}
-              onChange={(value) => onChange({ ...policy, worker_defaults: { ...policy.worker_defaults, max_queue: value } })}
-            />
-          </div>
-          {hasLegacyCapacityCeiling(policy.max_concurrency, policy.max_queue) ? (
-            <p className="compatibility-note">Legacy tag-wide ceilings are preserved. Edit them in Advanced YAML only.</p>
-          ) : null}
-        </fieldset>
-
-        <fieldset className="config-field-group">
-          <legend>Placement</legend>
-          <div className="detail-grid">
-            <label>
-              <span>Warm when idle</span>
-              <input value={policy.warm_when_idle ?? ""} onChange={(event) => onChange({ ...policy, warm_when_idle: event.target.value })} />
-            </label>
-          </div>
-        </fieldset>
-      </div>
-
-      <div className="checkbox-block">
-        <strong>Allowed models</strong>
-        <div className="checkbox-list">
-          {modelNames.map((modelName) => {
-            const checked = policy.allowed_models.includes(modelName);
-            return (
-              <label key={modelName} className="checkbox-item">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => {
-                    const nextAllowed = checked
-                      ? policy.allowed_models.filter((item) => item !== modelName)
-                      : [...policy.allowed_models, modelName];
-                    onChange({ ...policy, allowed_models: nextAllowed.sort() });
-                  }}
-                />
-                <span>{modelName}</span>
-              </label>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ImpactSummary({
   applyMode,
   impacts,
@@ -2049,6 +1984,30 @@ function NumberField({
         value={value === "" ? "" : Number.isFinite(value) ? value : 0}
         disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value || 0))}
+      />
+    </label>
+  );
+}
+
+function CompactNumberField({
+  label,
+  value,
+  min,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="compact-number-field">
+      <span>{label}</span>
+      <input
+        type="number"
+        min={min}
+        value={Number.isFinite(value) ? value : min}
+        onChange={(event) => onChange(Math.max(min, Number(event.target.value || min)))}
       />
     </label>
   );
@@ -2323,180 +2282,4 @@ function splitLines(value: string) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-}
-
-function normalizeTagPolicy(policy: TagPolicyConfig): TagPolicyConfig {
-  return {
-    ...policy,
-    worker_defaults: {
-      max_concurrency: policy.worker_defaults?.max_concurrency ?? 0,
-      max_queue: policy.worker_defaults?.max_queue ?? 0
-    },
-    allowed_models: [...(policy.allowed_models ?? [])].sort()
-  };
-}
-
-function cloneEditableConfig(config: EditableGatewayConfig): EditableGatewayConfig {
-  return {
-    models: Object.fromEntries(
-      Object.entries(config.models).map(([name, model]) => [
-        name,
-        {
-          ...model,
-          artifact: { ...model.artifact },
-          runtime_args: [...model.runtime_args],
-          disabled: model.disabled || undefined,
-          billing: model.billing ? { ...model.billing } : undefined
-        }
-      ])
-    ),
-    model_aliases: { ...config.model_aliases },
-    tag_policies: Object.fromEntries(
-      Object.entries(config.tag_policies).map(([name, policy]) => [
-        name,
-        {
-          ...policy,
-          worker_defaults: { ...policy.worker_defaults },
-          allowed_models: [...policy.allowed_models]
-        }
-      ])
-    )
-  };
-}
-
-function toEditableConfig(configResponse: ConfigResponse): EditableGatewayConfig {
-  const parsed = YAML.parseDocument(configResponse.yaml);
-  const editableModels = Object.fromEntries(
-    Object.entries(configResponse.config.models ?? {}).map(([name, model]) => [
-      name,
-      {
-        ...model,
-        artifact: { ...model.artifact },
-        runtime_args: [...(model.runtime_args ?? [])],
-        disabled: model.disabled || undefined,
-        billing: model.billing ? { ...model.billing } : undefined,
-        max_loaded_auto: !yamlModelHasKey(parsed, name, "max_loaded") && model.max_loaded === 0
-      }
-    ])
-  );
-  const editableTagPolicies = Object.fromEntries(
-    Object.entries(configResponse.config.tag_policies ?? {}).map(([name, policy]) => [name, normalizeTagPolicy(policy)])
-  );
-  return {
-    models: editableModels,
-    model_aliases: { ...(configResponse.config.model_aliases ?? {}) },
-    tag_policies: editableTagPolicies
-  };
-}
-
-function yamlModelHasKey(document: YAML.Document.Parsed, modelName: string, field: string) {
-  const modelsNode = document.get("models", true) as any;
-  const modelNode = modelsNode?.items?.find((item: any) => item?.key?.value === modelName)?.value;
-  return Boolean(modelNode?.items?.some((item: any) => item?.key?.value === field));
-}
-
-function toGatewayConfigView(draft: EditableGatewayConfig): GatewayConfigView {
-  return {
-    models: Object.fromEntries(
-      Object.entries(draft.models).map(([name, model]) => {
-        const nextModel: ModelConfig = {
-          disabled: model.disabled || undefined,
-          priority: model.priority,
-          min_loaded: model.min_loaded,
-          max_loaded: model.max_loaded_auto ? 0 : model.max_loaded,
-          max_concurrency: model.max_concurrency,
-          max_queue: model.max_queue,
-          queue_timeout_ms: model.queue_timeout_ms,
-          ttl: model.ttl,
-          model_dir: model.model_dir?.trim() || undefined,
-          artifact: { ...model.artifact },
-          run: model.run,
-          runtime: model.runtime,
-          runtime_args: [...model.runtime_args],
-          cmd_stop: model.cmd_stop,
-          check_endpoint: model.check_endpoint,
-          billing: model.billing ? { ...model.billing } : undefined
-        };
-        return [name, nextModel];
-      })
-    ),
-    model_aliases: Object.fromEntries(
-      Object.entries(draft.model_aliases).sort(([a], [b]) => a.localeCompare(b))
-    ),
-    tag_policies: Object.fromEntries(
-      Object.entries(draft.tag_policies).map(([name, policy]) => [
-        name,
-        {
-          ...policy,
-          worker_defaults: { ...policy.worker_defaults },
-          allowed_models: [...policy.allowed_models].sort()
-        }
-      ])
-    )
-  };
-}
-
-function renderDraftYAML(baseYaml: string, draft: EditableGatewayConfig) {
-  const document = YAML.parseDocument(baseYaml);
-  const rendered = toGatewayConfigView(draft);
-  document.set("models", createYamlModelsMap(rendered.models, draft.models));
-  const sortedAliases = Object.fromEntries(
-    Object.entries(rendered.model_aliases).sort(([a], [b]) => a.localeCompare(b))
-  );
-  if (Object.keys(sortedAliases).length > 0) {
-    document.set("model_aliases", sortedAliases);
-  } else {
-    document.delete("model_aliases");
-  }
-  document.set("tag_policies", rendered.tag_policies);
-  return String(document);
-}
-
-function createYamlModelsMap(
-  models: Record<string, ModelConfig>,
-  editableModels: Record<string, EditableModelConfig>
-) {
-  return Object.fromEntries(
-    Object.entries(models).map(([name, model]) => {
-      const editable = editableModels[name];
-      const nextModel: Record<string, unknown> = {
-        priority: model.priority,
-        min_loaded: model.min_loaded,
-        max_concurrency: model.max_concurrency,
-        max_queue: model.max_queue,
-        queue_timeout_ms: model.queue_timeout_ms,
-        ttl: model.ttl
-      };
-      const modelDir = model.model_dir?.trim();
-      if (modelDir) {
-        nextModel.model_dir = modelDir;
-      }
-      nextModel.artifact = { ...model.artifact };
-      if (model.disabled) {
-        nextModel.disabled = true;
-      }
-      if (!editable.max_loaded_auto) {
-        nextModel.max_loaded = model.max_loaded;
-      }
-      if (model.run) {
-        nextModel.run = model.run;
-      }
-      if (model.runtime) {
-        nextModel.runtime = model.runtime;
-      }
-      if (model.runtime_args && model.runtime_args.length > 0) {
-        nextModel.runtime_args = model.runtime_args;
-      }
-      if (model.cmd_stop) {
-        nextModel.cmd_stop = model.cmd_stop;
-      }
-      if (model.check_endpoint) {
-        nextModel.check_endpoint = model.check_endpoint;
-      }
-      if (model.billing && Object.keys(model.billing).length > 0) {
-        nextModel.billing = { ...model.billing };
-      }
-      return [name, nextModel];
-    })
-  );
 }

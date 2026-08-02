@@ -96,6 +96,11 @@ func validateGateway(cfg GatewayConfig) error {
 		if model.MaxConcurrency < 0 || model.MaxQueue < 0 {
 			return fmt.Errorf("model %s concurrency and queue limits must be non-negative", name)
 		}
+		for tag, capacity := range model.TagCapacity {
+			if capacity.MaxConcurrency <= 0 || capacity.MaxQueue < 0 {
+				return fmt.Errorf("model %s tag_capacity.%s requires positive max_concurrency and non-negative max_queue", name, tag)
+			}
+		}
 		if model.QueueTimeoutMS < 0 {
 			return fmt.Errorf("model %s queue_timeout_ms must be non-negative", name)
 		}
@@ -120,6 +125,14 @@ func validateGateway(cfg GatewayConfig) error {
 		}
 		if policy.WarmWhenIdle != "" && !slices.Contains(policy.AllowedModels, policy.WarmWhenIdle) {
 			return fmt.Errorf("tag %s warm_when_idle %s must be in allowed_models", tag, policy.WarmWhenIdle)
+		}
+	}
+	for modelName, model := range cfg.Models {
+		for tag := range model.TagCapacity {
+			policy, ok := cfg.TagPolicies[tag]
+			if !ok || !slices.Contains(policy.AllowedModels, modelName) {
+				return fmt.Errorf("model %s tag_capacity.%s requires the model in tag_policies.%s.allowed_models", modelName, tag, tag)
+			}
 		}
 	}
 	return nil

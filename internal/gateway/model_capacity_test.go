@@ -143,3 +143,87 @@ func TestModelCapacitySumsReadyEligibleWorkers(t *testing.T) {
 		})
 	}
 }
+
+func TestModelCapacityUsesModelTagCapacityPerReadyWorker(t *testing.T) {
+	now := time.Unix(2_000, 0).UTC()
+	cfg := testGatewayConfig()
+	model := cfg.Models["qwen"]
+	model.TagCapacity = map[string]config.WorkerDefaults{
+		"gpu-4090":  {MaxConcurrency: 1, MaxQueue: 2},
+		"gpu-large": {MaxConcurrency: 3, MaxQueue: 7},
+	}
+	cfg.Models["qwen"] = model
+	cfg.TagPolicies["gpu-large"] = config.TagPolicy{
+		AllowedModels:  []string{"qwen"},
+		WorkerDefaults: config.WorkerDefaults{MaxConcurrency: 40, MaxQueue: 80},
+	}
+	srv := NewServer(cfg)
+	for _, worker := range []struct {
+		id  string
+		tag string
+	}{
+		{id: "gpu-01", tag: "gpu-4090"},
+		{id: "gpu-02", tag: "gpu-large"},
+	} {
+		srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+			AgentID:       worker.id,
+			Tags:          []string{worker.tag},
+			LlamaSwapURL:  "http://" + worker.id,
+			Artifacts:     map[string]string{"qwen": "ready"},
+			RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		}, now)
+	}
+
+	want := modelCapacity{MaxConcurrency: 4, MaxQueue: 9}
+	if got := srv.modelCapacity("qwen", now); got != want {
+		t.Fatalf("modelCapacity(qwen) = %+v, want %+v", got, want)
+	}
+}
+
+func TestModelTagCapacityDefaultsToOneWhenNoLegacyCapacityExists(t *testing.T) {
+	cfg := testGatewayConfig()
+	policy := cfg.TagPolicies["gpu-4090"]
+	policy.WorkerDefaults = config.WorkerDefaults{}
+	cfg.TagPolicies["gpu-4090"] = policy
+
+	want := config.WorkerDefaults{MaxConcurrency: 1, MaxQueue: 1}
+	if got := modelTagCapacity(cfg, "qwen", "gpu-4090"); got != want {
+		t.Fatalf("modelTagCapacity(qwen, gpu-4090) = %+v, want %+v", got, want)
+	}
+}
+
+func TestModelTagCapacityChangeIsHotApply(t *testing.T) {
+	oldCfg := testGatewayConfig()
+	newCfg := cloneGatewayConfig(oldCfg)
+	model := newCfg.Models["qwen"]
+	model.TagCapacity = map[string]config.WorkerDefaults{
+		"gpu-4090": {MaxConcurrency: 2, MaxQueue: 3},
+	}
+	newCfg.Models["qwen"] = model
+
+	changes := diffGatewayConfig(oldCfg, newCfg)
+	if len(changes) != 1 {
+		t.Fatalf("changes = %+v, want one model change", changes)
+	}
+	if changes[0].Path != "models.qwen" || changes[0].RequiresWorkerRestart || changes[0].RequiresGatewayRestart {
+		t.Fatalf("change = %+v, want hot model capacity update", changes[0])
+	}
+}
+
+func TestCloneGatewayConfigDeepCopiesModelTagCapacity(t *testing.T) {
+	cfg := testGatewayConfig()
+	model := cfg.Models["qwen"]
+	model.TagCapacity = map[string]config.WorkerDefaults{
+		"gpu-4090": {MaxConcurrency: 1, MaxQueue: 1},
+	}
+	cfg.Models["qwen"] = model
+
+	cloned := cloneGatewayConfig(cfg)
+	clonedModel := cloned.Models["qwen"]
+	clonedModel.TagCapacity["gpu-4090"] = config.WorkerDefaults{MaxConcurrency: 9, MaxQueue: 9}
+	cloned.Models["qwen"] = clonedModel
+
+	if got := cfg.Models["qwen"].TagCapacity["gpu-4090"]; got.MaxConcurrency != 1 || got.MaxQueue != 1 {
+		t.Fatalf("source tag capacity mutated through clone: %+v", got)
+	}
+}

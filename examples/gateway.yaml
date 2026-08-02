@@ -53,8 +53,14 @@ models:
     # Optional hard ceiling. When omitted, gateway uses automatic expansion
     # bounded by eligible workers and protected model floors.
     max_loaded: 1
+    # Optional legacy model-wide hard ceilings. Per-replica limits normally
+    # come from tag_capacity below and aggregate across ready workers.
     max_concurrency: 2
     max_queue: 8
+    tag_capacity:
+      gpu-sample:
+        max_concurrency: 1
+        max_queue: 1
     queue_timeout_ms: 30000
     ttl: 600
     artifact:
@@ -83,6 +89,8 @@ tag_policies:
   gpu-sample:
     max_concurrency: 2
     max_queue: 8
+    # Compatibility fallback for models without tag_capacity. New model
+    # configuration should set capacity on each model/tag pair instead.
     worker_defaults:
       max_concurrency: 2
       max_queue: 8

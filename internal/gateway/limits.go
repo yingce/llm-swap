@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -119,6 +120,18 @@ func (l *QueueLimiter) Queued(key string) int {
 		return len(st.waiters)
 	}
 	return 0
+}
+
+func (l *QueueLimiter) QueuedPrefix(prefix string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	queued := 0
+	for key, st := range l.states {
+		if strings.HasPrefix(key, prefix) {
+			queued += len(st.waiters)
+		}
+	}
+	return queued
 }
 
 func (l *QueueLimiter) stateLocked(key string) *queueLimitState {

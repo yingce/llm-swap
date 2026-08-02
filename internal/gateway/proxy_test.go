@@ -1403,6 +1403,38 @@ func TestFakeLlamaSwapChatCompletionsRejectsUnexpectedForwardedRequest(t *testin
 	}
 }
 
+func TestProxyUsesModelTagCapacityForSelectedWorker(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testProxyConfig()
+	model := cfg.Models["qwen"]
+	model.TagCapacity = map[string]config.WorkerDefaults{
+		"gpu-4090": {MaxConcurrency: 1, MaxQueue: 0},
+	}
+	cfg.Models["qwen"] = model
+	policy := cfg.TagPolicies["gpu-4090"]
+	policy.WorkerDefaults = config.WorkerDefaults{MaxConcurrency: 99, MaxQueue: 99}
+	cfg.TagPolicies["gpu-4090"] = policy
+
+	srv := NewServer(cfg)
+	registerProxyWorker(t, srv, "gpu-a", upstream.URL, true)
+	release, err := srv.limiter.Acquire(context.Background(), workerModelLimitKey("gpu-a", "qwen"), 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, proxyRequest(`{"model":"qwen","messages":[]}`))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
+	}
+	assertOpenAIErrorCode(t, rr.Body.Bytes(), "queue_full")
+}
+
 func testProxyConfig() config.GatewayConfig {
 	cfg := testGatewayConfig()
 	cfg.Tokens.Client = "client-secret"

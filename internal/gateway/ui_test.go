@@ -70,6 +70,46 @@ func TestUIModelsExposeLiveCapacityAndPressure(t *testing.T) {
 	<-queuedDone
 }
 
+func TestUIWorkersExposeCurrentQueuedRequests(t *testing.T) {
+	srv := NewServer(testGatewayConfig())
+	now := time.Now()
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+
+	key := workerModelLimitKey("gpu-01", "qwen")
+	release, err := srv.limiter.Acquire(context.Background(), key, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	queueCtx, cancelQueue := context.WithCancel(context.Background())
+	defer cancelQueue()
+	queuedDone := make(chan struct{})
+	go func() {
+		defer close(queuedDone)
+		queuedRelease, acquireErr := srv.limiter.Acquire(queueCtx, key, 1, 1)
+		if acquireErr == nil {
+			queuedRelease()
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.limiter.Queued(key) != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	workers := srv.buildUIWorkers(srv.workers.Snapshot(now), srv.workers.ActiveSnapshot(), srv.replicaCooldowns.Snapshot(now), now)
+	if len(workers) != 1 || workers[0].QueuedRequests != 1 {
+		t.Fatalf("workers = %+v, want one queued request", workers)
+	}
+	cancelQueue()
+	<-queuedDone
+}
+
 func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
 	now := time.Unix(300, 0).UTC()

@@ -33,6 +33,7 @@ export function cloneEditableConfig(config: EditableGatewayConfig): EditableGate
           ...model,
           artifact: { ...model.artifact },
           runtime_args: [...model.runtime_args],
+          tag_capacity: cloneTagCapacity(model.tag_capacity),
           disabled: model.disabled || undefined,
           billing: model.billing ? { ...model.billing } : undefined
         }
@@ -61,6 +62,7 @@ export function toEditableConfig(configResponse: ConfigResponse): EditableGatewa
         ...model,
         artifact: { ...model.artifact },
         runtime_args: [...(model.runtime_args ?? [])],
+        tag_capacity: cloneTagCapacity(model.tag_capacity),
         disabled: model.disabled || undefined,
         billing: model.billing ? { ...model.billing } : undefined,
         max_loaded_auto: !yamlModelHasKey(parsed, name, "max_loaded") && model.max_loaded === 0
@@ -110,6 +112,7 @@ function toGatewayConfigView(draft: EditableGatewayConfig): GatewayConfigView {
           max_loaded: model.max_loaded_auto ? 0 : model.max_loaded,
           max_concurrency: model.max_concurrency,
           max_queue: model.max_queue,
+          tag_capacity: cloneTagCapacity(model.tag_capacity),
           queue_timeout_ms: model.queue_timeout_ms,
           ttl: model.ttl,
           model_dir: model.model_dir?.trim() || undefined,
@@ -155,6 +158,13 @@ function createYamlModelsMap(
         queue_timeout_ms: model.queue_timeout_ms,
         ttl: model.ttl
       };
+      if (model.tag_capacity && Object.keys(model.tag_capacity).length > 0) {
+        nextModel.tag_capacity = Object.fromEntries(
+          Object.entries(model.tag_capacity)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([tag, capacity]) => [tag, { ...capacity }])
+        );
+      }
       const modelDir = model.model_dir?.trim();
       if (modelDir) {
         nextModel.model_dir = modelDir;
@@ -187,4 +197,9 @@ function createYamlModelsMap(
       return [name, nextModel];
     })
   );
+}
+
+function cloneTagCapacity(values?: Record<string, { max_concurrency: number; max_queue: number }>) {
+  if (!values) return {};
+  return Object.fromEntries(Object.entries(values).map(([tag, capacity]) => [tag, { ...capacity }]));
 }

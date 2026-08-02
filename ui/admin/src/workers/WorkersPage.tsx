@@ -98,6 +98,17 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
         </div>
       </header>
 
+      <div className="worker-request-strip" aria-label={`${row.active_requests} active requests, ${row.queued_requests} queued requests`}>
+        <div title="Requests currently executing on this worker">
+          <span>REQ</span>
+          <strong>{row.active_requests}</strong>
+        </div>
+        <div title="Requests currently queued for this worker and model">
+          <span>QUEUE</span>
+          <strong>{row.queued_requests}</strong>
+        </div>
+      </div>
+
       <div className="worker-gpu-deck">
         {row.gpu_devices.map((gpu) => (
           <div className="worker-gpu-mini" key={`${row.id}-${gpu.index}-${gpu.name}`}>

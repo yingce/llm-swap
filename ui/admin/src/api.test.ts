@@ -72,6 +72,7 @@ const statusFixture = {
       last_heartbeat: "2026-07-31T06:00:00Z",
       last_heartbeat_age_ms: 25,
       active_requests: 0,
+      queued_requests: 0,
       running_models: [{ model: "qwen", state: "ready" }],
       gpu_devices: [],
       allowed_models: ["qwen"],

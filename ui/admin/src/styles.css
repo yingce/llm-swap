@@ -1220,18 +1220,18 @@ small {
 
 .worker-tile-grid {
   display: grid;
-  gap: 9px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 420px));
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 320px));
   justify-content: start;
 }
 
 .worker-tile {
-  background: linear-gradient(180deg, #f2f7f8, #e7eef2);
+  background: #eaf1f4;
   border: 1px solid #bacbd4;
   border-radius: var(--radius-card);
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: 6px;
+  padding: 8px;
   position: relative;
 }
 
@@ -2179,13 +2179,14 @@ textarea {
 
 .config-grid {
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(0, 1.08fr) minmax(380px, 0.92fr);
+  gap: 10px;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
 }
 
 .config-stack {
   display: grid;
-  gap: 14px;
+  align-content: start;
+  gap: 10px;
 }
 
 .config-card {
@@ -2204,7 +2205,7 @@ textarea {
   gap: 12px;
   justify-content: space-between;
   margin-bottom: 0;
-  padding: 12px 14px;
+  padding: 9px 11px;
 }
 
 .config-card-head h3 {
@@ -2234,12 +2235,49 @@ textarea {
 .config-card > .picker-list,
 .config-card > .checkbox-block,
 .config-card > .alias-add {
-  margin: 12px;
+  margin: 9px;
+}
+
+.worker-request-strip {
+  align-items: center;
+  background: #dfe9ed;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 28px;
+}
+
+.worker-request-strip > div {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  min-width: 0;
+  padding: 4px 7px;
+}
+
+.worker-request-strip > div + div {
+  border-left: 1px solid #c8d6dc;
+}
+
+.worker-request-strip span {
+  color: #647986;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+}
+
+.worker-request-strip strong {
+  color: #173043;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .config-field-groups {
+  align-items: start;
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .config-field-group {
@@ -2248,7 +2286,7 @@ textarea {
   border-radius: 11px;
   margin: 0;
   min-width: 0;
-  padding: 9px;
+  padding: 7px;
 }
 
 .config-field-group legend {
@@ -2261,12 +2299,11 @@ textarea {
 }
 
 .config-field-group .detail-grid {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 22rem));
-  justify-content: start;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
 }
 
 .config-field-group .detail-grid label {
-  max-width: 22rem;
+  max-width: none;
 }
 
 .config-field-group .detail-grid label.wide-field {
@@ -2491,7 +2528,92 @@ textarea {
 }
 
 .mini-textarea {
-  min-height: 140px;
+  min-height: 92px;
+}
+
+.model-tag-capacity-group {
+  grid-column: 1 / -1;
+}
+
+.model-tag-capacity-list {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.model-tag-capacity-row {
+  align-items: center;
+  background: #e8f0f3;
+  border: 1px solid #d1dde3;
+  border-radius: 9px;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 38px;
+  padding: 5px 7px;
+}
+
+.model-tag-capacity-row.selected {
+  background: #e2edef;
+  border-color: #b9ced5;
+  box-shadow: inset 3px 0 0 #79aeba;
+}
+
+.model-tag-choice {
+  align-items: center;
+  color: #263d4e;
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.model-tag-choice input {
+  accent-color: #538a98;
+  flex: 0 0 auto;
+  height: 16px;
+  margin: 0;
+  min-height: 0;
+  padding: 0;
+  width: 16px;
+}
+
+.model-tag-choice strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-tag-limit-fields {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, 78px);
+}
+
+.compact-number-field {
+  display: grid;
+  gap: 2px;
+}
+
+.compact-number-field span {
+  color: #6b7d89;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.compact-number-field input {
+  border-radius: 7px;
+  font-size: 12px;
+  min-height: 25px;
+  padding: 2px 6px;
+}
+
+.model-tag-disabled {
+  color: #82929d;
+  font-size: 10px;
 }
 
 .alias-list {
@@ -2938,6 +3060,7 @@ textarea {
   .change,
   .impact-summary,
   .config-grid,
+  .config-field-groups,
   .detail-grid {
     grid-template-columns: 1fr;
   }
@@ -2969,6 +3092,11 @@ textarea {
 
   .detail-grid label {
     padding: 7px;
+  }
+
+  .model-tag-capacity-row {
+    align-items: start;
+    grid-template-columns: 1fr;
   }
 
   .checkbox-block {

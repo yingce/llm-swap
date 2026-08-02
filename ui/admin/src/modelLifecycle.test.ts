@@ -4,6 +4,8 @@ import {
   MODEL_RUNTIME_OPTIONS,
   emptyEditableModel,
   isModelCreateDraftDirty,
+  modelTagCapacity,
+  setModelTagEnabled,
   setModelTagMembership,
   validateNewModelName
 } from "./modelLifecycle";
@@ -87,5 +89,25 @@ describe("model lifecycle drafts", () => {
     expect(updated["gpu-a"].allowed_models).toEqual(["v1", "v2"]);
     expect(updated["gpu-b"].allowed_models).toEqual(["v3"]);
     expect(tags["gpu-b"].allowed_models).toEqual(["v3", "v2", "v2"]);
+  });
+
+  it("adds model tag capacity with one request and one queue by default", () => {
+    const initial = emptyEditableModel();
+    const enabled = setModelTagEnabled(initial, "gpu-a", true);
+
+    expect(enabled.tag_capacity).toEqual({
+      "gpu-a": { max_concurrency: 1, max_queue: 1 }
+    });
+    expect(initial.tag_capacity).toEqual({});
+    expect(setModelTagEnabled(enabled, "gpu-a", false).tag_capacity).toEqual({});
+  });
+
+  it("uses legacy tag capacity only when a selected model tag has no model override", () => {
+    expect(modelTagCapacity(sourceModel, "gpu-a", tags["gpu-a"])).toEqual({ max_concurrency: 2, max_queue: 4 });
+    const overridden = {
+      ...sourceModel,
+      tag_capacity: { "gpu-a": { max_concurrency: 3, max_queue: 6 } }
+    };
+    expect(modelTagCapacity(overridden, "gpu-a", tags["gpu-a"])).toEqual({ max_concurrency: 3, max_queue: 6 });
   });
 });

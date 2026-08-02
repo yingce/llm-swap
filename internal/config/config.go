@@ -76,23 +76,24 @@ type RecordsStoreConfig struct {
 }
 
 type Model struct {
-	Disabled       bool         `yaml:"disabled" json:"disabled,omitempty"`
-	ModelDir       string       `yaml:"model_dir" json:"model_dir,omitempty"`
-	Priority       int          `yaml:"priority" json:"priority"`
-	MinLoaded      int          `yaml:"min_loaded" json:"min_loaded"`
-	MaxLoaded      int          `yaml:"max_loaded" json:"max_loaded"`
-	MaxLoadedSet   bool         `yaml:"-" json:"-"`
-	MaxConcurrency int          `yaml:"max_concurrency" json:"max_concurrency"`
-	MaxQueue       int          `yaml:"max_queue" json:"max_queue"`
-	QueueTimeoutMS int          `yaml:"queue_timeout_ms" json:"queue_timeout_ms"`
-	TTL            int          `yaml:"ttl" json:"ttl"`
-	Artifact       Artifact     `yaml:"artifact" json:"artifact"`
-	Run            string       `yaml:"run" json:"run"`
-	Runtime        string       `yaml:"runtime" json:"runtime,omitempty"`
-	RuntimeArgs    []string     `yaml:"runtime_args" json:"runtime_args,omitempty"`
-	CmdStop        string       `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
-	CheckEndpoint  string       `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
-	Billing        ModelBilling `yaml:"billing" json:"billing,omitempty"`
+	Disabled       bool                      `yaml:"disabled" json:"disabled,omitempty"`
+	ModelDir       string                    `yaml:"model_dir" json:"model_dir,omitempty"`
+	Priority       int                       `yaml:"priority" json:"priority"`
+	MinLoaded      int                       `yaml:"min_loaded" json:"min_loaded"`
+	MaxLoaded      int                       `yaml:"max_loaded" json:"max_loaded"`
+	MaxLoadedSet   bool                      `yaml:"-" json:"-"`
+	MaxConcurrency int                       `yaml:"max_concurrency" json:"max_concurrency"`
+	MaxQueue       int                       `yaml:"max_queue" json:"max_queue"`
+	TagCapacity    map[string]WorkerDefaults `yaml:"tag_capacity,omitempty" json:"tag_capacity,omitempty"`
+	QueueTimeoutMS int                       `yaml:"queue_timeout_ms" json:"queue_timeout_ms"`
+	TTL            int                       `yaml:"ttl" json:"ttl"`
+	Artifact       Artifact                  `yaml:"artifact" json:"artifact"`
+	Run            string                    `yaml:"run" json:"run"`
+	Runtime        string                    `yaml:"runtime" json:"runtime,omitempty"`
+	RuntimeArgs    []string                  `yaml:"runtime_args" json:"runtime_args,omitempty"`
+	CmdStop        string                    `yaml:"cmd_stop" json:"cmd_stop,omitempty"`
+	CheckEndpoint  string                    `yaml:"check_endpoint" json:"check_endpoint,omitempty"`
+	Billing        ModelBilling              `yaml:"billing" json:"billing,omitempty"`
 }
 
 type ModelBilling struct {

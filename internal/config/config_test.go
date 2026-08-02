@@ -783,6 +783,46 @@ tag_policies:
 	}
 }
 
+func TestLoadGatewayConfigAcceptsModelTagCapacity(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "    run: \"vllm serve {{model_path}} --port ${PORT}\"", `    run: "vllm serve {{model_path}} --port ${PORT}"
+    tag_capacity:
+      gpu-4090:
+        max_concurrency: 2
+        max_queue: 5`, 1)
+	cfg, err := LoadGateway(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("LoadGateway returned error: %v", err)
+	}
+	want := WorkerDefaults{MaxConcurrency: 2, MaxQueue: 5}
+	if got := cfg.Models["qwen"].TagCapacity["gpu-4090"]; got != want {
+		t.Fatalf("tag capacity = %+v, want %+v", got, want)
+	}
+}
+
+func TestLoadGatewayConfigRejectsModelTagCapacityForUnavailableTag(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "    run: \"vllm serve {{model_path}} --port ${PORT}\"", `    run: "vllm serve {{model_path}} --port ${PORT}"
+    tag_capacity:
+      gpu-h100:
+        max_concurrency: 2
+        max_queue: 5`, 1)
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil || !strings.Contains(err.Error(), "tag_capacity") {
+		t.Fatalf("error = %v, want tag_capacity validation error", err)
+	}
+}
+
+func TestLoadGatewayConfigRejectsInvalidModelTagCapacity(t *testing.T) {
+	raw := strings.Replace(validGatewayYAML(""), "    run: \"vllm serve {{model_path}} --port ${PORT}\"", `    run: "vllm serve {{model_path}} --port ${PORT}"
+    tag_capacity:
+      gpu-4090:
+        max_concurrency: 0
+        max_queue: -1`, 1)
+	_, err := LoadGateway(strings.NewReader(raw))
+	if err == nil || !strings.Contains(err.Error(), "tag_capacity") {
+		t.Fatalf("error = %v, want tag_capacity validation error", err)
+	}
+}
+
 func TestLoadAgentRequiresRuntimeFields(t *testing.T) {
 	raw := `
 agent:

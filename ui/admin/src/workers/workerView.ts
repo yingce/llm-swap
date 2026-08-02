@@ -14,6 +14,8 @@ export type WorkerRow = {
   tags: string[];
   health: string;
   state: string;
+  active_requests: number;
+  queued_requests: number;
   gpu_count: number;
   gpu_memory: string;
   gpu_devices: WorkerGpuRow[];
@@ -58,6 +60,8 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
         tags: worker.tags,
         health: worker.health,
         state: worker.state,
+    active_requests: worker.active_requests,
+    queued_requests: worker.queued_requests,
         gpu_count: worker.gpu_devices.length,
         gpu_memory: summarizeGpuMemory(worker),
         gpu_devices: worker.gpu_devices.map(formatGpuDevice),

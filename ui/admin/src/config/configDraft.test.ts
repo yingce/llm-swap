@@ -57,4 +57,27 @@ describe("config draft YAML rendering", () => {
     expect(hasLegacyCapacityCeiling(0, 4)).toBe(true);
     expect(hasLegacyCapacityCeiling(0, 0)).toBe(false);
   });
+
+  it("round-trips model tag capacity without emitting an empty map", () => {
+    const withCapacity = structuredClone(response);
+    withCapacity.config.models.qwen.tag_capacity = {
+      "gpu-4090": { max_concurrency: 2, max_queue: 3 }
+    };
+    withCapacity.config.tag_policies = {
+      "gpu-4090": {
+        max_concurrency: 0,
+        max_queue: 0,
+        worker_defaults: { max_concurrency: 0, max_queue: 0 },
+        allowed_models: ["qwen"],
+        warm_when_idle: ""
+      }
+    };
+    const draft = toEditableConfig(withCapacity);
+    const rendered = renderDraftYAML(withCapacity.yaml, draft);
+
+    expect(rendered).toContain("tag_capacity:");
+    expect(rendered).toContain("gpu-4090:");
+    expect(rendered).toContain("max_concurrency: 2");
+    expect(renderDraftYAML(response.yaml, toEditableConfig(response))).not.toContain("tag_capacity:");
+  });
 });

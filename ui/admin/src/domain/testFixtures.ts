@@ -113,6 +113,7 @@ export function createStatusFixture(): StatusResponse {
         last_heartbeat: "2026-07-31T08:00:00Z",
         last_heartbeat_age_ms: 2000,
         active_requests: 2,
+        queued_requests: 1,
         running_models: [{ model: "joyfox-model-latest", state: "ready" }],
         gpu_devices: [
           {
@@ -142,6 +143,7 @@ export function createStatusFixture(): StatusResponse {
         last_heartbeat: "2026-07-31T07:59:58Z",
         last_heartbeat_age_ms: 4000,
         active_requests: 1,
+        queued_requests: 0,
         running_models: [{ model: "joyfox-model-latest", state: "installing" }],
         gpu_devices: [
           {
@@ -184,6 +186,7 @@ export function createStatusFixture(): StatusResponse {
         last_heartbeat: "2026-07-31T07:55:00Z",
         last_heartbeat_age_ms: 300000,
         active_requests: 0,
+        queued_requests: 0,
         running_models: [],
         gpu_devices: [],
         allowed_models: ["embedding-idle"],

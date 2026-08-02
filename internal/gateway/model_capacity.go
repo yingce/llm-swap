@@ -1,6 +1,10 @@
 package gateway
 
-import "time"
+import (
+	"time"
+
+	"llm-swap/internal/config"
+)
 
 type modelCapacity struct {
 	MaxConcurrency int
@@ -15,6 +19,28 @@ func effectiveCapacity(derived, legacyCeiling int) int {
 		return derived
 	}
 	return legacyCeiling
+}
+
+func modelTagCapacity(cfg config.GatewayConfig, modelName, tag string) config.WorkerDefaults {
+	if model, ok := cfg.Models[modelName]; ok {
+		if capacity, configured := model.TagCapacity[tag]; configured {
+			return capacity
+		}
+	}
+	if policy, ok := cfg.TagPolicies[tag]; ok {
+		if policy.WorkerDefaults.MaxConcurrency > 0 || policy.WorkerDefaults.MaxQueue > 0 {
+			return policy.WorkerDefaults
+		}
+	}
+	return config.WorkerDefaults{MaxConcurrency: 1, MaxQueue: 1}
+}
+
+func workerModelLimitKey(workerID, model string) string {
+	return "worker:" + workerID + ":model:" + model
+}
+
+func workerModelLimitPrefix(workerID string) string {
+	return "worker:" + workerID + ":model:"
 }
 
 func (s *Server) modelCapacity(model string, now time.Time) modelCapacity {
@@ -34,12 +60,13 @@ func (s *Server) modelCapacity(model string, now time.Time) modelCapacity {
 			!runningModelReady(worker, model) {
 			continue
 		}
-		policy, ok := tagPolicy(cfg, selectedWorkerTag(cfg, worker, model))
-		if !ok {
+		tag := selectedWorkerTag(cfg, worker, model)
+		if _, ok := tagPolicy(cfg, tag); !ok {
 			continue
 		}
-		capacity.MaxConcurrency += policy.WorkerDefaults.MaxConcurrency
-		capacity.MaxQueue += policy.WorkerDefaults.MaxQueue
+		workerCapacity := modelTagCapacity(cfg, model, tag)
+		capacity.MaxConcurrency += workerCapacity.MaxConcurrency
+		capacity.MaxQueue += workerCapacity.MaxQueue
 	}
 	return capacity
 }

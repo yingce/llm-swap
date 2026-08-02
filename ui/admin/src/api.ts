@@ -76,6 +76,7 @@ export type WorkerStatus = {
   last_heartbeat?: string;
   last_heartbeat_age_ms?: number;
   active_requests: number;
+  queued_requests: number;
   running_models: { model: string; state: string }[];
   gpu_devices: GPUDevice[];
   allowed_models: string[];
@@ -219,6 +220,7 @@ export type ModelConfig = {
   max_loaded: number;
   max_concurrency: number;
   max_queue: number;
+  tag_capacity?: Record<string, WorkerDefaultsConfig>;
   queue_timeout_ms: number;
   ttl: number;
   artifact: ArtifactConfig;
@@ -393,6 +395,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 function normalizeWorker(worker: WorkerStatus): WorkerStatus {
   return {
     ...worker,
+    queued_requests: worker.queued_requests ?? 0,
     tags: worker.tags ?? [],
     running_models: worker.running_models ?? [],
     gpu_devices: worker.gpu_devices ?? [],
