@@ -148,8 +148,7 @@ function PressureMeter({ label, current, max, available }: { label: string; curr
   return (
     <div className="worker-pressure-meter" title={pressure.title} aria-label={pressure.title}>
       <span>{label}</span>
-      <strong>{current}<small>/{pressure.limitText}</small></strong>
-      <i aria-hidden="true" style={{ ["--pressure" as string]: `${pressure.percent}%` }} />
+      <strong>{current}<small>max {pressure.limitText}</small></strong>
     </div>
   );
 }

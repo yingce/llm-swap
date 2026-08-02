@@ -91,7 +91,6 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
 }
 
 export type WorkerPressurePresentation = {
-  percent: number;
   limitText: string;
   maximumText: string;
   title: string;
@@ -104,13 +103,9 @@ export function formatWorkerPressure(
   available: boolean
 ): WorkerPressurePresentation {
   const normalizedMax = Math.max(0, Number(max) || 0);
-  const percent = available && normalizedMax > 0
-    ? Math.max(0, Math.min(100, (current / normalizedMax) * 100))
-    : 0;
   const limitText = available ? String(normalizedMax) : "—";
   const maximumText = available ? `maximum ${normalizedMax}` : "maximum unavailable (—)";
   return {
-    percent,
     limitText,
     maximumText,
     title: `${label}: ${current} current requests; ${maximumText}`

@@ -76,13 +76,11 @@ describe("Worker request pressure", () => {
     }).formatWorkerPressure;
 
     expect(formatWorkerPressure?.("QUEUE", 3, 0, true)).toEqual({
-      percent: 0,
       limitText: "0",
       maximumText: "maximum 0",
       title: "QUEUE: 3 current requests; maximum 0"
     });
     expect(formatWorkerPressure?.("QUEUE", 3, 0, false)).toEqual({
-      percent: 0,
       limitText: "—",
       maximumText: "maximum unavailable (—)",
       title: "QUEUE: 3 current requests; maximum unavailable (—)"
@@ -91,5 +89,10 @@ describe("Worker request pressure", () => {
 
   it("passes explicit availability to both pressure meters", () => {
     expect(workersPageSource.match(/available=\{row\.live_capacity_available\}/g) ?? []).toHaveLength(2);
+  });
+
+  it("renders each maximum inline as quiet supporting text without a pressure bar", () => {
+    expect(workersPageSource).toContain("<small>max {pressure.limitText}</small>");
+    expect(workersPageSource).not.toContain('<i aria-hidden="true"');
   });
 });

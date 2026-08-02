@@ -1667,18 +1667,13 @@ function ModelEditor({
                 />
                 <NumberField label="Queue timeout ms" value={model.queue_timeout_ms} onChange={(value) => onChange({ ...model, queue_timeout_ms: value })} />
                 <NumberField label="TTL seconds" value={model.ttl} onChange={(value) => onChange({ ...model, ttl: value })} />
+                <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
               </div>
               {hasLegacyCapacityCeiling(model.max_concurrency, model.max_queue) ? (
                 <p className="compatibility-note">Legacy model capacity ceilings are preserved. Edit them in Advanced YAML only.</p>
               ) : null}
             </fieldset>
 
-            <fieldset className="config-field-group">
-              <legend>Placement</legend>
-              <div className="detail-grid">
-                <NumberField label="Priority" value={model.priority} onChange={(value) => onChange({ ...model, priority: value })} />
-              </div>
-            </fieldset>
           </div>
 
           <div className="model-config-column">
@@ -1723,7 +1718,7 @@ function ModelEditor({
 
             <fieldset className="config-field-group">
               <legend>Artifact</legend>
-              <div className="detail-grid">
+              <div className="detail-grid artifact-fields">
                 <label className="field-span wide-field">
                   <span>Artifact object</span>
                   <input
@@ -1731,7 +1726,7 @@ function ModelEditor({
                     onChange={(event) => onChange({ ...model, artifact: { ...model.artifact, object: event.target.value } })}
                   />
                 </label>
-                <label>
+                <label className="artifact-kind-field">
                   <span>Artifact kind</span>
                   <select
                     value={model.artifact.kind}
@@ -1741,7 +1736,7 @@ function ModelEditor({
                     <option value="file">file</option>
                   </select>
                 </label>
-                <label>
+                <label className="artifact-checksum-field">
                   <span>CRC64 ECMA</span>
                   <input
                     value={model.artifact.crc64ecma}

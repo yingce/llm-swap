@@ -49,6 +49,20 @@ describe("Config Ops model creation modal", () => {
     expect(source).toContain('aria-label={`Remove alias ${alias}`}');
   });
 
+  it("keeps priority with replica policy and gives the artifact checksum the wide lane", () => {
+    const replicaPolicy = source.slice(
+      source.indexOf("<legend>Replica policy</legend>"),
+      source.indexOf("<legend>Runtime</legend>")
+    );
+
+    expect(replicaPolicy).toContain('label="Priority"');
+    expect(source).not.toContain("<legend>Placement</legend>");
+    expect(source).toContain('className="detail-grid artifact-fields"');
+    expect(source).toContain('className="artifact-kind-field"');
+    expect(source).toContain('className="artifact-checksum-field"');
+    expect(normalizedStylesSource).toContain("grid-template-columns: minmax(118px, 0.7fr) minmax(190px, 1.3fr);");
+  });
+
   it("pins alias row order and readable worker pressure text in the stylesheet", () => {
     expect(normalizedStylesSource).toContain('grid-template-areas:\n    "alias alias"\n    "target target"\n    "status action";');
     expect(normalizedStylesSource).toContain('grid-template-areas:\n      "alias"\n      "target"\n      "status"\n      "action";');
