@@ -94,6 +94,8 @@ type uiWorker struct {
 	LastHeartbeatAgeMS   int64                   `json:"last_heartbeat_age_ms"`
 	ActiveRequests       int                     `json:"active_requests"`
 	QueuedRequests       int                     `json:"queued_requests"`
+	MaxConcurrency       int                     `json:"max_concurrency"`
+	MaxQueue             int                     `json:"max_queue"`
 	RunningModels        []protocol.RunningModel `json:"running_models"`
 	GPUDevices           []protocol.GPUDevice    `json:"gpu_devices"`
 	Artifacts            map[string]string       `json:"artifacts"`
@@ -473,6 +475,7 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 	out := make([]uiWorker, 0, len(workers))
 	cfg := activeGatewayConfig(s.currentConfig())
 	for _, worker := range workers {
+		liveCapacity := s.workerLiveCapacity(cfg, worker, now)
 		backoffSeconds := int64(0)
 		if now.Before(worker.ScrapeBackoffUntil) {
 			backoffSeconds = int64(time.Until(worker.ScrapeBackoffUntil).Seconds())
@@ -487,6 +490,8 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 			LastHeartbeatAgeMS:   now.Sub(worker.LastHeartbeat).Milliseconds(),
 			ActiveRequests:       active[worker.ID],
 			QueuedRequests:       s.limiter.QueuedPrefix(workerModelLimitPrefix(worker.ID)),
+			MaxConcurrency:       liveCapacity.MaxConcurrency,
+			MaxQueue:             liveCapacity.MaxQueue,
 			RunningModels:        runningModelsOrEmpty(worker.RunningModels),
 			GPUDevices:           gpuDevicesOrEmpty(worker.GPUDevices),
 			Artifacts:            copyStringMap(worker.Artifacts),
@@ -504,6 +509,35 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 		})
 	}
 	return out
+}
+
+func (s *Server) workerLiveCapacity(cfg config.GatewayConfig, worker Worker, now time.Time) modelCapacity {
+	if s == nil || s.workers == nil || !s.workers.Healthy(worker.ID, now) {
+		return modelCapacity{}
+	}
+
+	capacity := modelCapacity{}
+	seen := make(map[string]struct{}, len(worker.RunningModels))
+	for _, running := range worker.RunningModels {
+		if !strings.EqualFold(strings.TrimSpace(running.State), "ready") {
+			continue
+		}
+		if _, ok := seen[running.Model]; ok {
+			continue
+		}
+		seen[running.Model] = struct{}{}
+		if !workerAllowsModel(cfg, worker, running.Model) || !artifactReady(worker, running.Model) {
+			continue
+		}
+		tag := selectedWorkerTag(cfg, worker, running.Model)
+		if _, ok := tagPolicy(cfg, tag); !ok {
+			continue
+		}
+		tagCapacity := modelTagCapacity(cfg, running.Model, tag)
+		capacity.MaxConcurrency += tagCapacity.MaxConcurrency
+		capacity.MaxQueue += tagCapacity.MaxQueue
+	}
+	return capacity
 }
 
 func agentVersionStatus(build protocol.BuildInfo) string {

@@ -71,14 +71,30 @@ func TestUIModelsExposeLiveCapacityAndPressure(t *testing.T) {
 }
 
 func TestUIWorkersExposeCurrentQueuedRequests(t *testing.T) {
-	srv := NewServer(testGatewayConfig())
+	cfg := testGatewayConfig()
+	cfg.Models["qwen"] = config.Model{
+		Artifact:    config.Artifact{Object: "qwen.tar.gz", Kind: "tar_gz", CRC64ECMA: "123"},
+		Run:         "llama-swap run qwen",
+		TagCapacity: map[string]config.WorkerDefaults{"gpu-4090": {MaxConcurrency: 2, MaxQueue: 3}},
+	}
+	cfg.Models["audio"] = config.Model{
+		Artifact:    config.Artifact{Object: "audio.tar.gz", Kind: "tar_gz", CRC64ECMA: "456"},
+		Run:         "llama-swap run audio",
+		TagCapacity: map[string]config.WorkerDefaults{"gpu-4090": {MaxConcurrency: 4, MaxQueue: 5}},
+	}
+	cfg.TagPolicies["gpu-4090"] = config.TagPolicy{
+		AllowedModels:  []string{"qwen", "audio"},
+		WorkerDefaults: config.WorkerDefaults{MaxConcurrency: 99, MaxQueue: 99},
+	}
+	srv := NewServer(cfg)
 	now := time.Now()
 	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
 		AgentID:       "gpu-01",
 		Tags:          []string{"gpu-4090"},
 		LlamaSwapURL:  "http://worker",
-		Artifacts:     map[string]string{"qwen": "ready"},
-		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+		Capacity:      config.WorkerDefaults{MaxConcurrency: 99, MaxQueue: 99},
+		Artifacts:     map[string]string{"qwen": "ready", "audio": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}, {Model: "qwen", State: "ready"}, {Model: "audio", State: "ready"}},
 	}, now)
 
 	key := workerModelLimitKey("gpu-01", "qwen")
@@ -103,11 +119,40 @@ func TestUIWorkersExposeCurrentQueuedRequests(t *testing.T) {
 	}
 
 	workers := srv.buildUIWorkers(srv.workers.Snapshot(now), srv.workers.ActiveSnapshot(), srv.replicaCooldowns.Snapshot(now), now)
-	if len(workers) != 1 || workers[0].QueuedRequests != 1 {
-		t.Fatalf("workers = %+v, want one queued request", workers)
+	if len(workers) != 1 || workers[0].QueuedRequests != 1 || workers[0].MaxConcurrency != 6 || workers[0].MaxQueue != 8 {
+		t.Fatalf("workers = %+v, want one queued request and limits 6/8", workers)
 	}
 	cancelQueue()
 	<-queuedDone
+}
+
+func TestUIWorkersExposeZeroLimitsWithoutReadyModels(t *testing.T) {
+	cfg := testGatewayConfig()
+	cfg.Models["qwen"] = config.Model{
+		Artifact:    config.Artifact{Object: "qwen.tar.gz", Kind: "tar_gz", CRC64ECMA: "123"},
+		Run:         "llama-swap run qwen",
+		TagCapacity: map[string]config.WorkerDefaults{"gpu-4090": {MaxConcurrency: 2, MaxQueue: 3}},
+	}
+	srv := NewServer(cfg)
+	now := time.Now()
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "loading"}},
+	}, now)
+
+	workers := srv.buildUIWorkers(srv.workers.Snapshot(now), srv.workers.ActiveSnapshot(), srv.replicaCooldowns.Snapshot(now), now)
+	if len(workers) != 1 || workers[0].MaxConcurrency != 0 || workers[0].MaxQueue != 0 {
+		t.Fatalf("workers = %+v, want zero live limits without ready models", workers)
+	}
+
+	staleNow := now.Add(6 * time.Second)
+	workers = srv.buildUIWorkers(srv.workers.Snapshot(staleNow), srv.workers.ActiveSnapshot(), srv.replicaCooldowns.Snapshot(staleNow), staleNow)
+	if len(workers) != 1 || workers[0].MaxConcurrency != 0 || workers[0].MaxQueue != 0 {
+		t.Fatalf("stale workers = %+v, want zero live limits", workers)
+	}
 }
 
 func TestUIStatusEndpointSummarizesWorkersModelsAndEvents(t *testing.T) {
