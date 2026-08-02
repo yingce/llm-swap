@@ -2236,7 +2236,7 @@ textarea {
 }
 
 .worker-pressure-meter span {
-  color: #647986;
+  color: var(--muted);
   font-size: 9px;
   font-weight: 850;
   letter-spacing: 0.05em;
@@ -2251,7 +2251,7 @@ textarea {
 }
 
 .worker-pressure-meter small {
-  color: #758894;
+  color: var(--muted);
   font-size: 10px;
   font-weight: 700;
 }
@@ -2646,27 +2646,34 @@ textarea {
   border-radius: 10px;
   display: grid;
   gap: 10px;
+  grid-template-areas:
+    "alias action"
+    "target target"
+    "status status";
   grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
   padding: 8px 10px;
 }
 
 .alias-row > strong {
+  grid-area: alias;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .alias-row > select {
-  grid-column: 1 / -1;
+  grid-area: target;
   min-width: 0;
   width: 100%;
 }
 
 .alias-row > button {
+  grid-area: action;
   justify-self: end;
 }
 
 .alias-status {
+  grid-area: status;
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -3273,8 +3280,12 @@ textarea {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .alias-row > select {
-    grid-column: auto;
+  .alias-row {
+    grid-template-areas:
+      "alias"
+      "target"
+      "status"
+      "action";
   }
 
   .alias-row > button {

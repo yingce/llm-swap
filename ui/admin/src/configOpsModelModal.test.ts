@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./app/App.tsx", import.meta.url), "utf8");
 const shellSource = readFileSync(new URL("./app/AppShell.tsx", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const normalizedStylesSource = stylesSource.replace(/\r\n/g, "\n");
 
 describe("Config Ops model creation modal", () => {
   it("uses a reusable modal with constrained runtime and header disabled controls", () => {
@@ -43,5 +45,15 @@ describe("Config Ops model creation modal", () => {
     expect(source.match(/className="model-capacity-rail"/g) ?? []).toHaveLength(1);
     expect(source).toContain("title={aliasTarget}");
     expect(source).toContain("title={target}");
+  });
+
+  it("pins alias row order and readable worker pressure text in the stylesheet", () => {
+    expect(normalizedStylesSource).toContain('grid-template-areas:\n    "alias action"\n    "target target"\n    "status status";');
+    expect(normalizedStylesSource).toContain('grid-template-areas:\n      "alias"\n      "target"\n      "status"\n      "action";');
+    expect(normalizedStylesSource).toContain(".alias-row > strong {\n  grid-area: alias;");
+    expect(normalizedStylesSource).toContain(".alias-row > select {\n  grid-area: target;");
+    expect(normalizedStylesSource).toContain(".alias-row > button {\n  grid-area: action;");
+    expect(normalizedStylesSource).toContain(".alias-status {\n  grid-area: status;");
+    expect(normalizedStylesSource.match(/\.worker-pressure-meter (?:span|small) \{[^}]*color: var\(--muted\)/gs) ?? []).toHaveLength(2);
   });
 });
