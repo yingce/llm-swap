@@ -48,7 +48,7 @@ describe("Config Ops model creation modal", () => {
   });
 
   it("pins alias row order and readable worker pressure text in the stylesheet", () => {
-    expect(normalizedStylesSource).toContain('grid-template-areas:\n    "alias action"\n    "target target"\n    "status status";');
+    expect(normalizedStylesSource).toContain('grid-template-areas:\n    "alias alias"\n    "target target"\n    "status action";');
     expect(normalizedStylesSource).toContain('grid-template-areas:\n      "alias"\n      "target"\n      "status"\n      "action";');
     expect(normalizedStylesSource).toContain(".alias-row > strong {\n  grid-area: alias;");
     expect(normalizedStylesSource).toContain(".alias-row > select {\n  grid-area: target;");

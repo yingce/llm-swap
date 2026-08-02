@@ -2647,9 +2647,9 @@ textarea {
   display: grid;
   gap: 10px;
   grid-template-areas:
-    "alias action"
+    "alias alias"
     "target target"
-    "status status";
+    "status action";
   grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
   padding: 8px 10px;
