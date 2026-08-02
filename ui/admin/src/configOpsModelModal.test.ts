@@ -37,6 +37,7 @@ describe("Config Ops model creation modal", () => {
   });
 
   it("uses independent model config columns with a capacity rail and titled alias targets", () => {
+    expect(source.match(/className="model-config-layout"/g) ?? []).toHaveLength(1);
     expect(source.match(/className="model-config-base"/g) ?? []).toHaveLength(1);
     expect(source.match(/className="model-config-column"/g) ?? []).toHaveLength(2);
     expect(source.match(/className="model-capacity-rail"/g) ?? []).toHaveLength(1);
