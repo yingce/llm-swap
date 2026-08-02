@@ -1,7 +1,11 @@
+// @ts-expect-error Vitest runs this source-contract test in Node; the admin app ships without Node types.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { createStatusFixture } from "../domain/testFixtures";
 import { buildWorkerFilters, buildWorkerRows } from "./workerView";
+
+const workersPageSource = readFileSync(new URL("./WorkersPage.tsx", import.meta.url), "utf8");
 
 describe("buildWorkerRows", () => {
   it("summarizes worker GPU, model, and connectivity fields without FRP details", () => {
@@ -55,5 +59,11 @@ describe("buildWorkerRows", () => {
     });
     expect(buildWorkerRows(status, { query: "", tag: "self-4090", model: "" }).map((row) => row.id)).toEqual(["worker-b", "worker-c"]);
     expect(buildWorkerRows(status, { query: "", tag: "", model: "joyfox-model-latest" }).map((row) => row.id)).toEqual(["worker-a", "worker-b"]);
+  });
+});
+
+describe("Worker request pressure", () => {
+  it("groups the labelled pressure meters semantically", () => {
+    expect(workersPageSource).toContain('className="worker-request-strip"\n        role="group"\n        aria-label=');
   });
 });

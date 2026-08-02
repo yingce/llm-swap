@@ -100,6 +100,7 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
 
       <div
         className="worker-request-strip"
+        role="group"
         aria-label={`Executing: ${row.active_requests} current, maximum ${formatPressureMaximum(row.max_concurrency)}; queued: ${row.queued_requests} current, maximum ${formatPressureMaximum(row.max_queue)}`}
       >
         <PressureMeter label="REQ" current={row.active_requests} max={row.max_concurrency} />
