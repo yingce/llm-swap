@@ -1274,8 +1274,10 @@ small {
   position: relative;
 }
 
-.worker-diagnostics summary {
+.worker-diagnostics-trigger {
   align-items: center;
+  background: transparent;
+  border: 0;
   border-radius: 999px;
   color: #718491;
   cursor: help;
@@ -1284,20 +1286,26 @@ small {
   font-weight: 850;
   height: 24px;
   justify-content: center;
-  list-style: none;
   outline: none;
+  padding: 0;
   width: 24px;
 }
 
-.worker-diagnostics summary::-webkit-details-marker {
-  display: none;
-}
-
-.worker-diagnostics summary:hover,
-.worker-diagnostics summary:focus-visible,
-.worker-diagnostics[open] summary {
+.worker-diagnostics-trigger:hover,
+.worker-diagnostics-trigger:focus-visible {
   background: #dbe6ea;
   color: #39596a;
+}
+
+.worker-diagnostics.version-warning .worker-diagnostics-trigger {
+  background: #efe4cf;
+  color: #8b6938;
+}
+
+.worker-diagnostics.version-warning .worker-diagnostics-trigger:hover,
+.worker-diagnostics.version-warning .worker-diagnostics-trigger:focus-visible {
+  background: #e8d8b9;
+  color: #76572d;
 }
 
 .worker-diagnostics-popover {
@@ -1317,8 +1325,7 @@ small {
 }
 
 .worker-diagnostics:hover .worker-diagnostics-popover,
-.worker-diagnostics:focus-within .worker-diagnostics-popover,
-.worker-diagnostics[open] .worker-diagnostics-popover {
+.worker-diagnostics-trigger:focus-visible + .worker-diagnostics-popover {
   display: grid;
 }
 

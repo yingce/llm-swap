@@ -95,15 +95,20 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
           <small className="worker-url" title={row.worker.llama_swap_url}>{row.worker.llama_swap_url}</small>
         </div>
         <div className="worker-head-actions">
-          <details className="worker-diagnostics">
-            <summary aria-label={`Show diagnostics for ${row.id}`}>?</summary>
-            <dl className="worker-diagnostics-popover" role="tooltip">
+          <div className={`worker-diagnostics${buildState === "latest" ? "" : " version-warning"}`}>
+            <button
+              type="button"
+              className="worker-diagnostics-trigger"
+              aria-label={`Show diagnostics for ${row.id}`}
+              aria-describedby={`worker-diagnostics-${row.id}`}
+            >?</button>
+            <dl id={`worker-diagnostics-${row.id}`} className="worker-diagnostics-popover" role="tooltip">
               <div><dt>Build</dt><dd>{row.worker.agent_build.version || "unknown"} <small>{buildState}</small></dd></div>
               <div><dt>Commit</dt><dd>{row.worker.agent_build.commit || "unknown"}</dd></div>
               <div><dt>Heartbeat</dt><dd>{row.heartbeat}</dd></div>
               <div><dt>Scrape failures</dt><dd>{row.worker.scrape_failures}</dd></div>
             </dl>
-          </details>
+          </div>
           {row.state === "draining" ? <button className="compact-action" onClick={onUndrain}>Undrain</button> : <button className="danger-ghost compact-action" onClick={onDrain}>Drain</button>}
         </div>
       </header>

@@ -7,6 +7,7 @@ import { buildWorkerFilters, buildWorkerRows } from "./workerView";
 import * as workerView from "./workerView";
 
 const workersPageSource = readFileSync(new URL("./WorkersPage.tsx", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 
 describe("buildWorkerRows", () => {
   it("summarizes worker GPU, model, and connectivity fields without FRP details", () => {
@@ -98,13 +99,28 @@ describe("Worker request pressure", () => {
 });
 
 describe("Worker diagnostics", () => {
-  it("renders diagnostic content in an interactive tooltip instead of relying on a title attribute", () => {
+  it("uses a transient button tooltip instead of a persistent disclosure", () => {
+    expect(workersPageSource).toContain('className="worker-diagnostics-trigger"');
+    expect(workersPageSource).toContain('type="button"');
     expect(workersPageSource).toContain('className="worker-diagnostics-popover"');
     expect(workersPageSource).toContain('role="tooltip"');
     expect(workersPageSource).toContain("Build");
     expect(workersPageSource).toContain("Commit");
     expect(workersPageSource).toContain("Heartbeat");
     expect(workersPageSource).toContain("Scrape failures");
+    expect(workersPageSource).not.toContain("<details");
+    expect(workersPageSource).not.toContain("<summary");
     expect(workersPageSource).not.toContain('className="worker-diagnostics" tabIndex={0} title={diagnostics}');
+  });
+
+  it("reveals diagnostics only for pointer hover or keyboard-visible focus", () => {
+    expect(stylesSource).toContain(".worker-diagnostics:hover .worker-diagnostics-popover");
+    expect(stylesSource).toContain(".worker-diagnostics-trigger:focus-visible + .worker-diagnostics-popover");
+    expect(stylesSource).not.toContain(".worker-diagnostics[open]");
+  });
+
+  it("adds a quiet warning treatment when the agent build is not current", () => {
+    expect(workersPageSource).toContain('buildState === "latest" ? "" : " version-warning"');
+    expect(stylesSource).toContain(".worker-diagnostics.version-warning .worker-diagnostics-trigger");
   });
 });
