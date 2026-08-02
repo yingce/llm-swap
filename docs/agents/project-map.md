@@ -260,6 +260,9 @@ disabled the gateway still runs with no external database.
     `/ui/metrics/summary`, `/ui/metrics/model`, and `/ui/metrics/worker`.
     These use the agent token like the rest of the UI and return 503 when the
     metrics store is disabled.
+  - `/ui/traffic` aggregates request count, response classes, tokens, and
+    latency for the Overview range selector. It uses the records store, defaults
+    to the latest 24 hours, and caps queries at 7 days.
 
 - `internal/gateway/config_manager.go` and `config_admin.go`
   - Own the gateway config snapshot used by gateway handlers.

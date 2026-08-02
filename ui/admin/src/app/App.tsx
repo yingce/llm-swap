@@ -362,6 +362,7 @@ export function App() {
               pricingMessage={configMessage}
               pricingError={configError}
               onRangeChange={(hours) => void loadBilling(hours)}
+              onPriceChange={updateModelBillingPrice}
               onSavePricing={() => void applyPricingDraft()}
             />
           )}

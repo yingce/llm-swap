@@ -2152,6 +2152,25 @@ textarea {
   grid-template-columns: minmax(340px, 360px) minmax(0, 1fr);
 }
 
+.billing-pricing-panel {
+  background: rgba(242, 247, 249, 0.7);
+  border: 1px solid rgba(185, 202, 214, 0.85);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.billing-pricing-panel .table-heading p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.billing-pricing-panel .pricing-table {
+  min-width: 820px;
+}
+
 .config-stack {
   align-content: start;
   display: grid;

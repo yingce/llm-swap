@@ -1,4 +1,4 @@
-import type { BillingSummary, RequestLogEntry, WorkerEvent } from "../api";
+import type { BillingSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
 import type { EditableModelConfig } from "../modelLifecycle";
 import { EmptyState, StatusIndicator } from "../components/primitives";
 import { buildEventRows, buildRequestRows, classifyBillingError } from "./observeView";
@@ -58,6 +58,7 @@ export function BillingPage({
   pricingMessage,
   pricingError,
   onRangeChange,
+  onPriceChange,
   onSavePricing
 }: {
   billing: BillingSummary | null;
@@ -68,9 +69,11 @@ export function BillingPage({
   pricingMessage: string;
   pricingError: string;
   onRangeChange: (hours: number) => void;
+  onPriceChange: (modelName: string, field: keyof ModelBillingConfig, value: number | undefined) => void;
   onSavePricing: () => void;
 }) {
   const notice = classifyBillingError(error);
+  const pricingModels = Object.entries(pricingDraft?.models ?? {}).sort(([left], [right]) => left.localeCompare(right));
   return (
     <div className="observe-page">
       <section className="observe-heading">
@@ -109,15 +112,87 @@ export function BillingPage({
         </div>
       ) : !notice ? <EmptyState title="Billing is loading" body="Waiting for the selected range." /> : null}
       {pricingDraft ? (
-        <div className="pricing-save-row">
-          <StatusIndicator tone={pricingDirty ? "warn" : "good"} label={pricingDirty ? "pricing draft" : "in sync"} />
-          {pricingMessage ? <span>{pricingMessage}</span> : null}
-          {pricingError ? <span className="danger-text">{pricingError}</span> : null}
-          <button disabled={!pricingDirty} onClick={onSavePricing}>Save pricing</button>
-        </div>
+        <section className="billing-pricing-panel">
+          <div className="table-heading">
+            <div>
+              <h3>Manual model pricing</h3>
+              <p>Configure request or token prices in USD. Empty values remain unpriced.</p>
+            </div>
+            <div className="pricing-save-row">
+              <StatusIndicator tone={pricingDirty ? "warn" : "good"} label={pricingDirty ? "pricing draft" : "in sync"} />
+              <button disabled={!pricingDirty} onClick={onSavePricing}>Save pricing</button>
+            </div>
+          </div>
+          {pricingMessage ? <div className="notice">{pricingMessage}</div> : null}
+          {pricingError ? <div className="alert">{pricingError}</div> : null}
+          <div className="observe-table-wrap">
+            <table className="observe-table pricing-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Per request</th>
+                  <th>Input / 1M</th>
+                  <th>Output / 1M</th>
+                  <th>Cached / 1M</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pricingModels.map(([modelName, model]) => {
+                  const pricing = model.billing ?? {};
+                  return (
+                    <tr key={modelName}>
+                      <td>
+                        <strong>{modelName}</strong>
+                        {model.disabled ? <small className="muted-cell"> disabled</small> : null}
+                      </td>
+                      <td><PriceInput model={modelName} label="Per request" value={pricing.per_request_usd} onChange={(value) => onPriceChange(modelName, "per_request_usd", value)} /></td>
+                      <td><PriceInput model={modelName} label="Input per million" value={pricing.input_per_million_usd} onChange={(value) => onPriceChange(modelName, "input_per_million_usd", value)} /></td>
+                      <td><PriceInput model={modelName} label="Output per million" value={pricing.output_per_million_usd} onChange={(value) => onPriceChange(modelName, "output_per_million_usd", value)} /></td>
+                      <td><PriceInput model={modelName} label="Cached input per million" value={pricing.cached_input_per_million_usd} onChange={(value) => onPriceChange(modelName, "cached_input_per_million_usd", value)} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       ) : null}
     </div>
   );
+}
+
+function PriceInput({
+  model,
+  label,
+  value,
+  onChange
+}: {
+  model: string;
+  label: string;
+  value: number | undefined;
+  onChange: (value: number | undefined) => void;
+}) {
+  return (
+    <input
+      className="price-input"
+      type="number"
+      min="0"
+      step="0.000001"
+      inputMode="decimal"
+      aria-label={`${model} ${label}`}
+      value={value ?? ""}
+      onChange={(event) => onChange(parseOptionalPrice(event.target.value))}
+    />
+  );
+}
+
+function parseOptionalPrice(raw: string) {
+  const value = raw.trim();
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : undefined;
 }
 
 function ObserveTableShell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {

@@ -114,6 +114,7 @@ type billingRequestRecord struct {
 	PromptTokens                    int
 	CompletionTokens                int
 	CacheTokens                     int
+	ReasoningTokens                 int
 	DurationMS                      int64
 	StatusCode                      int
 	BillingPerRequestUSD            float64
@@ -409,7 +410,7 @@ func (s *PostgresRecordsStore) billingRequests(ctx context.Context, start, end t
 	defer cancel()
 	rows, err := s.db.QueryContext(runCtx, `
 SELECT id, request_id, event_time, model, worker_id, app_id, total_tokens
-  , prompt_tokens, completion_tokens, cache_tokens, duration_ms, status_code
+  , prompt_tokens, completion_tokens, cache_tokens, reasoning_tokens, duration_ms, status_code
   , billing_per_request_usd::float8, billing_input_per_million_usd::float8
   , billing_output_per_million_usd::float8, billing_cached_input_per_million_usd::float8
   , model_used_cost_usd::float8, cost_calculated_at
@@ -426,7 +427,7 @@ ORDER BY id`, start.UTC(), end.UTC())
 		var costCalculatedAt sql.NullTime
 		if err := rows.Scan(
 			&request.ID, &request.RequestID, &request.Time, &request.Model, &request.WorkerID, &request.AppID, &request.TotalTokens,
-			&request.PromptTokens, &request.CompletionTokens, &request.CacheTokens, &request.DurationMS, &request.StatusCode,
+			&request.PromptTokens, &request.CompletionTokens, &request.CacheTokens, &request.ReasoningTokens, &request.DurationMS, &request.StatusCode,
 			&request.BillingPerRequestUSD, &request.BillingInputPerMillionUSD,
 			&request.BillingOutputPerMillionUSD, &request.BillingCachedInputPerMillionUSD,
 			&request.ModelUsedCostUSD, &costCalculatedAt,

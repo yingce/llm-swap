@@ -578,6 +578,7 @@ func TestUIEndpointsRequireAgentTokenWhenConfigured(t *testing.T) {
 		"/ui/status",
 		"/ui/events",
 		"/ui/requests",
+		"/ui/traffic",
 		"/ui/metrics/summary",
 		"/ui/metrics/model",
 		"/ui/metrics/worker",
