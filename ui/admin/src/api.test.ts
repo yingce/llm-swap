@@ -72,6 +72,7 @@ const statusFixture = {
       last_heartbeat: "2026-07-31T06:00:00Z",
       last_heartbeat_age_ms: 25,
       active_requests: 0,
+      live_capacity_available: true,
       queued_requests: 0,
       running_models: [{ model: "qwen", state: "ready" }],
       gpu_devices: [],
@@ -127,6 +128,7 @@ describe("normalizeStatus", () => {
       cooldown_until: "2026-07-31T06:00:18Z"
     });
     expect(normalized.workers[0]).toMatchObject({
+      live_capacity_available: true,
       scrape_backoff_until: "2026-07-31T06:01:00Z",
       replica_cooldowns: statusFixture.workers[0].replica_cooldowns
     });
@@ -141,5 +143,12 @@ describe("normalizeStatus", () => {
     delete (legacyStatus.workers[0] as Partial<WorkerStatus>).replica_cooldowns;
 
     expect(normalizeStatus(legacyStatus).workers[0].replica_cooldowns).toEqual([]);
+  });
+
+  it("normalizes missing live capacity availability from an older gateway to false", () => {
+    const legacyStatus = structuredClone(statusFixture) as StatusResponse;
+    delete (legacyStatus.workers[0] as Partial<WorkerStatus>).live_capacity_available;
+
+    expect(normalizeStatus(legacyStatus).workers[0].live_capacity_available).toBe(false);
   });
 });

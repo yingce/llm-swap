@@ -15,6 +15,7 @@ export type WorkerRow = {
   health: string;
   state: string;
   active_requests: number;
+  live_capacity_available: boolean;
   max_concurrency: number;
   queued_requests: number;
   max_queue: number;
@@ -63,6 +64,7 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
         health: worker.health,
         state: worker.state,
         active_requests: worker.active_requests,
+        live_capacity_available: worker.live_capacity_available ?? false,
         max_concurrency: Math.max(0, Number(worker.max_concurrency ?? 0)),
         queued_requests: worker.queued_requests,
         max_queue: Math.max(0, Number(worker.max_queue ?? 0)),
@@ -86,6 +88,33 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
     .filter((row) => !options.model || row.worker.running_models.some((model) => model.model === options.model))
     .filter((row) => matchesQuery(row, query))
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export type WorkerPressurePresentation = {
+  percent: number;
+  limitText: string;
+  maximumText: string;
+  title: string;
+};
+
+export function formatWorkerPressure(
+  label: string,
+  current: number,
+  max: number,
+  available: boolean
+): WorkerPressurePresentation {
+  const normalizedMax = Math.max(0, Number(max) || 0);
+  const percent = available && normalizedMax > 0
+    ? Math.max(0, Math.min(100, (current / normalizedMax) * 100))
+    : 0;
+  const limitText = available ? String(normalizedMax) : "—";
+  const maximumText = available ? `maximum ${normalizedMax}` : "maximum unavailable (—)";
+  return {
+    percent,
+    limitText,
+    maximumText,
+    title: `${label}: ${current} current requests; ${maximumText}`
+  };
 }
 
 function summarizeConnectivity(worker: WorkerStatus): string {

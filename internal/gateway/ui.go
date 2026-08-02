@@ -85,31 +85,32 @@ type uiModelWorker struct {
 }
 
 type uiWorker struct {
-	ID                   string                  `json:"id"`
-	Tags                 []string                `json:"tags"`
-	Health               string                  `json:"health"`
-	State                string                  `json:"state"`
-	LlamaSwapURL         string                  `json:"llama_swap_url"`
-	LastHeartbeat        time.Time               `json:"last_heartbeat"`
-	LastHeartbeatAgeMS   int64                   `json:"last_heartbeat_age_ms"`
-	ActiveRequests       int                     `json:"active_requests"`
-	QueuedRequests       int                     `json:"queued_requests"`
-	MaxConcurrency       int                     `json:"max_concurrency"`
-	MaxQueue             int                     `json:"max_queue"`
-	RunningModels        []protocol.RunningModel `json:"running_models"`
-	GPUDevices           []protocol.GPUDevice    `json:"gpu_devices"`
-	Artifacts            map[string]string       `json:"artifacts"`
-	Capacity             config.WorkerDefaults   `json:"capacity"`
-	NeedsRestart         bool                    `json:"needs_restart"`
-	LastError            string                  `json:"last_error,omitempty"`
-	ScrapeFailures       int                     `json:"scrape_failures"`
-	ScrapeBackoffUntil   time.Time               `json:"scrape_backoff_until,omitempty"`
-	ScrapeBackoffSeconds int64                   `json:"scrape_backoff_seconds,omitempty"`
-	AllowedModels        []string                `json:"allowed_models"`
-	HealthProblem        string                  `json:"health_problem,omitempty"`
-	ReplicaCooldowns     []ReplicaCooldown       `json:"replica_cooldowns"`
-	AgentBuild           protocol.BuildInfo      `json:"agent_build"`
-	AgentVersionStatus   string                  `json:"agent_version_status"`
+	ID                    string                  `json:"id"`
+	Tags                  []string                `json:"tags"`
+	Health                string                  `json:"health"`
+	State                 string                  `json:"state"`
+	LlamaSwapURL          string                  `json:"llama_swap_url"`
+	LastHeartbeat         time.Time               `json:"last_heartbeat"`
+	LastHeartbeatAgeMS    int64                   `json:"last_heartbeat_age_ms"`
+	ActiveRequests        int                     `json:"active_requests"`
+	QueuedRequests        int                     `json:"queued_requests"`
+	MaxConcurrency        int                     `json:"max_concurrency"`
+	MaxQueue              int                     `json:"max_queue"`
+	LiveCapacityAvailable bool                    `json:"live_capacity_available"`
+	RunningModels         []protocol.RunningModel `json:"running_models"`
+	GPUDevices            []protocol.GPUDevice    `json:"gpu_devices"`
+	Artifacts             map[string]string       `json:"artifacts"`
+	Capacity              config.WorkerDefaults   `json:"capacity"`
+	NeedsRestart          bool                    `json:"needs_restart"`
+	LastError             string                  `json:"last_error,omitempty"`
+	ScrapeFailures        int                     `json:"scrape_failures"`
+	ScrapeBackoffUntil    time.Time               `json:"scrape_backoff_until,omitempty"`
+	ScrapeBackoffSeconds  int64                   `json:"scrape_backoff_seconds,omitempty"`
+	AllowedModels         []string                `json:"allowed_models"`
+	HealthProblem         string                  `json:"health_problem,omitempty"`
+	ReplicaCooldowns      []ReplicaCooldown       `json:"replica_cooldowns"`
+	AgentBuild            protocol.BuildInfo      `json:"agent_build"`
+	AgentVersionStatus    string                  `json:"agent_version_status"`
 }
 
 type uiAgentEvent struct {
@@ -475,48 +476,50 @@ func (s *Server) buildUIWorkers(workers []Worker, active map[string]int, cooldow
 	out := make([]uiWorker, 0, len(workers))
 	cfg := activeGatewayConfig(s.currentConfig())
 	for _, worker := range workers {
-		liveCapacity := s.workerLiveCapacity(cfg, worker, now)
+		liveCapacity, liveCapacityAvailable := s.workerLiveCapacity(cfg, worker, now)
 		backoffSeconds := int64(0)
 		if now.Before(worker.ScrapeBackoffUntil) {
 			backoffSeconds = int64(time.Until(worker.ScrapeBackoffUntil).Seconds())
 		}
 		out = append(out, uiWorker{
-			ID:                   worker.ID,
-			Tags:                 stringsOrEmpty(worker.Tags),
-			Health:               workerHealth(worker, now),
-			State:                string(worker.State),
-			LlamaSwapURL:         worker.LlamaSwapURL,
-			LastHeartbeat:        worker.LastHeartbeat.UTC(),
-			LastHeartbeatAgeMS:   now.Sub(worker.LastHeartbeat).Milliseconds(),
-			ActiveRequests:       active[worker.ID],
-			QueuedRequests:       s.limiter.QueuedPrefix(workerModelLimitPrefix(worker.ID)),
-			MaxConcurrency:       liveCapacity.MaxConcurrency,
-			MaxQueue:             liveCapacity.MaxQueue,
-			RunningModels:        runningModelsOrEmpty(worker.RunningModels),
-			GPUDevices:           gpuDevicesOrEmpty(worker.GPUDevices),
-			Artifacts:            copyStringMap(worker.Artifacts),
-			Capacity:             worker.Capacity,
-			NeedsRestart:         worker.NeedsRestart,
-			LastError:            worker.LastError,
-			ScrapeFailures:       worker.ScrapeFailures,
-			ScrapeBackoffUntil:   worker.ScrapeBackoffUntil.UTC(),
-			ScrapeBackoffSeconds: backoffSeconds,
-			AllowedModels:        stringsOrEmpty(allowedModelsForWorker(cfg, worker)),
-			HealthProblem:        workerHealthProblem(worker, now),
-			ReplicaCooldowns:     cooldownsForWorker(cooldowns, worker.ID, now),
-			AgentBuild:           worker.AgentBuild,
-			AgentVersionStatus:   agentVersionStatus(worker.AgentBuild),
+			ID:                    worker.ID,
+			Tags:                  stringsOrEmpty(worker.Tags),
+			Health:                workerHealth(worker, now),
+			State:                 string(worker.State),
+			LlamaSwapURL:          worker.LlamaSwapURL,
+			LastHeartbeat:         worker.LastHeartbeat.UTC(),
+			LastHeartbeatAgeMS:    now.Sub(worker.LastHeartbeat).Milliseconds(),
+			ActiveRequests:        active[worker.ID],
+			QueuedRequests:        s.limiter.QueuedPrefix(workerModelLimitPrefix(worker.ID)),
+			MaxConcurrency:        liveCapacity.MaxConcurrency,
+			MaxQueue:              liveCapacity.MaxQueue,
+			LiveCapacityAvailable: liveCapacityAvailable,
+			RunningModels:         runningModelsOrEmpty(worker.RunningModels),
+			GPUDevices:            gpuDevicesOrEmpty(worker.GPUDevices),
+			Artifacts:             copyStringMap(worker.Artifacts),
+			Capacity:              worker.Capacity,
+			NeedsRestart:          worker.NeedsRestart,
+			LastError:             worker.LastError,
+			ScrapeFailures:        worker.ScrapeFailures,
+			ScrapeBackoffUntil:    worker.ScrapeBackoffUntil.UTC(),
+			ScrapeBackoffSeconds:  backoffSeconds,
+			AllowedModels:         stringsOrEmpty(allowedModelsForWorker(cfg, worker)),
+			HealthProblem:         workerHealthProblem(worker, now),
+			ReplicaCooldowns:      cooldownsForWorker(cooldowns, worker.ID, now),
+			AgentBuild:            worker.AgentBuild,
+			AgentVersionStatus:    agentVersionStatus(worker.AgentBuild),
 		})
 	}
 	return out
 }
 
-func (s *Server) workerLiveCapacity(cfg config.GatewayConfig, worker Worker, now time.Time) modelCapacity {
+func (s *Server) workerLiveCapacity(cfg config.GatewayConfig, worker Worker, now time.Time) (modelCapacity, bool) {
 	if s == nil || s.workers == nil || !s.workers.Healthy(worker.ID, now) {
-		return modelCapacity{}
+		return modelCapacity{}, false
 	}
 
 	capacity := modelCapacity{}
+	available := false
 	seen := make(map[string]struct{}, len(worker.RunningModels))
 	for _, running := range worker.RunningModels {
 		if !strings.EqualFold(strings.TrimSpace(running.State), "ready") {
@@ -536,8 +539,9 @@ func (s *Server) workerLiveCapacity(cfg config.GatewayConfig, worker Worker, now
 		tagCapacity := modelTagCapacity(cfg, running.Model, tag)
 		capacity.MaxConcurrency += tagCapacity.MaxConcurrency
 		capacity.MaxQueue += tagCapacity.MaxQueue
+		available = true
 	}
-	return capacity
+	return capacity, available
 }
 
 func agentVersionStatus(build protocol.BuildInfo) string {

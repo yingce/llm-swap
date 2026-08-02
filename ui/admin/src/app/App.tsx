@@ -1862,14 +1862,14 @@ function ModelAliasesEditor({
           return (
             <div className="alias-row" key={alias}>
               <strong>{alias}</strong>
-              <select title={aliasTarget} value={aliasTarget} onChange={(event) => onChange(setAliasTarget(aliases, alias, event.target.value))}>
+              <select aria-label={`Target for alias ${alias}`} title={aliasTarget} value={aliasTarget} onChange={(event) => onChange(setAliasTarget(aliases, alias, event.target.value))}>
                 {modelNames.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}
               </select>
               <div className="alias-status">
                 <Badge tone={readyWorkers > 0 ? "good" : "warn"}>{readyWorkers > 0 ? "ready" : "zero ready"}</Badge>
                 <span>{readyWorkers} ready / {runningWorkers} running</span>
               </div>
-              <button type="button" onClick={() => onChange(removeAlias(aliases, alias))}>Remove</button>
+              <button type="button" aria-label={`Remove alias ${alias}`} onClick={() => onChange(removeAlias(aliases, alias))}>Remove</button>
             </div>
           );
         })}

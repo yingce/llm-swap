@@ -79,6 +79,7 @@ export type WorkerStatus = {
   max_concurrency?: number;
   queued_requests: number;
   max_queue?: number;
+  live_capacity_available?: boolean;
   running_models: { model: string; state: string }[];
   gpu_devices: GPUDevice[];
   allowed_models: string[];
@@ -398,6 +399,7 @@ function normalizeWorker(worker: WorkerStatus): WorkerStatus {
   return {
     ...worker,
     queued_requests: worker.queued_requests ?? 0,
+    live_capacity_available: worker.live_capacity_available ?? false,
     tags: worker.tags ?? [],
     running_models: worker.running_models ?? [],
     gpu_devices: worker.gpu_devices ?? [],

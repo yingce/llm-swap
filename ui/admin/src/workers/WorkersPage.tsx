@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import type { StatusResponse } from "../api";
 import { drainWorker, undrainWorker } from "../api";
 import { ConfirmDialog, EmptyState } from "../components/primitives";
-import { buildWorkerFilters, buildWorkerRows, type WorkerRow } from "./workerView";
+import { buildWorkerFilters, buildWorkerRows, formatWorkerPressure, type WorkerRow } from "./workerView";
 
 export function WorkersPage({
   status,
@@ -84,6 +84,8 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
   const runningLabel = row.loaded_models.length === 0 ? "no loaded model" : row.loaded_models.map((modelName) => modelName.replace(/:ready$/, "")).join(" · ");
   const hasSecondaryState = row.cooldowns.length > 0 || row.worker.needs_restart || row.worker.last_error;
   const diagnostics = `${row.diagnostics}\ncommit ${row.worker.agent_build.commit || "unknown"}\nheartbeat ${row.heartbeat}`;
+  const requestPressure = formatWorkerPressure("REQ", row.active_requests, row.max_concurrency, row.live_capacity_available);
+  const queuePressure = formatWorkerPressure("QUEUE", row.queued_requests, row.max_queue, row.live_capacity_available);
   return (
     <article className={`worker-tile ${row.health === "healthy" ? "healthy" : "degraded"}`}>
       <header className="worker-tile-head">
@@ -101,10 +103,10 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       <div
         className="worker-request-strip"
         role="group"
-        aria-label={`Executing: ${row.active_requests} current, maximum ${formatPressureMaximum(row.max_concurrency)}; queued: ${row.queued_requests} current, maximum ${formatPressureMaximum(row.max_queue)}`}
+        aria-label={`Executing: ${row.active_requests} current, ${requestPressure.maximumText}; queued: ${row.queued_requests} current, ${queuePressure.maximumText}`}
       >
-        <PressureMeter label="REQ" current={row.active_requests} max={row.max_concurrency} />
-        <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} />
+        <PressureMeter label="REQ" current={row.active_requests} max={row.max_concurrency} available={row.live_capacity_available} />
+        <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} available={row.live_capacity_available} />
       </div>
 
       <div className="worker-gpu-deck">
@@ -140,23 +142,16 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
   );
 }
 
-function PressureMeter({ label, current, max }: { label: string; current: number; max: number }) {
-  const percent = Math.max(0, Math.min(100, max > 0 ? (current / max) * 100 : 0));
-  const title = max > 0
-    ? `${label}: ${current} current requests of ${max} live capacity`
-    : `${label}: ${current} current requests; live capacity unavailable (—)`;
+function PressureMeter({ label, current, max, available }: { label: string; current: number; max: number; available: boolean }) {
+  const pressure = formatWorkerPressure(label, current, max, available);
 
   return (
-    <div className="worker-pressure-meter" title={title}>
+    <div className="worker-pressure-meter" title={pressure.title} aria-label={pressure.title}>
       <span>{label}</span>
-      <strong>{current}<small>/{max > 0 ? max : "—"}</small></strong>
-      <i aria-hidden="true" style={{ ["--pressure" as string]: `${percent}%` }} />
+      <strong>{current}<small>/{pressure.limitText}</small></strong>
+      <i aria-hidden="true" style={{ ["--pressure" as string]: `${pressure.percent}%` }} />
     </div>
   );
-}
-
-function formatPressureMaximum(max: number): string {
-  return max > 0 ? String(max) : "unavailable (—)";
 }
 
 function ResourceStrip({ title, items }: { title: string; items: string[] }) {

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createStatusFixture } from "../domain/testFixtures";
 import { buildWorkerFilters, buildWorkerRows } from "./workerView";
+import * as workerView from "./workerView";
 
 const workersPageSource = readFileSync(new URL("./WorkersPage.tsx", import.meta.url), "utf8");
 
@@ -18,6 +19,7 @@ describe("buildWorkerRows", () => {
       gpu_count: 1,
       loaded_models: ["joyfox-model-latest:ready"],
       active_requests: 2,
+      live_capacity_available: true,
       max_concurrency: 4,
       queued_requests: 1,
       max_queue: 6,
@@ -39,10 +41,11 @@ describe("buildWorkerRows", () => {
     const status = createStatusFixture();
     delete status.workers[0].max_concurrency;
     delete status.workers[0].max_queue;
+    delete status.workers[0].live_capacity_available;
 
     const [row] = buildWorkerRows(status, { query: "" });
 
-    expect(row).toMatchObject({ max_concurrency: 0, max_queue: 0 });
+    expect(row).toMatchObject({ live_capacity_available: false, max_concurrency: 0, max_queue: 0 });
   });
 
   it("searches workers by id, tag, and loaded model", () => {
@@ -65,5 +68,28 @@ describe("buildWorkerRows", () => {
 describe("Worker request pressure", () => {
   it("groups the labelled pressure meters semantically", () => {
     expect(workersPageSource).toContain('className="worker-request-strip"\n        role="group"\n        aria-label=');
+  });
+
+  it("formats zero capacity separately from unavailable capacity", () => {
+    const formatWorkerPressure = (workerView as unknown as {
+      formatWorkerPressure?: (label: string, current: number, max: number, available: boolean) => unknown;
+    }).formatWorkerPressure;
+
+    expect(formatWorkerPressure?.("QUEUE", 3, 0, true)).toEqual({
+      percent: 0,
+      limitText: "0",
+      maximumText: "maximum 0",
+      title: "QUEUE: 3 current requests; maximum 0"
+    });
+    expect(formatWorkerPressure?.("QUEUE", 3, 0, false)).toEqual({
+      percent: 0,
+      limitText: "—",
+      maximumText: "maximum unavailable (—)",
+      title: "QUEUE: 3 current requests; maximum unavailable (—)"
+    });
+  });
+
+  it("passes explicit availability to both pressure meters", () => {
+    expect(workersPageSource.match(/available=\{row\.live_capacity_available\}/g) ?? []).toHaveLength(2);
   });
 });

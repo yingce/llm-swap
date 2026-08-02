@@ -45,6 +45,8 @@ describe("Config Ops model creation modal", () => {
     expect(source.match(/className="model-capacity-rail"/g) ?? []).toHaveLength(1);
     expect(source).toContain("title={aliasTarget}");
     expect(source).toContain("title={target}");
+    expect(source).toContain('aria-label={`Target for alias ${alias}`}');
+    expect(source).toContain('aria-label={`Remove alias ${alias}`}');
   });
 
   it("pins alias row order and readable worker pressure text in the stylesheet", () => {
