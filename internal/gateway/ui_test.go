@@ -148,6 +148,18 @@ func TestUIWorkersExposeZeroLimitsWithoutReadyModels(t *testing.T) {
 		t.Fatalf("workers = %+v, want zero live limits without ready models", workers)
 	}
 
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:       "gpu-01",
+		Tags:          []string{"gpu-4090"},
+		LlamaSwapURL:  "http://worker",
+		Artifacts:     map[string]string{"qwen": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "qwen", State: "ready"}},
+	}, now)
+	workers = srv.buildUIWorkers(srv.workers.Snapshot(now), srv.workers.ActiveSnapshot(), srv.replicaCooldowns.Snapshot(now), now)
+	if len(workers) != 1 || workers[0].MaxConcurrency != 2 || workers[0].MaxQueue != 3 {
+		t.Fatalf("ready workers = %+v, want live limits 2/3", workers)
+	}
+
 	staleNow := now.Add(6 * time.Second)
 	workers = srv.buildUIWorkers(srv.workers.Snapshot(staleNow), srv.workers.ActiveSnapshot(), srv.replicaCooldowns.Snapshot(staleNow), staleNow)
 	if len(workers) != 1 || workers[0].MaxConcurrency != 0 || workers[0].MaxQueue != 0 {
