@@ -96,3 +96,15 @@ describe("Worker request pressure", () => {
     expect(workersPageSource).not.toContain('<i aria-hidden="true"');
   });
 });
+
+describe("Worker diagnostics", () => {
+  it("renders diagnostic content in an interactive tooltip instead of relying on a title attribute", () => {
+    expect(workersPageSource).toContain('className="worker-diagnostics-popover"');
+    expect(workersPageSource).toContain('role="tooltip"');
+    expect(workersPageSource).toContain("Build");
+    expect(workersPageSource).toContain("Commit");
+    expect(workersPageSource).toContain("Heartbeat");
+    expect(workersPageSource).toContain("Scrape failures");
+    expect(workersPageSource).not.toContain('className="worker-diagnostics" tabIndex={0} title={diagnostics}');
+  });
+});

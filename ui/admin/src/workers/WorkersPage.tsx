@@ -83,7 +83,7 @@ export function WorkersPage({
 function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () => void; onUndrain: () => void }) {
   const runningLabel = row.loaded_models.length === 0 ? "no loaded model" : row.loaded_models.map((modelName) => modelName.replace(/:ready$/, "")).join(" · ");
   const hasSecondaryState = row.cooldowns.length > 0 || row.worker.needs_restart || row.worker.last_error;
-  const diagnostics = `${row.diagnostics}\ncommit ${row.worker.agent_build.commit || "unknown"}\nheartbeat ${row.heartbeat}`;
+  const buildState = row.worker.agent_version_status === "current" ? "latest" : "old";
   const requestPressure = formatWorkerPressure("REQ", row.active_requests, row.max_concurrency, row.live_capacity_available);
   const queuePressure = formatWorkerPressure("QUEUE", row.queued_requests, row.max_queue, row.live_capacity_available);
   return (
@@ -95,7 +95,15 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
           <small className="worker-url" title={row.worker.llama_swap_url}>{row.worker.llama_swap_url}</small>
         </div>
         <div className="worker-head-actions">
-          <span className="worker-diagnostics" tabIndex={0} title={diagnostics} aria-label={row.diagnostics}>···</span>
+          <details className="worker-diagnostics">
+            <summary aria-label={`Show diagnostics for ${row.id}`}>?</summary>
+            <dl className="worker-diagnostics-popover" role="tooltip">
+              <div><dt>Build</dt><dd>{row.worker.agent_build.version || "unknown"} <small>{buildState}</small></dd></div>
+              <div><dt>Commit</dt><dd>{row.worker.agent_build.commit || "unknown"}</dd></div>
+              <div><dt>Heartbeat</dt><dd>{row.heartbeat}</dd></div>
+              <div><dt>Scrape failures</dt><dd>{row.worker.scrape_failures}</dd></div>
+            </dl>
+          </details>
           {row.state === "draining" ? <button className="compact-action" onClick={onUndrain}>Undrain</button> : <button className="danger-ghost compact-action" onClick={onDrain}>Drain</button>}
         </div>
       </header>

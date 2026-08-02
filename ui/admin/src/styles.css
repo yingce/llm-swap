@@ -1271,6 +1271,10 @@ small {
 }
 
 .worker-diagnostics {
+  position: relative;
+}
+
+.worker-diagnostics summary {
   align-items: center;
   border-radius: 999px;
   color: #718491;
@@ -1280,15 +1284,66 @@ small {
   font-weight: 850;
   height: 24px;
   justify-content: center;
-  letter-spacing: 0.06em;
+  list-style: none;
   outline: none;
   width: 24px;
 }
 
-.worker-diagnostics:hover,
-.worker-diagnostics:focus-visible {
+.worker-diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+
+.worker-diagnostics summary:hover,
+.worker-diagnostics summary:focus-visible,
+.worker-diagnostics[open] summary {
   background: #dbe6ea;
   color: #39596a;
+}
+
+.worker-diagnostics-popover {
+  background: #f2f7f9;
+  border: 1px solid #bdced7;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgb(34 55 67 / 18%);
+  display: none;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 9px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  width: 230px;
+  z-index: 20;
+}
+
+.worker-diagnostics:hover .worker-diagnostics-popover,
+.worker-diagnostics:focus-within .worker-diagnostics-popover,
+.worker-diagnostics[open] .worker-diagnostics-popover {
+  display: grid;
+}
+
+.worker-diagnostics-popover > div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 68px minmax(0, 1fr);
+}
+
+.worker-diagnostics-popover dt {
+  color: #718491;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.worker-diagnostics-popover dd {
+  color: #294252;
+  font-size: 10px;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.worker-diagnostics-popover dd small {
+  color: #718491;
 }
 
 .worker-tile-head h3 {
