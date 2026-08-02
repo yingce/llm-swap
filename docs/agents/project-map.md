@@ -244,9 +244,10 @@ disabled the gateway still runs with no external database.
     running the frontend build.
   - Shows model availability, traffic, workers, health, GPU memory/utilization,
     running models, artifacts, and recent worker events.
-  - Worker cards expose current executing and queued request counts but do not
-    own capacity policy. Config Ops edits runnable tags and per-GPU limits on
-    each model because serving capacity depends on both model and hardware tag.
+  - Worker cards expose current executing/queued counts and gateway-derived
+    live model/tag limits, but do not own capacity policy. Config Ops keeps
+    model-owned runnable tags and capacity settings because serving capacity
+    depends on both model and hardware tag.
   - Config Ops exposes the optional local model directory and a Model aliases
     card for adding, retargeting, or removing stable names. Alias rows show the
     canonical target's ready/running replica counts and warn on zero-ready
