@@ -14,12 +14,13 @@ describe("buildWorkerRows", () => {
       gpu_count: 1,
       loaded_models: ["joyfox-model-latest:ready"],
       active_requests: 2,
+      max_concurrency: 4,
       queued_requests: 1,
+      max_queue: 6,
       connectivity: "healthy · active · scrape ok",
       agent_version: "1.0.0 · current",
       diagnostics: "build 1.0.0 (latest) · heartbeat 2s ago · scrape failures 0"
     });
-    expect(rows[0]).not.toHaveProperty("request_capacity");
     expect(rows[0].gpu_devices[0]).toMatchObject({
       index: 0,
       memory: "15.6GiB / 24GiB",
@@ -28,6 +29,16 @@ describe("buildWorkerRows", () => {
       temperature: "70°C"
     });
     expect(JSON.stringify(rows).toLowerCase()).not.toContain("frp");
+  });
+
+  it("uses zero limits when an older gateway omits live pressure capacity", () => {
+    const status = createStatusFixture();
+    delete status.workers[0].max_concurrency;
+    delete status.workers[0].max_queue;
+
+    const [row] = buildWorkerRows(status, { query: "" });
+
+    expect(row).toMatchObject({ max_concurrency: 0, max_queue: 0 });
   });
 
   it("searches workers by id, tag, and loaded model", () => {

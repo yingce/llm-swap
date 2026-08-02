@@ -113,7 +113,9 @@ export function createStatusFixture(): StatusResponse {
         last_heartbeat: "2026-07-31T08:00:00Z",
         last_heartbeat_age_ms: 2000,
         active_requests: 2,
+        max_concurrency: 4,
         queued_requests: 1,
+        max_queue: 6,
         running_models: [{ model: "joyfox-model-latest", state: "ready" }],
         gpu_devices: [
           {

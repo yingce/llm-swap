@@ -76,7 +76,9 @@ export type WorkerStatus = {
   last_heartbeat?: string;
   last_heartbeat_age_ms?: number;
   active_requests: number;
+  max_concurrency?: number;
   queued_requests: number;
+  max_queue?: number;
   running_models: { model: string; state: string }[];
   gpu_devices: GPUDevice[];
   allowed_models: string[];

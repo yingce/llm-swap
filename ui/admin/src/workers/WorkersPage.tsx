@@ -98,15 +98,12 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
         </div>
       </header>
 
-      <div className="worker-request-strip" aria-label={`${row.active_requests} active requests, ${row.queued_requests} queued requests`}>
-        <div title="Requests currently executing on this worker">
-          <span>REQ</span>
-          <strong>{row.active_requests}</strong>
-        </div>
-        <div title="Requests currently queued for this worker and model">
-          <span>QUEUE</span>
-          <strong>{row.queued_requests}</strong>
-        </div>
+      <div
+        className="worker-request-strip"
+        aria-label={`Executing: ${row.active_requests} current, maximum ${formatPressureMaximum(row.max_concurrency)}; queued: ${row.queued_requests} current, maximum ${formatPressureMaximum(row.max_queue)}`}
+      >
+        <PressureMeter label="EXEC" current={row.active_requests} max={row.max_concurrency} />
+        <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} />
       </div>
 
       <div className="worker-gpu-deck">
@@ -140,6 +137,25 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       ) : null}
     </article>
   );
+}
+
+function PressureMeter({ label, current, max }: { label: string; current: number; max: number }) {
+  const percent = Math.max(0, Math.min(100, max > 0 ? (current / max) * 100 : 0));
+  const title = max > 0
+    ? `${label}: ${current} current requests of ${max} live capacity`
+    : `${label}: ${current} current requests; live capacity unavailable (—)`;
+
+  return (
+    <div className="worker-pressure-meter" title={title}>
+      <span>{label}</span>
+      <strong>{current}<small>/{max > 0 ? max : "—"}</small></strong>
+      <i aria-hidden="true" style={{ ["--pressure" as string]: `${percent}%` }} />
+    </div>
+  );
+}
+
+function formatPressureMaximum(max: number): string {
+  return max > 0 ? String(max) : "unavailable (—)";
 }
 
 function ResourceStrip({ title, items }: { title: string; items: string[] }) {
