@@ -133,16 +133,21 @@ describe("Worker diagnostics", () => {
     expect(workerHasDiagnosticWarning(status.workers[2])).toBe(true);
   });
 
-  it("keeps request pressure and model state in separate compact rows", () => {
+  it("keeps runtime state with request pressure and model names on their own row", () => {
     const pressureIndex = workersPageSource.indexOf('className="worker-request-strip"');
+    const stateIndex = workersPageSource.indexOf('className="worker-model-state-list"');
     const modelIndex = workersPageSource.indexOf('className="worker-model-board"');
+    const modelNamesIndex = workersPageSource.indexOf('className="worker-model-names"');
     const gpuIndex = workersPageSource.indexOf('className="worker-gpu-deck"');
     expect(pressureIndex).toBeGreaterThan(-1);
-    expect(modelIndex).toBeGreaterThan(pressureIndex);
+    expect(stateIndex).toBeGreaterThan(pressureIndex);
+    expect(modelIndex).toBeGreaterThan(stateIndex);
+    expect(modelNamesIndex).toBeGreaterThan(modelIndex);
     expect(gpuIndex).toBeGreaterThan(modelIndex);
-    expect(workersPageSource.slice(pressureIndex, modelIndex)).not.toContain("worker-model-state-list");
-    expect(workersPageSource.slice(modelIndex, gpuIndex)).toContain("worker-model-state-list");
+    expect(workersPageSource.slice(pressureIndex, modelIndex)).toContain("worker-model-state-list");
+    expect(workersPageSource.slice(modelIndex, gpuIndex)).not.toContain("worker-model-state-list");
     expect(workersPageSource).toContain("model-state-${modelStateTone(model.state)}");
-    expect(stylesSource).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(stylesSource).toContain("grid-template-columns: minmax(58px, 1fr) minmax(66px, 1fr) auto;");
+    expect(stylesSource).toContain(".worker-model-board > strong {\n  color: #5e7184;\n  font-size: 8px;");
   });
 });

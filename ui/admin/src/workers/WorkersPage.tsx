@@ -86,6 +86,8 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
   const diagnosticsWarning = workerHasDiagnosticWarning(row.worker);
   const requestPressure = formatWorkerPressure("REQ", row.active_requests, row.max_concurrency, row.live_capacity_available);
   const queuePressure = formatWorkerPressure("QUEUE", row.queued_requests, row.max_queue, row.live_capacity_available);
+  const modelNames = row.running_models.map((model) => model.model).join(" · ");
+  const modelStates = row.running_models.map((model) => `${model.model} ${model.state}`).join(", ") || "idle";
   return (
     <article className={`worker-tile ${row.health === "healthy" ? "healthy" : "degraded"}`}>
       <header className="worker-tile-head">
@@ -116,23 +118,23 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       <div
         className="worker-request-strip"
         role="group"
-        aria-label={`Executing: ${row.active_requests} current, ${requestPressure.maximumText}; queued: ${row.queued_requests} current, ${queuePressure.maximumText}`}
+        aria-label={`Executing: ${row.active_requests} current, ${requestPressure.maximumText}; queued: ${row.queued_requests} current, ${queuePressure.maximumText}; runtime: ${modelStates}`}
       >
         <PressureMeter label="REQ" current={row.active_requests} max={row.max_concurrency} available={row.live_capacity_available} />
         <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} available={row.live_capacity_available} />
-      </div>
-
-      <div className="worker-model-board">
-        <strong>Model</strong>
         <div className="worker-model-state-list" aria-label={row.running_models.length > 0 ? "Running model states" : "No running model"}>
           {row.running_models.length > 0 ? row.running_models.map((model) => (
             <span className={`worker-model-state model-state-${modelStateTone(model.state)}`} title={`${model.model}: ${model.state}`} key={`${model.model}:${model.state}`}>
               <i aria-hidden="true" />
-              <strong>{model.model}</strong>
               <small>{model.state}</small>
             </span>
           )) : <span className="worker-model-state model-state-neutral"><small>idle</small></span>}
         </div>
+      </div>
+
+      <div className="worker-model-board" aria-label={modelNames ? `Models: ${modelNames}` : "No loaded model"}>
+        <strong>Model</strong>
+        <span className="worker-model-names" title={modelNames || "No loaded model"}>{modelNames || "none"}</span>
       </div>
 
       <div className="worker-gpu-deck">

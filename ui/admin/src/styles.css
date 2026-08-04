@@ -1489,16 +1489,26 @@ small {
   border: 1px solid #cadbe4;
   border-radius: 10px;
   display: grid;
-  gap: 6px;
+  gap: 4px;
   grid-template-columns: auto minmax(0, 1fr);
-  padding: 5px 7px;
+  padding: 4px 6px;
 }
 
 .worker-model-board > strong {
   color: #5e7184;
-  font-size: 10px;
-  letter-spacing: 0.05em;
+  font-size: 8px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.worker-model-names {
+  color: #38505f;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .worker-tile-detail {
@@ -2285,7 +2295,7 @@ textarea {
   border-radius: 8px;
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(58px, 1fr) minmax(66px, 1fr) auto;
   min-height: 27px;
   overflow: hidden;
 }
@@ -2305,11 +2315,12 @@ textarea {
 
 .worker-model-state-list {
   align-items: center;
+  border-left: 1px solid #c8d6dc;
   display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
+  padding: 4px 7px;
 }
 
 .worker-model-state {
@@ -2325,16 +2336,6 @@ textarea {
   flex: 0 0 auto;
   height: 6px;
   width: 6px;
-}
-
-.worker-model-state strong {
-  color: #38505f;
-  font-size: 10px;
-  font-weight: 700;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .worker-model-state small {
