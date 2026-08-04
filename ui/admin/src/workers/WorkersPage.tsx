@@ -120,6 +120,10 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       >
         <PressureMeter label="REQ" current={row.active_requests} max={row.max_concurrency} available={row.live_capacity_available} />
         <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} available={row.live_capacity_available} />
+      </div>
+
+      <div className="worker-model-board">
+        <strong>Model</strong>
         <div className="worker-model-state-list" aria-label={row.running_models.length > 0 ? "Running model states" : "No running model"}>
           {row.running_models.length > 0 ? row.running_models.map((model) => (
             <span className={`worker-model-state model-state-${modelStateTone(model.state)}`} title={`${model.model}: ${model.state}`} key={`${model.model}:${model.state}`}>

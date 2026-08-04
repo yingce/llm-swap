@@ -133,12 +133,16 @@ describe("Worker diagnostics", () => {
     expect(workerHasDiagnosticWarning(status.workers[2])).toBe(true);
   });
 
-  it("shows running model state after request and queue pressure", () => {
-    const pressureIndex = workersPageSource.indexOf("<PressureMeter");
-    const stateIndex = workersPageSource.indexOf("worker-model-state-list");
+  it("keeps request pressure and model state in separate compact rows", () => {
+    const pressureIndex = workersPageSource.indexOf('className="worker-request-strip"');
+    const modelIndex = workersPageSource.indexOf('className="worker-model-board"');
+    const gpuIndex = workersPageSource.indexOf('className="worker-gpu-deck"');
     expect(pressureIndex).toBeGreaterThan(-1);
-    expect(stateIndex).toBeGreaterThan(pressureIndex);
+    expect(modelIndex).toBeGreaterThan(pressureIndex);
+    expect(gpuIndex).toBeGreaterThan(modelIndex);
+    expect(workersPageSource.slice(pressureIndex, modelIndex)).not.toContain("worker-model-state-list");
+    expect(workersPageSource.slice(modelIndex, gpuIndex)).toContain("worker-model-state-list");
     expect(workersPageSource).toContain("model-state-${modelStateTone(model.state)}");
-    expect(workersPageSource).not.toContain('className="worker-model-board"');
+    expect(stylesSource).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
   });
 });
