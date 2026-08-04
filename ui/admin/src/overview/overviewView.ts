@@ -16,8 +16,22 @@ export type OverviewView = {
   relationship: RelationshipView;
 };
 
-export function buildOverviewView(status: StatusResponse): OverviewView {
-  const attentionItems = buildAttentionItems(status);
+export type OverviewTrafficRange = "1h" | "6h" | "24h" | "3d" | "7d";
+
+const rangeDurationMS: Record<OverviewTrafficRange, number> = {
+  "1h": 60 * 60 * 1000,
+  "6h": 6 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "3d": 3 * 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000
+};
+
+export function buildOverviewView(status: StatusResponse, trafficRange: OverviewTrafficRange = "24h"): OverviewView {
+  const rangeEnd = Date.parse(status.generated_at);
+  const attentionItems = buildAttentionItems(status, Number.isFinite(rangeEnd) ? {
+    event_start: new Date(rangeEnd - rangeDurationMS[trafficRange]).toISOString(),
+    event_end: new Date(rangeEnd).toISOString()
+  } : {});
   return {
     conclusion: buildConclusion(status, attentionItems),
     attentionItems,

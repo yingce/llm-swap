@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import type { StatusResponse } from "../api";
 import { drainWorker, undrainWorker } from "../api";
 import { ConfirmDialog, EmptyState } from "../components/primitives";
-import { buildWorkerFilters, buildWorkerRows, formatWorkerPressure, type WorkerRow } from "./workerView";
+import { buildWorkerFilters, buildWorkerRows, formatWorkerPressure, modelStateTone, workerHasDiagnosticWarning, type WorkerRow } from "./workerView";
 
 export function WorkersPage({
   status,
@@ -81,9 +81,9 @@ export function WorkersPage({
 }
 
 function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () => void; onUndrain: () => void }) {
-  const runningLabel = row.loaded_models.length === 0 ? "no loaded model" : row.loaded_models.map((modelName) => modelName.replace(/:ready$/, "")).join(" · ");
   const hasSecondaryState = row.cooldowns.length > 0 || row.worker.needs_restart || row.worker.last_error;
   const buildState = row.worker.agent_version_status === "current" ? "latest" : "old";
+  const diagnosticsWarning = workerHasDiagnosticWarning(row.worker);
   const requestPressure = formatWorkerPressure("REQ", row.active_requests, row.max_concurrency, row.live_capacity_available);
   const queuePressure = formatWorkerPressure("QUEUE", row.queued_requests, row.max_queue, row.live_capacity_available);
   return (
@@ -95,7 +95,7 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
           <small className="worker-url" title={row.worker.llama_swap_url}>{row.worker.llama_swap_url}</small>
         </div>
         <div className="worker-head-actions">
-          <div className={`worker-diagnostics${buildState === "latest" ? "" : " version-warning"}`}>
+          <div className={`worker-diagnostics${diagnosticsWarning ? " diagnostic-warning" : ""}`}>
             <button
               type="button"
               className="worker-diagnostics-trigger"
@@ -120,6 +120,15 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
       >
         <PressureMeter label="REQ" current={row.active_requests} max={row.max_concurrency} available={row.live_capacity_available} />
         <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} available={row.live_capacity_available} />
+        <div className="worker-model-state-list" aria-label={row.running_models.length > 0 ? "Running model states" : "No running model"}>
+          {row.running_models.length > 0 ? row.running_models.map((model) => (
+            <span className={`worker-model-state model-state-${modelStateTone(model.state)}`} title={`${model.model}: ${model.state}`} key={`${model.model}:${model.state}`}>
+              <i aria-hidden="true" />
+              <strong>{model.model}</strong>
+              <small>{model.state}</small>
+            </span>
+          )) : <span className="worker-model-state model-state-neutral"><small>idle</small></span>}
+        </div>
       </div>
 
       <div className="worker-gpu-deck">
@@ -137,11 +146,6 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
           </div>
         ))}
         {row.gpu_devices.length === 0 ? <div className="worker-gpu-mini empty-gpu">no GPU metrics</div> : null}
-      </div>
-
-      <div className="worker-model-board">
-        <strong>model</strong>
-        <span title={runningLabel}>{runningLabel}</span>
       </div>
 
       {hasSecondaryState ? (

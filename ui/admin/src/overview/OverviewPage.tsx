@@ -2,12 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getTrafficSummary, type StatusResponse, type TrafficSummaryResponse } from "../api";
 import { AttentionList, EmptyState, StatusIndicator } from "../components/primitives";
-import { buildOverviewView } from "./overviewView";
+import { buildOverviewView, type OverviewTrafficRange } from "./overviewView";
 
 type TopologyMode = "tag" | "model";
-type TrafficRange = "1h" | "6h" | "24h" | "3d" | "7d";
 
-const TRAFFIC_RANGES: { value: TrafficRange; label: string }[] = [
+const TRAFFIC_RANGES: { value: OverviewTrafficRange; label: string }[] = [
   { value: "1h", label: "1h" },
   { value: "6h", label: "6h" },
   { value: "24h", label: "24h" },
@@ -27,7 +26,7 @@ type ModelTopologyLane = {
 
 export function OverviewPage({ status }: { status: StatusResponse | null }) {
   const [topologyMode, setTopologyMode] = useState<TopologyMode>("tag");
-  const [trafficRange, setTrafficRange] = useState<TrafficRange>("24h");
+  const [trafficRange, setTrafficRange] = useState<OverviewTrafficRange>("24h");
   const [traffic, setTraffic] = useState<TrafficSummaryResponse | null>(null);
   const [trafficError, setTrafficError] = useState("");
   const statusGeneratedAt = status?.generated_at ?? "";
@@ -63,7 +62,7 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
     return <EmptyState title="Waiting for gateway status" body="The live status poll has not returned yet." />;
   }
 
-  const view = buildOverviewView(status);
+  const view = buildOverviewView(status, trafficRange);
   return (
     <div className="overview-page">
       <section className={`overview-conclusion ${view.conclusion.tone}`}>
@@ -218,7 +217,7 @@ export function OverviewPage({ status }: { status: StatusResponse | null }) {
         <aside className="overview-rail">
           <div className="section-heading">
             <h3>Attention</h3>
-            <p>Only actionable exceptions from the current status snapshot.</p>
+            <p>Live exceptions plus event errors from the selected {trafficRange} window.</p>
           </div>
           <AttentionList items={view.attentionItems} />
         </aside>

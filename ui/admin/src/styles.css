@@ -1293,18 +1293,18 @@ small {
 
 .worker-diagnostics-trigger:hover,
 .worker-diagnostics-trigger:focus-visible {
-  background: #dbe6ea;
+  background: transparent;
   color: #39596a;
 }
 
-.worker-diagnostics.version-warning .worker-diagnostics-trigger {
-  background: #efe4cf;
-  color: #8b6938;
+.worker-diagnostics.diagnostic-warning .worker-diagnostics-trigger {
+  background: transparent;
+  color: #9a7748;
 }
 
-.worker-diagnostics.version-warning .worker-diagnostics-trigger:hover,
-.worker-diagnostics.version-warning .worker-diagnostics-trigger:focus-visible {
-  background: #e8d8b9;
+.worker-diagnostics.diagnostic-warning .worker-diagnostics-trigger:hover,
+.worker-diagnostics.diagnostic-warning .worker-diagnostics-trigger:focus-visible {
+  background: transparent;
   color: #76572d;
 }
 
@@ -2298,7 +2298,7 @@ textarea {
   border-radius: 8px;
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(64px, auto) minmax(72px, auto) minmax(0, 1fr);
   min-height: 27px;
   overflow: hidden;
 }
@@ -2314,6 +2314,72 @@ textarea {
 
 .worker-pressure-meter + .worker-pressure-meter {
   border-left: 1px solid #c8d6dc;
+}
+
+.worker-model-state-list {
+  align-items: center;
+  border-left: 1px solid #c8d6dc;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 7px;
+}
+
+.worker-model-state {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.worker-model-state i {
+  background: #82939d;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.worker-model-state strong {
+  color: #38505f;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-model-state small {
+  color: #70818c;
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.worker-model-state.model-state-ready i {
+  background: var(--good);
+}
+
+.worker-model-state.model-state-ready small {
+  color: #3f7f69;
+}
+
+.worker-model-state.model-state-starting i {
+  background: var(--warn);
+}
+
+.worker-model-state.model-state-starting small {
+  color: #8a6a38;
+}
+
+.worker-model-state.model-state-error i {
+  background: var(--bad);
+}
+
+.worker-model-state.model-state-error small {
+  color: #9b4c44;
 }
 
 .worker-pressure-meter span {

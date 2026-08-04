@@ -18,12 +18,17 @@ export type AttentionItem = {
   model?: string;
 };
 
-export function buildAttentionItems(status: StatusResponse): AttentionItem[] {
+export type AttentionEventWindow = {
+  event_start?: string;
+  event_end?: string;
+};
+
+export function buildAttentionItems(status: StatusResponse, window: AttentionEventWindow = {}): AttentionItem[] {
   return [
     ...buildModelShortfalls(status),
     ...status.workers.flatMap(buildWorkerAttentionItems),
     ...status.workers.flatMap((worker) => worker.replica_cooldowns.map((cooldown) => buildCooldownItem(cooldown))),
-    ...status.events.filter(isErrorEvent).map(buildEventErrorItem)
+    ...status.events.filter((event) => isErrorEvent(event) && eventFallsWithinWindow(event, window)).map(buildEventErrorItem)
   ];
 }
 
@@ -109,6 +114,32 @@ function buildCooldownItem(cooldown: ReplicaCooldown): AttentionItem {
 
 function isErrorEvent(event: WorkerEvent): boolean {
   return Boolean(event.error || event.event.toLowerCase().includes("error"));
+}
+
+function eventFallsWithinWindow(event: WorkerEvent, window: AttentionEventWindow): boolean {
+  if (!window.event_start && !window.event_end) {
+    return true;
+  }
+  const timestamp = eventTimestamp(event);
+  if (timestamp === null) {
+    return false;
+  }
+  const start = parseTimestamp(window.event_start);
+  const end = parseTimestamp(window.event_end);
+  return (start === null || timestamp >= start) && (end === null || timestamp <= end);
+}
+
+function eventTimestamp(event: WorkerEvent): number | null {
+  const eventTime = event.time && !event.time.startsWith("0001-") ? parseTimestamp(event.time) : null;
+  return eventTime ?? parseTimestamp(event.received_at);
+}
+
+function parseTimestamp(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function buildEventErrorItem(event: WorkerEvent): AttentionItem {

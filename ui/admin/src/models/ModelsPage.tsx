@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import type { ConfigResponse, StatusResponse } from "../api";
 import { unloadModel, warmModel } from "../api";
 import { ConfirmDialog, DetailPanel, EmptyState, StatusIndicator } from "../components/primitives";
-import { buildModelRows, formatCompactNumber, modelCapacityLabel, modelTrafficLabel, type ModelRow } from "./modelView";
+import { buildModelRows, findUnloadWorker, findWarmWorker, formatCompactNumber, modelCapacityLabel, modelTrafficLabel, type ModelRow } from "./modelView";
 
 export function ModelsPage({
   status,
@@ -150,8 +150,8 @@ function ModelDetail({
   onWarm: (workerId: string) => void;
   onUnload: (workerId: string) => void;
 }) {
-  const warmWorker = row.status?.worker_statuses.find((worker) => worker.artifact_status === "ready" && worker.health === "healthy");
-  const loadedWorker = row.status?.worker_statuses.find((worker) => worker.running_state === "ready" && worker.health === "healthy");
+  const warmWorker = findWarmWorker(row.status?.worker_statuses ?? []);
+  const loadedWorker = findUnloadWorker(row.status?.worker_statuses ?? [], row.worker_active_requests);
   return (
     <DetailPanel
       title={row.name}
@@ -182,8 +182,8 @@ function ModelDetail({
         ))}
       </div>
       <div className="model-actions">
-        <button disabled={!warmWorker || row.disabled} onClick={() => warmWorker && onWarm(warmWorker.worker_id)}>Warm</button>
-        <button disabled={!loadedWorker || row.disabled} onClick={() => loadedWorker && onUnload(loadedWorker.worker_id)}>Unload</button>
+        <button title={warmWorker ? `Warm on ${warmWorker.worker_id}` : "No healthy unloaded worker with a ready artifact"} disabled={!warmWorker || row.disabled} onClick={() => warmWorker && onWarm(warmWorker.worker_id)}>Warm</button>
+        <button title={loadedWorker ? `Unload from idle worker ${loadedWorker.worker_id}` : "No idle healthy worker has a ready replica"} disabled={!loadedWorker || row.disabled} onClick={() => loadedWorker && onUnload(loadedWorker.worker_id)}>Unload</button>
       </div>
     </DetailPanel>
   );

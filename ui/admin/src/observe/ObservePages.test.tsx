@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import { emptyEditableModel } from "../modelLifecycle";
 import { BillingPage } from "./ObservePages";
@@ -27,7 +28,22 @@ describe("BillingPage", () => {
           cached_input_tokens: 10,
           total_tokens: 120
         },
-        models: [],
+        models: [{
+          model: "joyfox-model",
+          ready_seconds: 3600,
+          billable_worker_seconds: 3600,
+          request_duration_seconds: 20,
+          ready_share: 1,
+          cost_share: 1,
+          model_cost: 0.1,
+          model_used_cost: 0.1,
+          model_idle_cost: 0,
+          requests: 2,
+          input_tokens: 100,
+          output_tokens: 20,
+          cached_input_tokens: 10,
+          total_tokens: 120
+        }],
         apps: []
       },
       rangeHours: 24,
@@ -54,11 +70,13 @@ describe("BillingPage", () => {
       onSavePricing: vi.fn()
     } as any);
 
-    const rendered = JSON.stringify(element);
+    const rendered = renderToStaticMarkup(element);
     expect(rendered).toContain("Manual model pricing");
     expect(rendered).toContain("Per request");
     expect(rendered).toContain("Input / 1M");
     expect(rendered).toContain("0.123456");
     expect(rendered).toContain("joyfox-model");
+    expect(rendered).toContain("Use $");
+    expect(rendered).toContain("selected range");
   });
 });

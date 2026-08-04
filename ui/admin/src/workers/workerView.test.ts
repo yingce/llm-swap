@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { createStatusFixture } from "../domain/testFixtures";
-import { buildWorkerFilters, buildWorkerRows } from "./workerView";
+import { buildWorkerFilters, buildWorkerRows, workerHasDiagnosticWarning } from "./workerView";
 import * as workerView from "./workerView";
 
 const workersPageSource = readFileSync(new URL("./WorkersPage.tsx", import.meta.url), "utf8");
@@ -19,6 +19,7 @@ describe("buildWorkerRows", () => {
       tags: ["gpu-4090"],
       gpu_count: 1,
       loaded_models: ["joyfox-model-latest:ready"],
+      running_models: [{ model: "joyfox-model-latest", state: "ready" }],
       active_requests: 2,
       live_capacity_available: true,
       max_concurrency: 4,
@@ -94,7 +95,7 @@ describe("Worker request pressure", () => {
 
   it("renders each maximum inline as quiet supporting text without a pressure bar", () => {
     expect(workersPageSource).toContain("<small>max {pressure.limitText}</small>");
-    expect(workersPageSource).not.toContain('<i aria-hidden="true"');
+    expect(workersPageSource).not.toContain("worker-pressure-bar");
   });
 });
 
@@ -120,7 +121,24 @@ describe("Worker diagnostics", () => {
   });
 
   it("adds a quiet warning treatment when the agent build is not current", () => {
-    expect(workersPageSource).toContain('buildState === "latest" ? "" : " version-warning"');
-    expect(stylesSource).toContain(".worker-diagnostics.version-warning .worker-diagnostics-trigger");
+    expect(workersPageSource).toContain('diagnosticsWarning ? " diagnostic-warning" : ""');
+    expect(stylesSource).toContain(".worker-diagnostics.diagnostic-warning .worker-diagnostics-trigger");
+    expect(stylesSource).toMatch(/\.worker-diagnostics\.diagnostic-warning \.worker-diagnostics-trigger \{[^}]*background: transparent;/s);
+  });
+
+  it("warns for stale builds or reported diagnostics without changing healthy status color", () => {
+    const status = createStatusFixture();
+    expect(workerHasDiagnosticWarning(status.workers[0])).toBe(false);
+    expect(workerHasDiagnosticWarning({ ...status.workers[0], last_error: "scrape failed" })).toBe(true);
+    expect(workerHasDiagnosticWarning(status.workers[2])).toBe(true);
+  });
+
+  it("shows running model state after request and queue pressure", () => {
+    const pressureIndex = workersPageSource.indexOf("<PressureMeter");
+    const stateIndex = workersPageSource.indexOf("worker-model-state-list");
+    expect(pressureIndex).toBeGreaterThan(-1);
+    expect(stateIndex).toBeGreaterThan(pressureIndex);
+    expect(workersPageSource).toContain("model-state-${modelStateTone(model.state)}");
+    expect(workersPageSource).not.toContain('className="worker-model-board"');
   });
 });

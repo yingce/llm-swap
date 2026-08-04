@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ConfigResponse } from "../api";
 import { createStatusFixture } from "../domain/testFixtures";
-import { buildModelRows, formatCompactNumber, modelCapacityLabel, modelTrafficLabel } from "./modelView";
+import { buildModelRows, findUnloadWorker, findWarmWorker, formatCompactNumber, modelCapacityLabel, modelTrafficLabel } from "./modelView";
 
 const configResponse: ConfigResponse = {
   version: 7,
@@ -72,5 +72,18 @@ describe("buildModelRows", () => {
     expect(modelTrafficLabel(row)).toContain("12 requests");
     expect(modelTrafficLabel(row)).toContain("1.8K tokens");
     expect(formatCompactNumber(18_700_000)).toBe("18.7M");
+  });
+
+  it("warms only an idle ready artifact and unloads only a ready replica", () => {
+    const workers = [
+      { worker_id: "ready", artifact_status: "ready", running_state: "ready", health: "healthy", cooldown_active: false },
+      { worker_id: "ready-idle", artifact_status: "ready", running_state: "ready", health: "healthy", cooldown_active: false },
+      { worker_id: "starting", artifact_status: "ready", running_state: "starting", health: "healthy", cooldown_active: false },
+      { worker_id: "idle", artifact_status: "ready", health: "healthy", cooldown_active: false },
+      { worker_id: "stale-idle", artifact_status: "ready", health: "stale", cooldown_active: false }
+    ];
+
+    expect(findWarmWorker(workers)?.worker_id).toBe("idle");
+    expect(findUnloadWorker(workers, { ready: 2, "ready-idle": 0 })?.worker_id).toBe("ready-idle");
   });
 });

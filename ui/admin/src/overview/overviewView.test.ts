@@ -22,4 +22,17 @@ describe("buildOverviewView", () => {
 
     expect(view.attentionItems.some((item) => item.model === "embedding-idle")).toBe(false);
   });
+
+  it("uses the selected traffic range for historical warning events", () => {
+    const status = createStatusFixture();
+    status.events.unshift({
+      received_at: "2026-07-29T08:00:00Z",
+      worker_id: "worker-a",
+      event: "model_error",
+      error: "two days old"
+    });
+
+    expect(buildOverviewView(status, "24h").attentionItems.some((item) => item.detail === "two days old")).toBe(false);
+    expect(buildOverviewView(status, "3d").attentionItems.some((item) => item.detail === "two days old")).toBe(true);
+  });
 });

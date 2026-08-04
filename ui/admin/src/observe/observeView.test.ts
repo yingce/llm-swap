@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RequestLogEntry, WorkerEvent } from "../api";
-import { buildEventRows, buildRequestRows, classifyBillingError } from "./observeView";
+import { buildEventRows, buildRequestRows, classifyBillingError, recommendedBillingPricing } from "./observeView";
 
 describe("observe view model", () => {
   it("classifies disabled billing storage as neutral without hiding auth or network failures", () => {
@@ -48,6 +48,32 @@ describe("observe view model", () => {
       id: "worker-a:2026-07-31T09:00:01Z:artifact_state",
       subject: "qwen · worker-a",
       detail: "missing -> ready"
+    });
+  });
+
+  it("derives alternative pricing recommendations from selected-range runtime and token usage", () => {
+    const recommended = recommendedBillingPricing({
+      model: "qwen",
+      ready_seconds: 3600,
+      billable_worker_seconds: 3600,
+      request_duration_seconds: 3600,
+      ready_share: 1,
+      cost_share: 1,
+      model_cost: 1,
+      model_used_cost: 1,
+      model_idle_cost: 0,
+      requests: 2,
+      input_tokens: 100,
+      output_tokens: 20,
+      cached_input_tokens: 20,
+      total_tokens: 120
+    }, 24);
+
+    expect(recommended).toEqual({
+      per_request_usd: 0.5,
+      input_per_million_usd: 12500,
+      output_per_million_usd: 50000,
+      cached_input_per_million_usd: 50000
     });
   });
 });

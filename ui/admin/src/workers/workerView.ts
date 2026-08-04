@@ -23,6 +23,7 @@ export type WorkerRow = {
   gpu_memory: string;
   gpu_devices: WorkerGpuRow[];
   loaded_models: string[];
+  running_models: { model: string; state: string }[];
   allowed_models: string[];
   artifact_states: string[];
   cooldowns: string[];
@@ -72,6 +73,7 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
         gpu_memory: summarizeGpuMemory(worker),
         gpu_devices: worker.gpu_devices.map(formatGpuDevice),
         loaded_models: loadedModels,
+        running_models: worker.running_models.map((model) => ({ model: model.model, state: model.state || "ready" })),
         allowed_models: [...worker.allowed_models].sort(),
         artifact_states: Object.entries(worker.artifacts ?? {})
           .map(([model, state]) => `${model}:${state}`)
@@ -88,6 +90,27 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
     .filter((row) => !options.model || row.worker.running_models.some((model) => model.model === options.model))
     .filter((row) => matchesQuery(row, query))
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function workerHasDiagnosticWarning(worker: WorkerStatus): boolean {
+  return worker.agent_version_status !== "current"
+    || Boolean(worker.last_error || worker.needs_restart || worker.health_problem)
+    || Number(worker.scrape_failures ?? 0) > 0
+    || ["stale", "error", "backoff"].includes(worker.health);
+}
+
+export function modelStateTone(state: string): "ready" | "starting" | "error" | "neutral" {
+  const normalized = state.trim().toLowerCase();
+  if (normalized === "ready") {
+    return "ready";
+  }
+  if (["starting", "loading", "installing", "warming", "pending"].includes(normalized)) {
+    return "starting";
+  }
+  if (["error", "failed", "crashed"].includes(normalized)) {
+    return "error";
+  }
+  return "neutral";
 }
 
 export type WorkerPressurePresentation = {

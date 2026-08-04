@@ -1,4 +1,4 @@
-import type { RequestLogEntry, WorkerEvent } from "../api";
+import type { BillingModelSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
 
 export type ObserveNotice = {
   tone: "neutral" | "bad";
@@ -63,6 +63,44 @@ export function buildEventRows(events: WorkerEvent[]): EventRow[] {
     event: event.event,
     detail: event.error || (event.from_state || event.to_state ? `${event.from_state || "-"} -> ${event.to_state || "-"}` : event.object || "")
   }));
+}
+
+export function recommendedBillingPricing(
+  model: BillingModelSummary | undefined,
+  workerDayCostUSD: number | undefined
+): ModelBillingConfig {
+  const dayCost = Number(workerDayCostUSD ?? 0);
+  const durationSeconds = Number(model?.request_duration_seconds ?? 0);
+  if (!model || dayCost <= 0 || durationSeconds <= 0) {
+    return {};
+  }
+  const uncachedInputTokens = Math.max(Number(model.input_tokens ?? 0) - Number(model.cached_input_tokens ?? 0), 0);
+  return {
+    per_request_usd: model.requests > 0 ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.requests, 1)) : undefined,
+    input_per_million_usd: uncachedInputTokens > 0
+      ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, uncachedInputTokens, 1_000_000))
+      : undefined,
+    output_per_million_usd: model.output_tokens > 0
+      ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.output_tokens, 1_000_000))
+      : undefined,
+    cached_input_per_million_usd: model.cached_input_tokens > 0
+      ? roundPricingValue(capacityUnitPrice(dayCost, durationSeconds, model.cached_input_tokens, 1_000_000))
+      : undefined
+  };
+}
+
+function capacityUnitPrice(workerDayCostUSD: number, durationSeconds: number, units: number, multiplier: number) {
+  if (!Number.isFinite(workerDayCostUSD) || !Number.isFinite(durationSeconds) || !Number.isFinite(units) || units <= 0) {
+    return undefined;
+  }
+  return workerDayCostUSD * durationSeconds * multiplier / (units * 86400);
+}
+
+function roundPricingValue(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function compactNumber(value: number | undefined): string {

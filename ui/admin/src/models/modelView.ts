@@ -18,9 +18,25 @@ export type ModelRow = {
     max_queue: number;
   };
   artifact: string;
+  worker_active_requests: Record<string, number>;
   status: ModelStatus | null;
   config: ModelConfig | null;
 };
+
+type ModelWorkerStatus = ModelStatus["worker_statuses"][number];
+
+export function findWarmWorker(workers: ModelWorkerStatus[]): ModelWorkerStatus | undefined {
+  return workers.find((worker) => worker.artifact_status === "ready" && worker.health === "healthy" && !worker.running_state);
+}
+
+export function findUnloadWorker(
+  workers: ModelWorkerStatus[],
+  activeRequests: Record<string, number>
+): ModelWorkerStatus | undefined {
+  return workers.find((worker) => worker.running_state === "ready"
+    && worker.health === "healthy"
+    && Number(activeRequests[worker.worker_id] ?? 0) === 0);
+}
 
 export function buildModelRows(
   status: StatusResponse | null,
@@ -30,6 +46,7 @@ export function buildModelRows(
   const statusByName = new Map((status?.models ?? []).map((model) => [model.name, model]));
   const configByName = new Map(Object.entries(configResponse?.config.models ?? {}));
   const aliasesByTarget = groupAliasesByTarget(configResponse?.config.model_aliases ?? {});
+  const workerActiveRequests = Object.fromEntries((status?.workers ?? []).map((worker) => [worker.id, worker.active_requests]));
   const names = new Set([...statusByName.keys(), ...configByName.keys()]);
   const query = options.query.trim().toLowerCase();
 
@@ -56,6 +73,7 @@ export function buildModelRows(
           max_queue: live?.max_queue ?? 0
         },
         artifact: live ? `${live.artifact.kind} · ${live.artifact.object}` : config ? `${config.artifact.kind} · ${config.artifact.object}` : "",
+        worker_active_requests: workerActiveRequests,
         status: live,
         config
       };

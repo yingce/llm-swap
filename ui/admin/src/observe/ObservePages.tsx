@@ -1,7 +1,7 @@
 import type { BillingSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
 import type { EditableModelConfig } from "../modelLifecycle";
 import { EmptyState, StatusIndicator } from "../components/primitives";
-import { buildEventRows, buildRequestRows, classifyBillingError } from "./observeView";
+import { buildEventRows, buildRequestRows, classifyBillingError, recommendedBillingPricing } from "./observeView";
 
 export function RequestsPage({
   requests,
@@ -74,6 +74,7 @@ export function BillingPage({
 }) {
   const notice = classifyBillingError(error);
   const pricingModels = Object.entries(pricingDraft?.models ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  const billingByModel = new Map((billing?.models ?? []).map((model) => [model.model, model]));
   return (
     <div className="observe-page">
       <section className="observe-heading">
@@ -116,7 +117,7 @@ export function BillingPage({
           <div className="table-heading">
             <div>
               <h3>Manual model pricing</h3>
-              <p>Configure request or token prices in USD. Empty values remain unpriced.</p>
+              <p>Configure USD pricing. Each suggestion independently recovers compute cost from the selected range.</p>
             </div>
             <div className="pricing-save-row">
               <StatusIndicator tone={pricingDirty ? "warn" : "good"} label={pricingDirty ? "pricing draft" : "in sync"} />
@@ -139,16 +140,17 @@ export function BillingPage({
               <tbody>
                 {pricingModels.map(([modelName, model]) => {
                   const pricing = model.billing ?? {};
+                  const recommended = recommendedBillingPricing(billingByModel.get(modelName), billing?.worker_day_cost_usd);
                   return (
                     <tr key={modelName}>
                       <td>
                         <strong>{modelName}</strong>
                         {model.disabled ? <small className="muted-cell"> disabled</small> : null}
                       </td>
-                      <td><PriceInput model={modelName} label="Per request" value={pricing.per_request_usd} onChange={(value) => onPriceChange(modelName, "per_request_usd", value)} /></td>
-                      <td><PriceInput model={modelName} label="Input per million" value={pricing.input_per_million_usd} onChange={(value) => onPriceChange(modelName, "input_per_million_usd", value)} /></td>
-                      <td><PriceInput model={modelName} label="Output per million" value={pricing.output_per_million_usd} onChange={(value) => onPriceChange(modelName, "output_per_million_usd", value)} /></td>
-                      <td><PriceInput model={modelName} label="Cached input per million" value={pricing.cached_input_per_million_usd} onChange={(value) => onPriceChange(modelName, "cached_input_per_million_usd", value)} /></td>
+                      <td><PricingCell model={modelName} label="Per request" value={pricing.per_request_usd} recommended={recommended.per_request_usd} onChange={(value) => onPriceChange(modelName, "per_request_usd", value)} /></td>
+                      <td><PricingCell model={modelName} label="Input per million" value={pricing.input_per_million_usd} recommended={recommended.input_per_million_usd} onChange={(value) => onPriceChange(modelName, "input_per_million_usd", value)} /></td>
+                      <td><PricingCell model={modelName} label="Output per million" value={pricing.output_per_million_usd} recommended={recommended.output_per_million_usd} onChange={(value) => onPriceChange(modelName, "output_per_million_usd", value)} /></td>
+                      <td><PricingCell model={modelName} label="Cached input per million" value={pricing.cached_input_per_million_usd} recommended={recommended.cached_input_per_million_usd} onChange={(value) => onPriceChange(modelName, "cached_input_per_million_usd", value)} /></td>
                     </tr>
                   );
                 })}
@@ -161,28 +163,37 @@ export function BillingPage({
   );
 }
 
-function PriceInput({
+function PricingCell({
   model,
   label,
   value,
+  recommended,
   onChange
 }: {
   model: string;
   label: string;
   value: number | undefined;
+  recommended: number | undefined;
   onChange: (value: number | undefined) => void;
 }) {
   return (
-    <input
-      className="price-input"
-      type="number"
-      min="0"
-      step="0.000001"
-      inputMode="decimal"
-      aria-label={`${model} ${label}`}
-      value={value ?? ""}
-      onChange={(event) => onChange(parseOptionalPrice(event.target.value))}
-    />
+    <div className="price-cell">
+      <input
+        className="price-input"
+        type="number"
+        min="0"
+        step="0.000001"
+        inputMode="decimal"
+        aria-label={`${model} ${label}`}
+        value={value ?? ""}
+        onChange={(event) => onChange(parseOptionalPrice(event.target.value))}
+      />
+      {typeof recommended === "number" ? (
+        <button type="button" className="price-recommendation" onClick={() => onChange(recommended)}>
+          Use {formatPricingValue(recommended)}
+        </button>
+      ) : <span className="price-recommendation empty-recommendation">No range data</span>}
+    </div>
   );
 }
 
@@ -223,6 +234,10 @@ function formatNumber(value: number | undefined) {
 
 function formatMoney(value: number | undefined) {
   return `$${Number(value ?? 0).toFixed(2)}`;
+}
+
+function formatPricingValue(value: number) {
+  return `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
 function formatRangeLabel(hours: number) {
