@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { ConfigResponse, StatusResponse } from "../api";
 import { unloadModel, warmModel } from "../api";
 import { ConfirmDialog, DetailPanel, EmptyState, StatusIndicator } from "../components/primitives";
+import { modelArtifactTone, modelRuntimeLabel, modelRuntimeTone } from "../domain/modelRuntime";
 import { buildModelRows, findUnloadWorker, findWarmWorker, formatCompactNumber, modelCapacityLabel, modelTrafficLabel, type ModelRow } from "./modelView";
 
 export function ModelsPage({
@@ -175,9 +176,21 @@ function ModelDetail({
       <div className="model-replica-list">
         {(row.status?.worker_statuses ?? []).map((worker) => (
           <div className="model-replica-row" key={worker.worker_id}>
-            <span>{worker.worker_id}</span>
-            <StatusIndicator tone={worker.health === "healthy" ? "good" : "bad"} label={worker.running_state || worker.artifact_status} />
-            {worker.cooldown_active ? <StatusIndicator tone="warn" label="cooldown" detail={worker.cooldown_reason} /> : null}
+            <span className="model-replica-worker">{worker.worker_id}</span>
+            <div className="model-replica-signals">
+              <StatusIndicator
+                tone={modelArtifactTone(worker.artifact_status)}
+                label={`artifact ${worker.artifact_status}`}
+                detail={`Artifact state: ${worker.artifact_status}`}
+              />
+              <StatusIndicator
+                tone={modelRuntimeTone(worker.running_state)}
+                label={`runtime ${modelRuntimeLabel(worker.running_state)}`}
+                detail={`llama-swap state: ${worker.running_state || "none"}`}
+              />
+              {worker.health !== "healthy" ? <StatusIndicator tone="bad" label={worker.health} detail="Worker health" /> : null}
+              {worker.cooldown_active ? <StatusIndicator tone="warn" label="cooldown" detail={worker.cooldown_reason} /> : null}
+            </div>
           </div>
         ))}
       </div>

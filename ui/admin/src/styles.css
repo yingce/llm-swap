@@ -1187,9 +1187,31 @@ small {
 .model-replica-row {
   align-items: center;
   border-top: 1px solid #dde5ed;
-  display: flex;
+  display: grid;
   gap: 10px;
+  grid-template-columns: minmax(120px, 1fr) auto;
   padding-top: 8px;
+}
+
+.model-replica-worker {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-replica-signals {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.model-replica-signals .status-indicator {
+  font-size: 10px;
+  min-height: 20px;
+  padding: 2px 6px;
 }
 
 .model-actions {
@@ -3383,6 +3405,14 @@ textarea {
   .model-ledger-traffic {
     gap: 6px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-replica-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-replica-signals {
+    justify-content: flex-start;
   }
 
   .tabs.open {

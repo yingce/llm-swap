@@ -1,8 +1,13 @@
+// @ts-expect-error Vitest runs this source-contract test in Node; the admin app ships without Node types.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { ConfigResponse } from "../api";
+import { modelArtifactTone, modelRuntimeLabel, modelRuntimeTone } from "../domain/modelRuntime";
 import { createStatusFixture } from "../domain/testFixtures";
 import { buildModelRows, findUnloadWorker, findWarmWorker, formatCompactNumber, modelCapacityLabel, modelTrafficLabel } from "./modelView";
+
+const modelsPageSource = readFileSync(new URL("./ModelsPage.tsx", import.meta.url), "utf8");
 
 const configResponse: ConfigResponse = {
   version: 7,
@@ -62,6 +67,20 @@ describe("buildModelRows", () => {
     expect(buildModelRows(createStatusFixture(), configResponse, { query: "", includeDisabled: true }).map((row) => row.name)).toContain("disabled-draft");
     expect(buildModelRows(createStatusFixture(), configResponse, { query: "latest", includeDisabled: false }).map((row) => row.name)).toEqual(["joyfox-model-latest"]);
     expect(buildModelRows(createStatusFixture(), configResponse, { query: "llamacpp", includeDisabled: true }).map((row) => row.name)).toEqual(["disabled-draft"]);
+  });
+
+  it("distinguishes ready artifacts from running model runtimes", () => {
+    expect(modelArtifactTone("ready")).toBe("neutral");
+    expect(modelRuntimeLabel("ready")).toBe("running");
+    expect(modelRuntimeTone("ready")).toBe("good");
+    expect(modelRuntimeLabel("loading")).toBe("loading");
+    expect(modelRuntimeTone("loading")).toBe("warn");
+    expect(modelRuntimeLabel(undefined)).toBe("not running");
+    expect(modelRuntimeTone(undefined)).toBe("neutral");
+    expect(modelsPageSource).toContain('className="model-replica-signals"');
+    expect(modelsPageSource).toContain("artifact ${worker.artifact_status}");
+    expect(modelsPageSource).toContain("runtime ${modelRuntimeLabel(worker.running_state)}");
+    expect(modelsPageSource).toContain('worker.health !== "healthy"');
   });
 
   it("exposes compact live capacity and traffic labels", () => {

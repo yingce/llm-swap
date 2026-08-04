@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { StatusResponse } from "../api";
 import { drainWorker, undrainWorker } from "../api";
 import { ConfirmDialog, EmptyState } from "../components/primitives";
+import { modelRuntimeLabel } from "../domain/modelRuntime";
 import { buildWorkerFilters, buildWorkerRows, formatWorkerPressure, modelStateTone, workerHasDiagnosticWarning, type WorkerRow } from "./workerView";
 
 export function WorkersPage({
@@ -87,7 +88,7 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
   const requestPressure = formatWorkerPressure("REQ", row.active_requests, row.max_concurrency, row.live_capacity_available);
   const queuePressure = formatWorkerPressure("QUEUE", row.queued_requests, row.max_queue, row.live_capacity_available);
   const modelNames = row.running_models.map((model) => model.model).join(" · ");
-  const modelStates = row.running_models.map((model) => `${model.model} ${model.state}`).join(", ") || "idle";
+  const modelStates = row.running_models.map((model) => `${model.model} ${modelRuntimeLabel(model.state)}`).join(", ") || "idle";
   return (
     <article className={`worker-tile ${row.health === "healthy" ? "healthy" : "degraded"}`}>
       <header className="worker-tile-head">
@@ -124,9 +125,9 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
         <PressureMeter label="QUEUE" current={row.queued_requests} max={row.max_queue} available={row.live_capacity_available} />
         <div className="worker-model-state-list" aria-label={row.running_models.length > 0 ? "Running model states" : "No running model"}>
           {row.running_models.length > 0 ? row.running_models.map((model) => (
-            <span className={`worker-model-state model-state-${modelStateTone(model.state)}`} title={`${model.model}: ${model.state}`} key={`${model.model}:${model.state}`}>
+            <span className={`worker-model-state model-state-${modelStateTone(model.state)}`} title={`${model.model}: ${modelRuntimeLabel(model.state)}`} key={`${model.model}:${model.state}`}>
               <i aria-hidden="true" />
-              <small>{model.state}</small>
+              <small>{modelRuntimeLabel(model.state)}</small>
             </span>
           )) : <span className="worker-model-state model-state-neutral"><small>idle</small></span>}
         </div>

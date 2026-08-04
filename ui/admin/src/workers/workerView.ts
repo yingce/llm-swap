@@ -1,4 +1,5 @@
 import type { GPUDevice, StatusResponse, WorkerStatus } from "../api";
+import { modelRuntimeIsRunning } from "../domain/modelRuntime";
 
 export type WorkerGpuRow = {
   index: number;
@@ -101,7 +102,7 @@ export function workerHasDiagnosticWarning(worker: WorkerStatus): boolean {
 
 export function modelStateTone(state: string): "ready" | "starting" | "error" | "neutral" {
   const normalized = state.trim().toLowerCase();
-  if (normalized === "ready") {
+  if (modelRuntimeIsRunning(normalized)) {
     return "ready";
   }
   if (["starting", "loading", "installing", "warming", "pending"].includes(normalized)) {

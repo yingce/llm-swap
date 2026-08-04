@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+import { modelRuntimeLabel } from "../domain/modelRuntime";
 import { createStatusFixture } from "../domain/testFixtures";
 import { buildWorkerFilters, buildWorkerRows, workerHasDiagnosticWarning } from "./workerView";
 import * as workerView from "./workerView";
@@ -147,6 +148,9 @@ describe("Worker diagnostics", () => {
     expect(workersPageSource.slice(pressureIndex, modelIndex)).toContain("worker-model-state-list");
     expect(workersPageSource.slice(modelIndex, gpuIndex)).not.toContain("worker-model-state-list");
     expect(workersPageSource).toContain("model-state-${modelStateTone(model.state)}");
+    expect(workersPageSource).toContain("modelRuntimeLabel(model.state)");
+    expect(modelRuntimeLabel("ready")).toBe("running");
+    expect(modelRuntimeLabel("starting")).toBe("starting");
     expect(stylesSource).toContain("grid-template-columns: minmax(58px, 1fr) minmax(66px, 1fr) auto;");
     expect(stylesSource).toContain(".worker-model-board > strong {\n  color: #5e7184;\n  font-size: 8px;");
   });
