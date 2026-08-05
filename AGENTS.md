@@ -1,63 +1,107 @@
-# Agent Notes
+# LLM Swap Agent Notes
 
-This repo implements a single-gateway, many-worker control plane for llama-swap
-model serving. Read `docs/agents/project-map.md` before making non-trivial
-changes.
+Read `docs/agents/project-map.md` before making non-trivial changes. It is the
+authoritative map of modules, configuration semantics, persistence, deployment
+assets, and regression tests.
 
-## Current Architecture
+## Product Overview
 
-- Gateway owns routing, request proxying, worker registry state, concurrency,
-  queueing, retries, loaded-replica reconciliation, request logs, metrics, and
-  the dashboard UI.
-- Worker agents are intentionally thin and mostly stateless. An agent installs
-  artifacts, renders local `llama-swap.yaml`, reports local llama-swap state,
-  and restarts llama-swap only when the gateway allows it.
-- llama-swap is still the per-worker runtime switcher. The gateway does not
-  start model runtimes directly; it proxies to worker llama-swap URLs.
+LLM Swap is an internal operations platform for serving many LLM versions
+across a fleet of GPU workers. Its purpose is to give operators one place to:
 
-## Important Defaults
+- configure models and worker eligibility;
+- route OpenAI-compatible inference traffic to ready replicas;
+- observe worker health, GPU usage, requests, events, traffic, and billing;
+- safely warm, unload, drain, and roll out model versions.
 
-- Runtime root defaults to `/opt/llmswap`.
-- Gateway config defaults to `/opt/llmswap/gateway.yaml`.
-- Agent config defaults to `/opt/llmswap/agent.yaml`.
-- Agent model root defaults to `/opt/llmswap/models`.
-- Agent renders `/opt/llmswap/llama-swap.yaml`.
-- Gateway listens on `:8080` by default.
-- Worker llama-swap listens on `swap_port`, default `6006`.
-- `tokens.llama_swap` and `agent.llama_swap_token` are optional; when omitted,
-  they inherit the agent token.
+The product is an operator console, not a customer-facing application. Favor
+correct operational state, explicit impact, and reversible actions over visual
+novelty or hidden automation.
 
-## Safety Rules
+## Core Model
 
-- Do not put real tokens, host credentials, or production-only secrets in docs
-  or examples.
-- Do not move request concurrency, queues, retry policy, active counts, or model
-  replica policy into the worker agent.
-- Use tests first for behavior changes. Existing Go tests are the primary
-  regression net.
-- Preserve user changes in the working tree. Do not reset or checkout files
-  unless explicitly asked.
+- **Gateway** is the control-plane authority. It owns routing, concurrency,
+  queues, retries, request accounting, replica policy, worker registry state,
+  metrics, persistence, and dashboard APIs.
+- **Worker agent** is deliberately thin and mostly stateless. It installs
+  artifacts, renders local runtime configuration, reports local state, and
+  restarts llama-swap only when Gateway permits it.
+- **llama-swap** is the worker-local runtime switcher. Gateway does not launch
+  model runtimes directly; it proxies to ready worker llama-swap endpoints.
+- **FRP transport** exposes worker-local llama-swap to Gateway. Gateway owns
+  transport leases and only routes to a worker after it advertises a ready URL.
 
-## Common Commands
+Do not move Gateway-owned scheduling, queueing, active-request accounting,
+retry behavior, or replica policy into Worker code.
+
+## Domain Rules
+
+- A canonical model name is an immutable concrete model identity used for
+  policy, worker state, metrics, request records, and billing.
+- A `model_alias` is a stable public name pointing directly to one canonical
+  model. Aliases cannot chain or collide with canonical model names.
+- Version upgrades create a new canonical model and optional `model_dir`; move
+  an alias only after the new model is ready. Roll back by retargeting the alias.
+- Request routing uses only ready replicas. Loading or starting replicas occupy
+  capacity but are not routable.
+- `min_loaded` is a Gateway-owned replica floor. `max_loaded` is a ceiling;
+  omitted `max_loaded` has automatic-expansion semantics, not a fixed default.
+- Models with `min_loaded: 0` are opportunity-cache replicas: retain them while
+  spare capacity exists, but evict them first when another model needs space.
+- Worker tags express hardware eligibility; model/tag capacity expresses the
+  per-ready-worker concurrency and queue policy. Keep these concepts separate.
+
+## Product and UI Expectations
+
+- Lead with fleet health and actionable exceptions rather than a wall of equal
+  priority metrics.
+- Keep observation, diagnosis, and action connected around worker, model, and
+  request identity.
+- Show the impact and scope of consequential actions before execution, then
+  make the resulting event or state observable.
+- Optional services such as historical metrics or record storage must degrade
+  honestly. Their absence must not look like serving-plane failure.
+- Config Ops is a structured operations workflow; Advanced YAML is inspection
+  and copy support, not the default editing surface.
+- Canonical model identity is immutable in the UI. Do not introduce rename or
+  implicit-copy behavior that breaks versioned rollout semantics.
+
+## Development Constraints
+
+- Do not place real tokens, credentials, DSNs, or production-only values in
+  source, examples, tests, documentation, or terminal output.
+- Preserve user changes in a dirty working tree. Never reset, checkout, delete,
+  or stage unrelated files unless explicitly asked.
+- Use tests first for behavioral changes. Go tests are the primary regression
+  net; installer tests require a POSIX shell.
+- Keep request and persistent accounting canonical: alias requests may retain a
+  `requested_model` field, but capacity, metrics, billing, and records belong
+  to the resolved canonical model.
+- Keep metric labels low-cardinality. Do not add request IDs, prompt content,
+  raw URLs, or unbounded user values as labels.
+- Preserve JSONL logs even when optional Postgres storage is enabled; Postgres
+  is a query source, not permission to remove local debugging history.
+- Gateway configuration hot-apply rules matter. Process-level changes require
+  restart; runtime-affecting model changes affect only workers currently
+  running that model; alias changes are Gateway hot updates.
+- Admin UI assets are embedded under `internal/gateway/admin_dist`. When
+  changing `ui/admin`, run its tests and production build so embedded assets
+  match source.
+
+## Validation
 
 ```bash
 go test ./...
 go test ./internal/gateway -count=1
 go test ./internal/agent -count=1
 go test ./internal/config -count=1
-```
-
-Worker install dry-run tests require a POSIX shell:
-
-```bash
 go test ./scripts -count=1
 ```
 
-## Main Entry Points
+Main entry points:
 
 - Gateway: `cmd/gateway/main.go`
-- Agent: `cmd/agent/main.go`
+- Worker agent: `cmd/agent/main.go`
 - Worker installer: `scripts/install-worker.sh`
-- Example gateway config: `examples/gateway.yaml`
-- Example agent config: `examples/agent.yaml`
-
+- Gateway Compose template: `deploy/production/docker-compose.yaml`
+- FRP Worker Compose template: `deploy/worker-frp/compose.yaml`
