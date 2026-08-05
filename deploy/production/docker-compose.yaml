@@ -9,24 +9,15 @@ services:
       - "8080:8080"
     environment:
       LLMSWAP_GATEWAY_CONFIG: /opt/llmswap/config/gateway.yaml
-      LLMSWAP_ENABLE_TAILSCALE: ${LLMSWAP_GATEWAY_ENABLE_TAILSCALE:-0}
-      LLMSWAP_TAILSCALE_AUTHKEY_FILE: ${LLMSWAP_GATEWAY_TAILSCALE_AUTHKEY_FILE:-}
-      LLMSWAP_TAILSCALE_HOSTNAME: ${LLMSWAP_GATEWAY_TAILSCALE_HOSTNAME:-}
-      LLMSWAP_TAILSCALE_TUN: ${LLMSWAP_GATEWAY_TAILSCALE_TUN:-tun}
       LLMSWAP_RECORDS_STORE_ENABLED: ${LLMSWAP_RECORDS_STORE_ENABLED:-1}
       LLMSWAP_RECORDS_STORE_TYPE: postgres
       PG_DSN: postgres://llmswap:llmswap@records-postgres:5432/llmswap?sslmode=disable
       LLMSWAP_RECORDS_STORE_AUTO_MIGRATE: ${LLMSWAP_RECORDS_STORE_AUTO_MIGRATE:-1}
       LLMSWAP_RECORDS_STORE_GATEWAY_ID: ${LLMSWAP_RECORDS_STORE_GATEWAY_ID:-production-gateway}
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
     volumes:
       - /opt/llmswap/config:/opt/llmswap/config
       - /opt/llmswap/state:/opt/llmswap/state
       - /opt/llmswap/logs:/opt/llmswap/logs
-      - /opt/llmswap/tailscale:/opt/llmswap/tailscale
     depends_on:
       records-postgres:
         condition: service_healthy
