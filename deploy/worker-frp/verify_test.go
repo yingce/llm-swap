@@ -100,7 +100,7 @@ func TestComposeDefinesEightIsolatedGPUWorkers(t *testing.T) {
 		if svc.Image == "" || svc.Build.Context != "../.." || svc.Build.Dockerfile != "Dockerfile.agent" {
 			t.Errorf("%s must use the shared Dockerfile.agent image/build: %#v", name, svc.Build)
 		}
-		wantArgs := map[string]string{"LLMSWAP_RUNTIME": "all", "LLMSWAP_INSTALL_TAILSCALE": "0"}
+		wantArgs := map[string]string{"LLMSWAP_RUNTIME": "all"}
 		if !reflect.DeepEqual(svc.Build.Args, wantArgs) {
 			t.Errorf("%s build args = %#v, want %#v", name, svc.Build.Args, wantArgs)
 		}

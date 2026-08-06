@@ -49,7 +49,6 @@ ARG https_proxy=
 ARG no_proxy=
 ARG all_proxy=
 ARG DEBIAN_FRONTEND=noninteractive
-ARG LLMSWAP_INSTALL_TAILSCALE=1
 
 ENV HOME=/root
 
@@ -58,12 +57,6 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
  && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl supervisor \
     && rm -rf /var/lib/apt/lists/*
-
-RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" ALL_PROXY="${ALL_PROXY}" \
-          http_proxy="${http_proxy}" https_proxy="${https_proxy}" no_proxy="${no_proxy}" all_proxy="${all_proxy}" \
- && if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]; then \
-      curl -fsSL https://tailscale.com/install.sh | sh; \
-    fi
 
 WORKDIR /opt/llmswap
 
@@ -75,7 +68,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/gateway-container-entrypoint.sh \
  && sed -i 's/\r$//' /usr/local/share/llmswap/install-worker.sh \
  && chmod 0755 /usr/local/bin/gateway-container-entrypoint.sh \
  && chmod 0644 /usr/local/share/llmswap/install-worker.sh \
- && mkdir -p /opt/llmswap/bin /opt/llmswap/logs /opt/llmswap/tailscale /etc/supervisor/conf.d
+ && mkdir -p /opt/llmswap/bin /opt/llmswap/logs /etc/supervisor/conf.d
 
 EXPOSE 8080
 

@@ -55,6 +55,17 @@ func TestFabricDeployPackagesInstallWorkerScript(t *testing.T) {
 	}
 }
 
+func TestFabricDeployDoesNotReferenceTailscale(t *testing.T) {
+	fabfile := filepath.Join(fabfileRepoRoot(t), "scripts", "fabfile.py")
+	data, err := os.ReadFile(fabfile)
+	if err != nil {
+		t.Fatalf("read fabfile: %v", err)
+	}
+	if strings.Contains(strings.ToLower(string(data)), "tailscale") {
+		t.Fatal("legacy gateway deployment must not reference tailscale")
+	}
+}
+
 func fabfileRepoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

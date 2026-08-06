@@ -138,8 +138,7 @@ docker compose --env-file ./.env -f ./compose.yaml up -d --no-build
 docker compose --env-file ./.env -f ./compose.yaml ps
 ```
 
-The image build uses `LLMSWAP_RUNTIME=all` and `LLMSWAP_INSTALL_TAILSCALE=0`
-so one stateless worker image can serve the configured `vllm`, `vllm-omni`,
+The image build uses `LLMSWAP_RUNTIME=all`, so one stateless worker image can serve the configured `vllm`, `vllm-omni`,
 `sglang`, and `llamacpp` models. If the build host requires network proxying or
 package mirrors, provide standard Docker build configuration outside this
 credential-free Compose file.

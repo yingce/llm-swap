@@ -28,6 +28,19 @@ func TestGatewayComposeMountsConfigAndTransportStateDirectories(t *testing.T) {
 	}
 }
 
+func TestGatewayComposeDoesNotReferenceTailscale(t *testing.T) {
+	raw, err := os.ReadFile("docker-compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := strings.ToLower(string(raw))
+	for _, unwanted := range []string{"tailscale", "net_admin", "/dev/net/tun"} {
+		if strings.Contains(compose, unwanted) {
+			t.Fatalf("production compose must not reference %q", unwanted)
+		}
+	}
+}
+
 func TestGatewayProductionExampleUsesDurableLeaseStoreAndLoopbackDial(t *testing.T) {
 	raw, err := os.ReadFile("gateway.yaml.example")
 	if err != nil {

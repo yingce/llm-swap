@@ -95,7 +95,7 @@ for index, name in enumerate(expected_names):
     build = service.get("build", {})
     if os.path.basename(build.get("dockerfile", "")) != "Dockerfile.agent":
         raise SystemExit(f"{name}: must build Dockerfile.agent")
-    if build.get("args") != {"LLMSWAP_INSTALL_TAILSCALE": "0", "LLMSWAP_RUNTIME": "all"}:
+    if build.get("args") != {"LLMSWAP_RUNTIME": "all"}:
         raise SystemExit(f"{name}: unexpected build args")
 
     environment = service.get("environment", {})

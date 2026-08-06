@@ -17,7 +17,7 @@ CURRENT_DIR = f"{DEPLOY_ROOT}/current"
 RELEASES_DIR = f"{DEPLOY_ROOT}/releases"
 BACKUPS_DIR = f"{DEPLOY_ROOT}/backups"
 BUILD_CACHE_DIR = f"{DEPLOY_ROOT}/cache"
-IMAGE = "llmswap-gateway:tailscale"
+IMAGE = "llmswap-gateway:legacy"
 CONTAINER = "llmswap-gateway"
 GO_IMAGE = "golang:1.23-bookworm"
 COMPOSE_PROJECT = "llmswap"
@@ -84,7 +84,6 @@ def status(ctx, host: str = DEFAULT_HOST) -> None:
         """,
     )
 
-
 @task
 def logs(ctx, host: str = DEFAULT_HOST, lines: int = 120) -> None:
     """Tail production gateway container logs."""
@@ -124,7 +123,7 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
         BACKUPS_DIR={BACKUPS_DIR}
         RELEASE_DIR={release_dir}
         BUILD_CACHE_DIR={BUILD_CACHE_DIR}
-        GATEWAY_CONTEXT="$APP_ROOT/docker-gateway-tailscale"
+        GATEWAY_CONTEXT="$APP_ROOT/docker-gateway"
         COMPOSE_FILE="$RELEASE_DIR/deploy/production/docker-compose.yaml"
         IMAGE={IMAGE}
         CONTAINER={CONTAINER}
@@ -135,7 +134,7 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
         BUILD_TIME={remote_build_time}
         RUN_TESTS={test_flag}
 
-        install -d "$APP_ROOT/logs" "$APP_ROOT/tailscale" "$APP_ROOT/data" "$RELEASE_DIR" "$BUILD_CACHE_DIR/go-build" "$BUILD_CACHE_DIR/go-mod" "$GATEWAY_CONTEXT"
+        install -d "$APP_ROOT/logs" "$APP_ROOT/data" "$RELEASE_DIR" "$BUILD_CACHE_DIR/go-build" "$BUILD_CACHE_DIR/go-mod" "$GATEWAY_CONTEXT"
         if [ ! -f "$APP_ROOT/gateway.yaml" ]; then
           echo "missing $APP_ROOT/gateway.yaml; refusing to deploy over an unconfigured gateway" >&2
           exit 1
@@ -171,49 +170,11 @@ def deploy(ctx, host: str = DEFAULT_HOST, skip_tests: bool = False) -> None:
         install -m 0755 "$RELEASE_DIR/dist/llm-swap-gateway" "$GATEWAY_CONTEXT/llm-swap-gateway"
         install -m 0644 "$RELEASE_DIR/scripts/install-worker.sh" "$GATEWAY_CONTEXT/install-worker.sh"
 
-        if [ ! -x "$GATEWAY_CONTEXT/tailscale" ] || [ ! -x "$GATEWAY_CONTEXT/tailscaled" ]; then
-          if docker ps -a --format '{{{{.Names}}}}' | grep -Fxq "$CONTAINER"; then
-            docker cp "$CONTAINER:/usr/bin/tailscale" "$GATEWAY_CONTEXT/tailscale" || true
-            docker cp "$CONTAINER:/usr/sbin/tailscaled" "$GATEWAY_CONTEXT/tailscaled" || true
-          fi
-        fi
-        if [ ! -x "$GATEWAY_CONTEXT/tailscale" ] || [ ! -x "$GATEWAY_CONTEXT/tailscaled" ]; then
-          echo "missing tailscale/tailscaled in $GATEWAY_CONTEXT" >&2
-          exit 1
-        fi
-        chmod 0755 "$GATEWAY_CONTEXT/tailscale" "$GATEWAY_CONTEXT/tailscaled"
-
         cat > "$GATEWAY_CONTEXT/entrypoint.sh" <<'ENTRYPOINT'
 #!/usr/bin/env sh
 set -eu
 ROOT="${{LLMSWAP_ROOT:-/opt/llmswap}}"
-LOG_DIR="${{LLMSWAP_LOG_DIR:-$ROOT/logs}}"
-STATE_DIR="${{LLMSWAP_TAILSCALE_STATE_DIR:-$ROOT/tailscale}}"
-SOCKET="${{LLMSWAP_TAILSCALE_SOCKET:-/run/tailscale/tailscaled.sock}}"
-TUN="${{LLMSWAP_TAILSCALE_TUN:-tun}}"
-PORT="${{LLMSWAP_TAILSCALE_PORT:-41641}}"
 CONFIG="${{LLMSWAP_GATEWAY_CONFIG:-$ROOT/gateway.yaml}}"
-mkdir -p "$LOG_DIR" "$STATE_DIR" "$(dirname "$SOCKET")"
-if [ "${{LLMSWAP_ENABLE_TAILSCALE:-0}}" = "1" ] || [ -n "${{LLMSWAP_TAILSCALE_AUTHKEY_FILE:-}}" ] || [ -n "${{LLMSWAP_TAILSCALE_HOSTNAME:-}}" ]; then
-  tailscaled --state="$STATE_DIR/tailscaled.state" --socket="$SOCKET" --port="$PORT" --tun="$TUN" >>"$LOG_DIR/tailscaled.out.log" 2>>"$LOG_DIR/tailscaled.err.log" &
-  i=0
-  while [ ! -S "$SOCKET" ]; do
-    i=$((i+1))
-    if [ "$i" -ge 30 ]; then
-      echo "tailscaled did not create $SOCKET in time" >&2
-      exit 1
-    fi
-    sleep 1
-  done
-  if [ -n "${{LLMSWAP_TAILSCALE_AUTHKEY_FILE:-}}" ] && [ -s "$LLMSWAP_TAILSCALE_AUTHKEY_FILE" ]; then
-    key="$(cat "$LLMSWAP_TAILSCALE_AUTHKEY_FILE")"
-    tailscale --socket="$SOCKET" login --auth-key "$key" >>"$LOG_DIR/tailscale-init.out.log" 2>>"$LOG_DIR/tailscale-init.err.log" || true
-    rm -f "$LLMSWAP_TAILSCALE_AUTHKEY_FILE" || true
-  fi
-  if [ -n "${{LLMSWAP_TAILSCALE_HOSTNAME:-}}" ]; then
-    tailscale --socket="$SOCKET" set --hostname "$LLMSWAP_TAILSCALE_HOSTNAME" >>"$LOG_DIR/tailscale-init.out.log" 2>>"$LOG_DIR/tailscale-init.err.log" || true
-  fi
-fi
 exec /usr/local/bin/llm-swap-gateway --config "$CONFIG"
 ENTRYPOINT
         chmod 0755 "$GATEWAY_CONTEXT/entrypoint.sh"
@@ -222,13 +183,11 @@ ENTRYPOINT
 FROM golang:1.23-bookworm
 WORKDIR /opt/llmswap
 COPY llm-swap-gateway /usr/local/bin/llm-swap-gateway
-COPY tailscale /usr/bin/tailscale
-COPY tailscaled /usr/sbin/tailscaled
 COPY entrypoint.sh /usr/local/bin/gateway-entrypoint.sh
 COPY install-worker.sh /usr/local/share/llmswap/install-worker.sh
-RUN chmod 0755 /usr/local/bin/llm-swap-gateway /usr/bin/tailscale /usr/sbin/tailscaled /usr/local/bin/gateway-entrypoint.sh \
+RUN chmod 0755 /usr/local/bin/llm-swap-gateway /usr/local/bin/gateway-entrypoint.sh \
  && chmod 0644 /usr/local/share/llmswap/install-worker.sh \
- && mkdir -p /opt/llmswap/logs /opt/llmswap/tailscale /run/tailscale
+ && mkdir -p /opt/llmswap/logs
 ENV LLMSWAP_GATEWAY_CONFIG=/opt/llmswap/gateway.yaml
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/gateway-entrypoint.sh"]

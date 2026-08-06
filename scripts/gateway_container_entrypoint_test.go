@@ -48,67 +48,14 @@ func TestGatewayContainerEntrypointStartsGatewayUnderSupervisor(t *testing.T) {
 	}
 }
 
-func TestGatewayContainerEntrypointStartsTailscaleAtRuntimeWhenRequested(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("gateway-container-entrypoint.sh tests require a POSIX shell")
-	}
-
-	root := t.TempDir()
-	binDir := filepath.Join(root, "bin")
-	confDir := filepath.Join(root, "supervisor", "conf.d")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(confDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeExecutable(t, filepath.Join(binDir, "llm-swap-gateway"), "#!/bin/sh\necho gateway\n")
-	writeExecutable(t, filepath.Join(binDir, "supervisord"), "#!/bin/sh\nprintf supervisord-started\n")
-	writeExecutable(t, filepath.Join(binDir, "tailscaled"), "#!/bin/sh\nexit 0\n")
-	writeExecutable(t, filepath.Join(binDir, "tailscale"), "#!/bin/sh\nexit 0\n")
-
-	out := runGatewayEntrypointCommand(t, root, map[string]string{
-		"PATH":                        binDir + ":/usr/bin:/bin",
-		"LLMSWAP_ENABLE_TAILSCALE":    "1",
-		"LLMSWAP_TAILSCALE_AUTHKEY":   "tskey-test",
-		"LLMSWAP_TAILSCALE_HOSTNAME":  "gateway-ts",
-		"LLMSWAP_TAILSCALE_SOCKET":    filepath.Join(root, "run", "tailscaled.sock"),
-		"LLMSWAP_TAILSCALE_TUN":       "tun",
-		"LLMSWAP_SUPERVISOR_CONF_DIR": confDir,
-		"LLMSWAP_SUPERVISORD_CONFIG":  filepath.Join(root, "supervisor", "supervisord.conf"),
-	})
-	if strings.TrimSpace(out) != "supervisord-started" {
-		t.Fatalf("entrypoint output = %q, want supervisord-started", out)
-	}
-
-	tailscaledConf, err := os.ReadFile(filepath.Join(confDir, "llmswap-tailscaled.conf"))
+func TestGatewayContainerEntrypointDoesNotReferenceTailscale(t *testing.T) {
+	repo := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(repo, "scripts", "gateway-container-entrypoint.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	tailscaledText := string(tailscaledConf)
-	for _, want := range []string{
-		"[program:llmswap-tailscaled]",
-		"command=" + filepath.Join(binDir, "tailscaled") + " --state=",
-		"--socket=" + filepath.Join(root, "run", "tailscaled.sock"),
-		"--tun=tun",
-	} {
-		if !strings.Contains(tailscaledText, want) {
-			t.Fatalf("tailscaled conf missing %q:\n%s", want, tailscaledText)
-		}
-	}
-
-	initScript, err := os.ReadFile(filepath.Join(binDir, "tailscale-init.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	initScriptText := string(initScript)
-	for _, want := range []string{
-		filepath.Join(binDir, "tailscale") + "\" --socket=\"" + filepath.Join(root, "run", "tailscaled.sock") + "\" login --auth-key \"tskey-test\"",
-		filepath.Join(binDir, "tailscale") + "\" --socket=\"" + filepath.Join(root, "run", "tailscaled.sock") + "\" set --hostname \"gateway-ts\"",
-	} {
-		if !strings.Contains(initScriptText, want) {
-			t.Fatalf("tailscale init script missing %q:\n%s", want, initScriptText)
-		}
+	if strings.Contains(strings.ToLower(string(data)), "tailscale") {
+		t.Fatal("gateway entrypoint must not reference tailscale")
 	}
 }
 

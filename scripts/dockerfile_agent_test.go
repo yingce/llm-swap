@@ -55,7 +55,7 @@ func TestDockerfileAgentDefaultsToCudaDevelImage(t *testing.T) {
 	}
 }
 
-func TestDockerfileAgentCanSkipTailscaleInstallation(t *testing.T) {
+func TestDockerfileAgentDefaultsToNoTailscaleInstallation(t *testing.T) {
 	repo := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(repo, "Dockerfile.agent"))
 	if err != nil {
@@ -63,11 +63,11 @@ func TestDockerfileAgentCanSkipTailscaleInstallation(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"ARG LLMSWAP_INSTALL_TAILSCALE=1",
+		"ARG LLMSWAP_INSTALL_TAILSCALE=0",
 		`if [[ "${LLMSWAP_INSTALL_TAILSCALE}" == "1" ]]`,
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("Dockerfile.agent missing Tailscale opt-out path %q", want)
+			t.Fatalf("Dockerfile.agent missing Tailscale opt-in path %q", want)
 		}
 	}
 }
@@ -189,5 +189,16 @@ func TestDockerfileGatewayCopiesInstallWorkerScript(t *testing.T) {
 	want := "COPY scripts/install-worker.sh /usr/local/share/llmswap/install-worker.sh"
 	if !strings.Contains(text, want) {
 		t.Fatalf("Dockerfile.gateway missing %q", want)
+	}
+}
+
+func TestDockerfileGatewayDoesNotReferenceTailscale(t *testing.T) {
+	repo := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(repo, "Dockerfile.gateway"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(data)), "tailscale") {
+		t.Fatal("gateway Dockerfile must not reference tailscale")
 	}
 }

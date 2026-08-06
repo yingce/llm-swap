@@ -2,7 +2,7 @@ name: llmswap
 
 services:
   gateway:
-    image: ${LLMSWAP_GATEWAY_IMAGE:-llmswap-gateway:tailscale}
+    image: ${LLMSWAP_GATEWAY_IMAGE:?set immutable Gateway image in .env}
     container_name: llmswap-gateway
     restart: unless-stopped
     ports:
