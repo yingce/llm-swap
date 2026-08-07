@@ -1,6 +1,6 @@
 # LLM Swap Project Map
 
-Last updated: 2026-08-02.
+Last updated: 2026-08-08.
 
 This document is the current high-level map for future agents. It reflects the
 code state after the gateway UI, token unification, worker event persistence,
@@ -33,8 +33,11 @@ worker agent
      events to gateway
 ```
 
-Gateway state is in-process, with append-only JSONL files for local request
-and worker event debugging/backups. A Postgres `records_store` can be enabled
+Most Gateway scheduling state is in-process, with append-only JSONL files for
+local request and worker event debugging/backups. The Gateway state directory
+also holds durable control-plane metadata: the globally monotonic configuration
+revision, FRP leases, and service-name promotion archives. A Postgres
+`records_store` can be enabled
 as the query source for request records and worker events; when it is enabled,
 the gateway still writes local JSONL but UI detail pages read from Postgres.
 Historical metrics storage is optional:
@@ -287,6 +290,12 @@ disabled the gateway still runs with no external database.
   - Own the gateway config snapshot used by gateway handlers.
   - Config snapshots are versioned and normalized with the same important
     defaults as startup config loading.
+  - `internal/gateway/config_revision_store.go` allocates a globally increasing
+    revision on every Gateway startup and successful hot apply. Production uses
+    the atomic state file `/opt/llmswap/state/config-revision.json`; tests may
+    use the in-memory implementation. Keep the allocation behind
+    `ConfigRevisionStore` so a future Redis backend can preserve the same
+    monotonic contract.
   - Admin config routes under `/ui/api/config` support reading the current
     config, validation/dry-run, and apply.
   - Apply validates the submitted YAML and writes it to the configured
@@ -352,6 +361,10 @@ disabled the gateway still runs with no external database.
 - `internal/agent/reconcile.go`
   - Main worker reconcile loop.
   - Fetches tag-scoped config from gateway.
+  - Treats `config_revision` as the ordering fence for desired artifacts.
+    Newer revisions cancel superseded work, including a revision-only change or
+    removal from the allowed model set, without turning cancellation into an
+    install error.
   - Installs allowed artifacts, one active install at a time.
   - Resolves each canonical model's install directory from `model_dir`, falling
     back to the canonical name. Directory identity participates in the async
@@ -374,8 +387,18 @@ disabled the gateway still runs with no external database.
   - Downloads artifacts from `oss.base_url`.
   - Verifies CRC64 ECMA and writes marker files.
   - Emits progress callbacks for download progress.
-  - Uses shared `flock` locks under `<model_root>/.locks` so workers sharing a
-    model root do not download or install the same artifact concurrently.
+  - Uses shared OS locks under `<model_root>/.locks`. A blob lock de-duplicates
+    one source download, while a separate OS-aware `model_dir` lock serializes
+    final commits by destination directory.
+  - Persists a desired-state fence containing configuration revision and a
+    bounded artifact fingerprint. Staged data can replace a ready directory
+    only after the installer holds the directory lock and still matches that
+    fence. A cancelled, failed, or stale install leaves the current ready
+    directory and marker intact.
+  - Emits `artifact_model_dir_lock_wait`, `artifact_install_stale_fence`,
+    `artifact_install_cancelled`, and `artifact_install_commit` for operator
+    diagnosis; fingerprints are bounded hashes and events do not contain raw
+    artifact URLs or credentials.
   - Reuses a matching source artifact already present at
     `<model_root>/<basename(artifact.object)>` before downloading.
   - Persists downloaded source artifacts at
@@ -878,7 +901,8 @@ Production compose deployment runs gateway, VictoriaMetrics, and vmagent
 together. The gateway container mounts `/opt/llmswap/config` as a directory so
 admin config apply can persist `gateway.yaml` without a single-file bind mount,
 mounts the dedicated
-`/opt/llmswap/state` directory for the configured FRP lease store, and mounts
+`/opt/llmswap/state` directory for configuration revisions, promotion archives,
+and the configured FRP lease store, and mounts
 `/opt/llmswap/logs` read-write. A single-file `gateway.yaml` bind mount is not
 used because rename-based atomic replacement cannot safely update that mount.
 When gateway and FRPS are on the same host, the production example uses
@@ -901,12 +925,13 @@ The gateway Dockerfile builds `ui/admin` with Node/Vite before compiling the Go
 binary, then copies the generated `internal/gateway/admin_dist` into the Go
 build context so the admin UI is embedded in the final binary.
 
-The gateway container now starts through
-`scripts/gateway-container-entrypoint.sh`. It writes a supervisor program for
-the gateway binary and can optionally start supervisor-managed `tailscaled`
-plus one-shot tailnet init when runtime Tailscale env vars are provided. The
-production compose file grants `NET_ADMIN` and mounts `/dev/net/tun` for this
-gateway-side tailnet path.
+Gateway and Agent binaries must be released as one protocol batch when adopting
+`config_revision`. Preserve the complete state directory through deployment and
+rollback; deleting only `config-revision.json` can let an old revision appear
+newer to Agents sharing an existing model root. Follow
+`docs/model-lifecycle-rollout.md` for the repeatable simulation, preflight,
+verification, and rollback gates. The production definitions do not require or
+start Tailscale.
 
 ## Placement Rollout Notes
 
@@ -933,6 +958,11 @@ gateway-side tailnet path.
   the new pointer. The gateway permits an unready target for cold-start and
   recovery cases, but Config Ops exposes zero-ready status so routine rollouts
   can remain ready-first.
+- Billing defaults to the canonical actual-cost ledger. Use
+  `/api/billing?...&group_by=alias` or the Service aliases UI view to aggregate
+  by each request's persisted `requested_model`; this never consults the
+  alias's current target. Alias-view occupancy is an allocated report, not the
+  actual runtime ledger, and includes a canonical-version breakdown.
 - If a desired public service name is already a canonical model, first disable
   and fully unload it, ready the replacement canonical to its floor, then use
   the dedicated Config Ops `Promote service name` confirmation. Do not create a
@@ -943,6 +973,10 @@ gateway-side tailnet path.
   Versioned directories are not deleted automatically, preserving the old
   artifact for this pointer rollback. Editing `model_dir` in place is different:
   it changes the runtime path and follows loaded-worker restart/reload impact.
+- Service-name promotion rollback is stricter than ordinary alias retargeting:
+  retain the returned archive ID and use the dedicated rollback action before
+  later namespace or touched-policy edits. A conflict is intentional and
+  prevents rollback from overwriting newer operator work.
 
 ## Known Compatibility Notes
 
