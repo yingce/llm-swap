@@ -84,7 +84,10 @@ describe("BillingPage", () => {
     expect(rendered).toContain("Use $");
     expect(rendered).toContain("selected range");
     expect(rendered).toContain("Actual model cost");
+    expect(rendered).toContain("Uncovered occupancy");
+    expect(rendered).toContain("Negative values mean configured usage revenue exceeds occupancy cost");
     expect(rendered).not.toContain("Allocated model cost");
+    expect(rendered).not.toContain("Actual idle cost");
   });
 
   it("presents alias allocations without treating unattributed traffic as an alias", () => {
@@ -103,8 +106,8 @@ describe("BillingPage", () => {
           billable_worker_seconds: 3600,
           request_duration_seconds: 20,
           model_cost: 1,
-          model_used_cost: 0.5,
-          model_idle_cost: 0.5,
+          model_used_cost: 1.5,
+          model_idle_cost: -0.5,
           requests: 3,
           input_tokens: 150,
           output_tokens: 30,
@@ -122,16 +125,16 @@ describe("BillingPage", () => {
             ready_share: 0.75,
             cost_share: 0.75,
             model_cost: 0.75,
-            model_used_cost: 0.4,
-            model_idle_cost: 0.35,
+            model_used_cost: 1.1,
+            model_idle_cost: -0.35,
             requests: 2,
             input_tokens: 100,
             output_tokens: 20,
             cached_input_tokens: 10,
             total_tokens: 120,
             canonical_versions: [
-              { canonical_model: "A-Pro-0808", requests: 1, input_tokens: 40, output_tokens: 10, cached_input_tokens: 0, total_tokens: 50, model_used_cost: 0.1, allocated_model_cost: 0.25 },
-              { canonical_model: "A-Pro-0901", requests: 1, input_tokens: 60, output_tokens: 10, cached_input_tokens: 10, total_tokens: 70, model_used_cost: 0.3, allocated_model_cost: 0.5 }
+              { canonical_model: "A-Pro-0808", requests: 1, input_tokens: 40, output_tokens: 10, cached_input_tokens: 0, total_tokens: 50, model_used_cost: 0.3, allocated_model_cost: 0.25 },
+              { canonical_model: "A-Pro-0901", requests: 1, input_tokens: 60, output_tokens: 10, cached_input_tokens: 10, total_tokens: 70, model_used_cost: 0.8, allocated_model_cost: 0.5 }
             ]
           },
           {
@@ -144,14 +147,14 @@ describe("BillingPage", () => {
             ready_share: 0.25,
             cost_share: 0.25,
             model_cost: 0.25,
-            model_used_cost: 0.1,
-            model_idle_cost: 0.15,
+            model_used_cost: 0.4,
+            model_idle_cost: -0.15,
             requests: 1,
             input_tokens: 50,
             output_tokens: 10,
             cached_input_tokens: 0,
             total_tokens: 60,
-            canonical_versions: [{ canonical_model: "A-Pro-0901", requests: 1, input_tokens: 50, output_tokens: 10, cached_input_tokens: 0, total_tokens: 60, model_used_cost: 0.1, allocated_model_cost: 0.25 }]
+            canonical_versions: [{ canonical_model: "A-Pro-0901", requests: 1, input_tokens: 50, output_tokens: 10, cached_input_tokens: 0, total_tokens: 60, model_used_cost: 0.4, allocated_model_cost: 0.25 }]
           }
         ],
         apps: []
@@ -182,6 +185,10 @@ describe("BillingPage", () => {
     expect(rendered).toContain("Actual models");
     expect(rendered).toContain("Service aliases");
     expect(rendered).toContain("Allocated model cost");
+    expect(rendered).toContain("Allocated occupancy gap");
+    expect(rendered).toContain("-$0.50");
+    expect(rendered).toContain("Negative values mean configured usage revenue exceeds occupancy cost");
+    expect(rendered).not.toContain("Allocated idle cost");
     expect(rendered).toContain("A-Pro-0808");
     expect(rendered).toContain("A-Pro-0901");
     expect(rendered).toContain("Direct / historic traffic");

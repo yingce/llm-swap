@@ -82,6 +82,9 @@ export function BillingPage({
   const pricingModels = Object.entries(pricingDraft?.models ?? {}).sort(([left], [right]) => left.localeCompare(right));
   const isCanonicalBilling = (billing?.group_by ?? groupBy ?? "canonical") === "canonical";
   const billingByModel = new Map((billing && isCanonicalBilling ? billing.models : []).map((model) => [model.model, model]));
+  const occupancyGapHint = groupBy === "alias"
+    ? "Allocated occupancy gap is allocated occupancy cost minus configured usage revenue. Negative values mean configured usage revenue exceeds occupancy cost."
+    : "Uncovered occupancy is actual occupancy cost minus configured usage revenue. Negative values mean configured usage revenue exceeds occupancy cost.";
   return (
     <div className="observe-page">
       <section className="observe-heading">
@@ -116,9 +119,12 @@ export function BillingPage({
             <Metric label="Tokens" value={formatNumber(billing.totals.total_tokens)} />
             <Metric label="Configured usage cost" value={formatMoney(billing.totals.model_used_cost)} />
             <Metric label={groupBy === "alias" ? "Allocated model cost" : "Actual model cost"} value={formatMoney(billing.totals.model_cost)} />
-            <Metric label={groupBy === "alias" ? "Allocated idle cost" : "Actual idle cost"} value={formatMoney(billing.totals.model_idle_cost)} />
+            <Metric label={groupBy === "alias" ? "Allocated occupancy gap" : "Uncovered occupancy"} value={formatMoney(billing.totals.model_idle_cost)} hint={occupancyGapHint} />
           </div>
-          {groupBy === "alias" ? <p className="billing-basis-note">Occupancy cost is allocated by request share for this period. It is not the runtime accounting ledger.</p> : null}
+          <p className="billing-basis-note">
+            {groupBy === "alias" ? "Occupancy cost is allocated by request share for this period; it is not the runtime accounting ledger. " : ""}
+            {occupancyGapHint}
+          </p>
           <div className="observe-table-wrap">
             <table className="observe-table">
               <thead><tr><th>{groupBy === "alias" ? "Service identity" : "Actual model"}</th><th>Requests</th><th>Tokens</th><th>Configured usage</th><th>{groupBy === "alias" ? "Allocated model cost" : "Actual model cost"}</th></tr></thead>
@@ -266,8 +272,8 @@ function ObserveTableShell({ title, subtitle, children }: { title: string; subti
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="metric"><strong>{value}</strong><span>{label}</span></div>;
+function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return <div className="metric" title={hint}><strong>{value}</strong><span>{label}</span></div>;
 }
 
 function formatTime(value: string) {
@@ -279,7 +285,8 @@ function formatNumber(value: number | undefined) {
 }
 
 function formatMoney(value: number | undefined) {
-  return `$${Number(value ?? 0).toFixed(2)}`;
+  const amount = Number(value ?? 0);
+  return amount < 0 ? `-$${Math.abs(amount).toFixed(2)}` : `$${amount.toFixed(2)}`;
 }
 
 function formatPricingValue(value: number) {
