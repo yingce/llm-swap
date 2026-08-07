@@ -171,7 +171,8 @@ func TestProxyAliasRoutesAndAccountsByConcreteModel(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	srv := NewServer(aliasProxyConfig())
+	requestLogPath := filepath.Join(t.TempDir(), "gateway-requests.jsonl")
+	srv := NewServerWithGatewayPersistence(aliasProxyConfig(), requestLogPath)
 	store := &fakeRecordsStore{}
 	srv.recordsStore = store
 	var logs bytes.Buffer
@@ -193,8 +194,12 @@ func TestProxyAliasRoutesAndAccountsByConcreteModel(t *testing.T) {
 	if gotGatewayModel != "qwen-v2" {
 		t.Fatalf("X-Gateway-Model = %q, want qwen-v2", gotGatewayModel)
 	}
-	if len(store.requests) != 1 || store.requests[0].Model != "qwen-v2" {
-		t.Fatalf("request records = %+v, want one qwen-v2 record", store.requests)
+	if len(store.requests) != 1 || store.requests[0].Model != "qwen-v2" || store.requests[0].RequestedModel != "qwen-latest" {
+		t.Fatalf("request records = %+v, want canonical model plus request-time alias", store.requests)
+	}
+	persisted := readSingleRequestLogEntry(t, requestLogPath)
+	if persisted.Model != "qwen-v2" || persisted.RequestedModel != "qwen-latest" {
+		t.Fatalf("JSONL request = %+v, want canonical model plus request-time alias", persisted)
 	}
 	if got := srv.access.ModelTotalTokens("qwen-v2"); got != 9 {
 		t.Fatalf("qwen-v2 total tokens = %d, want 9", got)
@@ -222,6 +227,8 @@ func TestProxyAliasDirectConcreteRequestOmitsRequestedModelLogField(t *testing.T
 	defer upstream.Close()
 
 	srv := NewServer(aliasProxyConfig())
+	store := &fakeRecordsStore{}
+	srv.recordsStore = store
 	var logs bytes.Buffer
 	srv.logger = log.New(&logs, "", 0)
 	registerProxyWorkerModel(t, srv, "worker-a", upstream.URL, "qwen-v2", true)
@@ -234,6 +241,9 @@ func TestProxyAliasDirectConcreteRequestOmitsRequestedModelLogField(t *testing.T
 	}
 	if strings.Contains(logs.String(), `"requested_model"`) {
 		t.Fatalf("direct request logs contain requested_model:\n%s", logs.String())
+	}
+	if len(store.requests) != 1 || store.requests[0].RequestedModel != "" {
+		t.Fatalf("direct request records = %+v, want no requested_model alias snapshot", store.requests)
 	}
 }
 

@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS request_records (
   gateway_id TEXT NOT NULL DEFAULT '',
   event_time TIMESTAMPTZ NOT NULL,
   model TEXT NOT NULL,
+  requested_model TEXT NOT NULL DEFAULT '',
   worker_id TEXT NOT NULL DEFAULT '',
   tag TEXT NOT NULL DEFAULT '',
   status_code INTEGER NOT NULL DEFAULT 0,
@@ -42,6 +43,8 @@ CREATE TABLE IF NOT EXISTS request_records (
 );
 -- statement-breakpoint
 ALTER TABLE request_records ADD COLUMN IF NOT EXISTS source_hash TEXT NOT NULL DEFAULT '';
+-- statement-breakpoint
+ALTER TABLE request_records ADD COLUMN IF NOT EXISTS requested_model TEXT NOT NULL DEFAULT '';
 -- statement-breakpoint
 ALTER TABLE request_records ADD COLUMN IF NOT EXISTS cost_by_token_rmb NUMERIC(18, 6) NOT NULL DEFAULT 0;
 -- statement-breakpoint

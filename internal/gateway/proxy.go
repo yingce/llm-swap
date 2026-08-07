@@ -52,6 +52,9 @@ func (s *Server) handleModelProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	body = normalizeProxyRequestBody(body, modelCfg)
 	baseLogEntry := requestLogEntryFromBody(requestID, model, body)
+	if requestedModel != model {
+		baseLogEntry.RequestedModel = requestedModel
+	}
 	baseLogEntry.RequestHeaders = requestXHeadersForLog(r.Header)
 	limitCtx, cancelLimit := queueContext(r.Context(), modelCfg.QueueTimeoutMS)
 	defer cancelLimit()

@@ -123,14 +123,14 @@ INSERT INTO request_records (
   cache_tokens, reasoning_tokens, finish_reason, error_type, error_code, error_message,
   retry_count, upstream_url, request_headers, app_id, source_hash, model_used_cost_usd,
   billing_per_request_usd, billing_input_per_million_usd, billing_output_per_million_usd,
-  billing_cached_input_per_million_usd, cost_calculated_at
+  billing_cached_input_per_million_usd, cost_calculated_at, requested_model
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
   $9, $10, $11, $12, $13, $14, $15,
   $16, $17, $18, $19, $20, $21, $22,
   $23, $24, $25, $26, $27, $28,
   $29, $30, $31::jsonb, $32, $33, $34,
-  $35, $36, $37, $38, $39
+  $35, $36, $37, $38, $39, $40
 ) ON CONFLICT DO NOTHING`,
 		entry.RequestID, s.gatewayID, entry.Time.UTC(), entry.Model, entry.WorkerID, entry.Tag, entry.StatusCode, entry.DurationMS,
 		entry.Stream, entry.RequestBytes, entry.ResponseBytes, entry.MessageCount, entry.ImageCount, entry.VideoCount, entry.AudioCount,
@@ -138,6 +138,7 @@ INSERT INTO request_records (
 		entry.CacheTokens, entry.ReasoningTokens, entry.FinishReason, entry.ErrorType, entry.ErrorCode, entry.ErrorMessage,
 		entry.RetryCount, entry.UpstreamURL, string(headers), entry.RequestHeaders["x-app-id"], strings.TrimSpace(sourceHash), entry.ModelUsedCostUSD,
 		entry.BillingPerRequestUSD, entry.BillingInputPerMillionUSD, entry.BillingOutputPerMillionUSD, entry.BillingCachedInputPerMillionUSD, entry.CostCalculatedAt,
+		entry.RequestedModel,
 	)
 	if err != nil {
 		return false, err
@@ -350,7 +351,7 @@ func (s *PostgresRecordsStore) PageRequestRecords(ctx context.Context, offset in
 	runCtx, cancel := s.context(ctx)
 	defer cancel()
 	rows, err := s.db.QueryContext(runCtx, `
-SELECT request_id, event_time, model, worker_id, tag, status_code, duration_ms,
+SELECT request_id, event_time, model, requested_model, worker_id, tag, status_code, duration_ms,
   stream, request_bytes, response_bytes, message_count, image_count, video_count, audio_count,
   max_tokens, temperature, top_p, top_k, prompt_tokens, completion_tokens, total_tokens,
   cache_tokens, reasoning_tokens, finish_reason, error_type, error_code, error_message,
@@ -433,7 +434,7 @@ func scanRequestRecord(rows *sql.Rows) (RequestLogEntry, error) {
 	var costCalculatedAt sql.NullTime
 	var headers []byte
 	err := rows.Scan(
-		&entry.RequestID, &entry.Time, &entry.Model, &entry.WorkerID, &entry.Tag, &entry.StatusCode, &entry.DurationMS,
+		&entry.RequestID, &entry.Time, &entry.Model, &entry.RequestedModel, &entry.WorkerID, &entry.Tag, &entry.StatusCode, &entry.DurationMS,
 		&entry.Stream, &entry.RequestBytes, &entry.ResponseBytes, &entry.MessageCount, &entry.ImageCount, &entry.VideoCount, &entry.AudioCount,
 		&entry.MaxTokens, &temperature, &topP, &topK, &entry.PromptTokens, &entry.CompletionTokens, &entry.TotalTokens,
 		&entry.CacheTokens, &entry.ReasoningTokens, &entry.FinishReason, &entry.ErrorType, &entry.ErrorCode, &entry.ErrorMessage,

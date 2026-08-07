@@ -77,6 +77,83 @@ func TestBillingSummaryReportsUSDUsageCostsAndTokenBreakdown(t *testing.T) {
 	}
 }
 
+func TestBillingSummaryGroupsAliasRequestsAcrossCanonicalVersions(t *testing.T) {
+	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	models := calculateModelReadyCosts([]billingReadyInterval{
+		{WorkerID: "worker-a", Model: "a-pro-0808", Start: start, End: end},
+		{WorkerID: "worker-a", Model: "a-pro-0901", Start: start, End: end},
+	}, start, end, 24)
+
+	summary := buildBillingSummary(BillingQuery{
+		Start:            start,
+		End:              end,
+		GroupBy:          BillingGroupByAlias,
+		WorkerDayCostRMB: 24,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+		ModelPricing: map[string]config.ModelBilling{
+			"a-pro-0808": {PerRequestUSD: 0.1},
+			"a-pro-0901": {PerRequestUSD: 0.2},
+		},
+	}, models, []billingRequestRecord{
+		{RequestID: "alias-old", Time: start, Model: "a-pro-0808", RequestedModel: "a-pro", PromptTokens: 10, TotalTokens: 10, DurationMS: 10_000},
+		{RequestID: "alias-new", Time: start.Add(time.Minute), Model: "a-pro-0901", RequestedModel: "a-pro", PromptTokens: 20, TotalTokens: 20, DurationMS: 20_000},
+		{RequestID: "direct-new", Time: start.Add(2 * time.Minute), Model: "a-pro-0901", PromptTokens: 30, TotalTokens: 30, DurationMS: 30_000},
+	})
+
+	if summary.GroupBy != BillingGroupByAlias {
+		t.Fatalf("group_by = %q, want alias", summary.GroupBy)
+	}
+	if len(summary.Models) != 2 {
+		t.Fatalf("models = %+v, want alias and unattributed rows", summary.Models)
+	}
+	rows := billingModelsByName(summary.Models)
+	alias := rows["a-pro"]
+	if alias == nil || alias.CostBasis != BillingCostBasisAllocated || alias.Requests != 2 || alias.ModelCost != 0.75 || alias.ModelUsedCost != 0.3 {
+		t.Fatalf("a-pro row = %+v, want two requests, allocated cost 0.75, used cost 0.3", alias)
+	}
+	if len(alias.CanonicalVersions) != 2 {
+		t.Fatalf("a-pro canonical versions = %+v, want 0808 and 0901", alias.CanonicalVersions)
+	}
+	versions := billingCanonicalVersionsByName(alias.CanonicalVersions)
+	if versions["a-pro-0808"] == nil || versions["a-pro-0808"].Requests != 1 || versions["a-pro-0808"].AllocatedModelCost != 0.5 {
+		t.Fatalf("0808 breakdown = %+v, want one request and allocated cost 0.5", versions["a-pro-0808"])
+	}
+	if versions["a-pro-0901"] == nil || versions["a-pro-0901"].Requests != 1 || versions["a-pro-0901"].AllocatedModelCost != 0.25 {
+		t.Fatalf("0901 breakdown = %+v, want one alias request and allocated cost 0.25", versions["a-pro-0901"])
+	}
+	unattributed := rows[unattributedBillingAlias]
+	if unattributed == nil || unattributed.Requests != 1 || unattributed.ModelCost != 0.25 || unattributed.ModelUsedCost != 0.2 {
+		t.Fatalf("unattributed row = %+v, want direct canonical request kept unattributed", unattributed)
+	}
+	if len(summary.RequestCosts) != 3 || summary.RequestCosts[0].RequestedModel != "a-pro" || summary.RequestCosts[2].RequestedModel != "" {
+		t.Fatalf("request costs = %+v, want request-time alias snapshots without inventing one for direct traffic", summary.RequestCosts)
+	}
+}
+
+func TestParseBillingQueryDefaultsCanonicalAndValidatesGroupBy(t *testing.T) {
+	query, err := parseBillingQuery(httptest.NewRequest(http.MethodGet, "/api/billing", nil))
+	if err != nil {
+		t.Fatalf("parse default query: %v", err)
+	}
+	if query.GroupBy != BillingGroupByCanonical {
+		t.Fatalf("default group_by = %q, want canonical", query.GroupBy)
+	}
+
+	query, err = parseBillingQuery(httptest.NewRequest(http.MethodGet, "/api/billing?group_by=alias", nil))
+	if err != nil {
+		t.Fatalf("parse alias query: %v", err)
+	}
+	if query.GroupBy != BillingGroupByAlias {
+		t.Fatalf("alias group_by = %q, want alias", query.GroupBy)
+	}
+
+	_, err = parseBillingQuery(httptest.NewRequest(http.MethodGet, "/api/billing?group_by=current-target", nil))
+	if err == nil || err.Error() != "group_by must be canonical or alias" {
+		t.Fatalf("invalid group_by error = %v, want validation error", err)
+	}
+}
+
 func TestBillingReadyCostSplitsConcurrentModelsOnSameWorker(t *testing.T) {
 	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
@@ -355,7 +432,7 @@ func TestPostgresBillingSummaryPersistsRequestCosts(t *testing.T) {
 		t.Fatalf("close ready interval: %v", err)
 	}
 	for _, request := range []RequestLogEntry{
-		{Time: start.Add(10 * time.Minute), RequestID: prefix + "-req-a", Model: "qwen", WorkerID: workerID, TotalTokens: 100, RequestHeaders: httpHeader{"x-app-id": "app-a"}},
+		{Time: start.Add(10 * time.Minute), RequestID: prefix + "-req-a", Model: "qwen", RequestedModel: "qwen-latest", WorkerID: workerID, TotalTokens: 100, RequestHeaders: httpHeader{"x-app-id": "app-a"}},
 		{Time: start.Add(20 * time.Minute), RequestID: prefix + "-req-b", Model: "qwen", WorkerID: workerID, TotalTokens: 300, RequestHeaders: httpHeader{"x-app-id": "app-b"}},
 	} {
 		if _, err := store.AppendImportedRequestRecord(ctx, request, request.RequestID); err != nil {
@@ -391,6 +468,25 @@ WHERE request_id = $1`, prefix+"-req-a").Scan(&modelUsedCost)
 	}
 	if modelUsedCost != 0.01 {
 		t.Fatalf("persisted req-a model_used_cost_usd=%v, want 0.01", modelUsedCost)
+	}
+
+	aliasSummary, err := store.BillingSummary(ctx, BillingQuery{
+		Start:            start,
+		End:              end,
+		GroupBy:          BillingGroupByAlias,
+		WorkerDayCostRMB: 24,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+		ModelPricing:     map[string]config.ModelBilling{"qwen": {PerRequestUSD: 0.01}},
+	})
+	if err != nil {
+		t.Fatalf("alias billing summary: %v", err)
+	}
+	aliasRows := billingModelsByName(aliasSummary.Models)
+	if aliasRows["qwen-latest"] == nil || aliasRows["qwen-latest"].Requests != 1 {
+		t.Fatalf("alias rows = %+v, want persisted qwen-latest request", aliasSummary.Models)
+	}
+	if aliasRows[unattributedBillingAlias] == nil || aliasRows[unattributedBillingAlias].Requests != 1 {
+		t.Fatalf("alias rows = %+v, want direct qwen request unattributed", aliasSummary.Models)
 	}
 }
 
@@ -557,6 +653,22 @@ func billingAppsByID(apps []BillingAppSummary) map[string]BillingAppSummary {
 	out := map[string]BillingAppSummary{}
 	for _, app := range apps {
 		out[app.AppID] = app
+	}
+	return out
+}
+
+func billingModelsByName(models []BillingModelSummary) map[string]*BillingModelSummary {
+	out := map[string]*BillingModelSummary{}
+	for index := range models {
+		out[models[index].Model] = &models[index]
+	}
+	return out
+}
+
+func billingCanonicalVersionsByName(versions []BillingCanonicalVersionSummary) map[string]*BillingCanonicalVersionSummary {
+	out := map[string]*BillingCanonicalVersionSummary{}
+	for index := range versions {
+		out[versions[index].CanonicalModel] = &versions[index]
 	}
 	return out
 }

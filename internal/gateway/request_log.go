@@ -14,6 +14,7 @@ type RequestLogEntry struct {
 	Time                            time.Time  `json:"time"`
 	RequestID                       string     `json:"request_id"`
 	Model                           string     `json:"model"`
+	RequestedModel                  string     `json:"requested_model,omitempty"`
 	WorkerID                        string     `json:"worker_id,omitempty"`
 	Tag                             string     `json:"tag,omitempty"`
 	StatusCode                      int        `json:"status_code"`

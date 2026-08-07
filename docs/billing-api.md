@@ -13,6 +13,9 @@ Authentication uses the gateway agent/UI token.
 - `date`: alias for `day`.
 - `hour`: optional natural hour, format `YYYY-MM-DDTHH` or `YYYY-MM-DD HH`.
 - `worker_day_cost_rmb`: optional worker cost per 24 hours. Defaults to `55`.
+- `group_by`: optional reporting identity. `canonical` (the default) returns
+  actual model rows; `alias` groups request usage by the service alias captured
+  when each request arrived.
 - `include_requests`: optional boolean. `1`, `true`, `yes`, and `on` include
   per-request cost rows.
 - `persist`: optional boolean. When true, backfills calculated request costs
@@ -96,6 +99,37 @@ multiple ready models.
 ```text
 model_cost = billable_worker_seconds / 86400 * worker_day_cost_usd
 ```
+
+The default `group_by=canonical` response is the accounting ledger: each
+`models[]` row has `cost_basis: "actual"`, and its identity is the canonical
+model that ran and occupied the worker.
+
+With `group_by=alias`, request usage from a service alias is combined across
+all canonical versions used during the selected period. The gateway reads the
+`requested_model` snapshot persisted on each request; it never looks at the
+alias's current target to rewrite history. Direct canonical requests have no
+alias snapshot and are reported under `_unattributed` instead of being assigned
+to an alias.
+
+Request JSONL and Postgres records both persist this snapshot. Older records
+created before `requested_model` was stored also remain `_unattributed`; the
+gateway does not guess their historic alias from current configuration.
+
+Ready occupancy still originates from the canonical ledger. In the alias view,
+each canonical model's occupancy is distributed by that period's request-count
+share and every row is explicitly marked `cost_basis: "allocated"`. A canonical
+model with no requests is allocated to `_unattributed`. These are reporting
+allocations, not claims about which alias actually kept a runtime loaded.
+
+Alias rows include `canonical_versions[]` with:
+
+- `canonical_model`
+- request and token counts
+- `model_used_cost`
+- `allocated_model_cost`
+
+The top-level `group_by` echoes the selected mode. Per-request rows retain the
+actual `model` and, only for alias traffic, include `requested_model`.
 
 `model_used_cost` is calculated from the per-request billing snapshot when a
 request row has `cost_calculated_at`. New gateway requests store that snapshot
@@ -194,4 +228,11 @@ Override daily worker cost:
 ```bash
 curl -H "Authorization: Bearer $AGENT_TOKEN" \
   "http://gateway:8080/api/billing?day=2026-07-16&worker_day_cost_rmb=60"
+```
+
+Group historical request usage by the alias used at request time:
+
+```bash
+curl -H "Authorization: Bearer $AGENT_TOKEN" \
+  "http://gateway:8080/api/billing?day=2026-07-16&group_by=alias"
 ```
