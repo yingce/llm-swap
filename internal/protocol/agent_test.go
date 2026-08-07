@@ -119,7 +119,8 @@ func TestTransportProtocolJSONContract(t *testing.T) {
 
 func TestAgentConfigResponseJSONUsesSnakeCaseConfigFields(t *testing.T) {
 	resp := AgentConfigResponse{
-		OSS: config.OSSConfig{BaseURL: "https://oss.example.com"},
+		ConfigRevision: 37,
+		OSS:            config.OSSConfig{BaseURL: "https://oss.example.com"},
 		Models: map[string]config.Model{
 			"qwen": {
 				MaxConcurrency: 2,
@@ -141,7 +142,7 @@ func TestAgentConfigResponseJSONUsesSnakeCaseConfigFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"base_url", "max_concurrency", "queue_timeout_ms", "crc64ecma", "worker_defaults"} {
+	for _, want := range []string{`"config_revision":37`, "base_url", "max_concurrency", "queue_timeout_ms", "crc64ecma", "worker_defaults"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("json %s missing %s", text, want)
 		}

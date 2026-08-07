@@ -92,6 +92,7 @@ func TestInstallWorkerScriptEndpointServesShellScriptWithoutAuth(t *testing.T) {
 
 func TestAgentConfigEndpointReturnsTagScopedModels(t *testing.T) {
 	srv := NewServer(testGatewayConfig())
+	_, wantRevision := srv.configManager.Snapshot()
 	req := httptest.NewRequest(http.MethodGet, "/internal/agent/config?tags=gpu-4090", nil)
 	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
@@ -124,6 +125,9 @@ func TestAgentConfigEndpointReturnsTagScopedModels(t *testing.T) {
 	}
 	if resp.TagPolicy.WorkerDefaults.MaxConcurrency != 2 {
 		t.Fatalf("worker default concurrency = %d, want 2", resp.TagPolicy.WorkerDefaults.MaxConcurrency)
+	}
+	if resp.ConfigRevision != wantRevision || resp.ConfigRevision <= 0 {
+		t.Fatalf("config revision = %d, want positive snapshot revision %d", resp.ConfigRevision, wantRevision)
 	}
 }
 

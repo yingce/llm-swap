@@ -16,10 +16,11 @@ type BuildInfo struct {
 }
 
 type AgentConfigResponse struct {
-	OSS       config.OSSConfig             `yaml:"oss" json:"oss"`
-	Models    map[string]config.Model      `yaml:"models" json:"models"`
-	TagPolicy AgentTagPolicy               `yaml:"tag_policy" json:"tag_policy"`
-	Transport *EncryptedTransportBootstrap `yaml:"transport,omitempty" json:"transport,omitempty"`
+	ConfigRevision int64                        `yaml:"config_revision" json:"config_revision"`
+	OSS            config.OSSConfig             `yaml:"oss" json:"oss"`
+	Models         map[string]config.Model      `yaml:"models" json:"models"`
+	TagPolicy      AgentTagPolicy               `yaml:"tag_policy" json:"tag_policy"`
+	Transport      *EncryptedTransportBootstrap `yaml:"transport,omitempty" json:"transport,omitempty"`
 }
 
 type EncryptedTransportBootstrap struct {

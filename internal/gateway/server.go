@@ -369,7 +369,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, _ := s.configManager.Snapshot()
+	cfg, configRevision := s.configManager.Snapshot()
 	cfg = activeGatewayConfig(cfg)
 	tag, policy, ok := s.matchedTagPolicy(cfg, r.URL.Query().Get("tags"))
 	if !ok {
@@ -378,8 +378,9 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := protocol.AgentConfigResponse{
-		OSS:    cfg.OSS,
-		Models: make(map[string]config.Model, len(policy.AllowedModels)),
+		ConfigRevision: configRevision,
+		OSS:            cfg.OSS,
+		Models:         make(map[string]config.Model, len(policy.AllowedModels)),
 		TagPolicy: protocol.AgentTagPolicy{
 			Tag:            tag,
 			AllowedModels:  append([]string(nil), policy.AllowedModels...),
