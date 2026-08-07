@@ -394,7 +394,15 @@ func removedArtifactFingerprint() string {
 }
 
 func modelDirLockName(modelDirName string) string {
-	sum := sha256.Sum256([]byte(filepath.Clean(modelDirName)))
+	return modelDirLockNameFromIdentity(config.ModelDirIdentity(modelDirName))
+}
+
+func modelDirLockNameForOS(modelDirName, goos string) string {
+	return modelDirLockNameFromIdentity(config.ModelDirIdentityForOS(modelDirName, goos))
+}
+
+func modelDirLockNameFromIdentity(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
 	return "model-dir-" + hex.EncodeToString(sum[:])
 }
 

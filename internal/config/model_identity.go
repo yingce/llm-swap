@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"path"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -14,7 +15,28 @@ func ResolvedModelDir(modelName string, model Model) string {
 	return modelName
 }
 
+// ModelDirIdentity returns the directory identity used by the current OS.
+func ModelDirIdentity(dir string) string {
+	return ModelDirIdentityForOS(dir, runtime.GOOS)
+}
+
+// ModelDirIdentityForOS normalizes a directory according to the named OS.
+func ModelDirIdentityForOS(dir, goos string) string {
+	if goos == "windows" {
+		dir = strings.ReplaceAll(dir, `\`, "/")
+	}
+	identity := path.Clean(dir)
+	if goos == "windows" {
+		identity = strings.ToLower(identity)
+	}
+	return identity
+}
+
 func validateModelIdentities(cfg GatewayConfig) error {
+	return validateModelIdentitiesForOS(cfg, runtime.GOOS)
+}
+
+func validateModelIdentitiesForOS(cfg GatewayConfig, goos string) error {
 	names := make([]string, 0, len(cfg.Models))
 	for name := range cfg.Models {
 		names = append(names, name)
@@ -28,21 +50,22 @@ func validateModelIdentities(cfg GatewayConfig) error {
 	}
 
 	dirs := map[string]string{}
+	reservedIdentity := ModelDirIdentityForOS(".locks", goos)
 	for _, name := range names {
 		model := cfg.Models[name]
 		dir := ResolvedModelDir(name, model)
+		dirIdentity := ModelDirIdentityForOS(dir, goos)
 		if model.ModelDir != "" {
 			if dir != model.ModelDir || !isSafeModelDirName(dir) {
 				return fmt.Errorf("model %s model_dir must be a safe relative directory name", name)
-			}
-			if dir == ".locks" {
-				return fmt.Errorf("model %s model_dir .locks is reserved", name)
 			}
 			if _, exists := artifactSourceBasenames[dir]; exists {
 				return fmt.Errorf("model %s model_dir %s collides with artifact source cache basename", name, dir)
 			}
 		}
-		dirIdentity := path.Clean(dir)
+		if dirIdentity == reservedIdentity {
+			return fmt.Errorf("model %s model_dir %s is reserved", name, dir)
+		}
 		if previous, exists := dirs[dirIdentity]; exists {
 			return fmt.Errorf("models %s and %s resolve to duplicate model_dir %s", previous, name, dirIdentity)
 		}

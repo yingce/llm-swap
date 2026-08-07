@@ -596,6 +596,15 @@ func TestInstallArtifactRechecksMarkerAfterWaitingForLock(t *testing.T) {
 	}
 }
 
+func TestModelDirLockNameForOSMatchesFilesystemCaseSemantics(t *testing.T) {
+	if upper, lower := modelDirLockNameForOS("A-Pro", "windows"), modelDirLockNameForOS("a-pro", "windows"); upper != lower {
+		t.Fatalf("Windows lock names = %q and %q, want equal", upper, lower)
+	}
+	if upper, lower := modelDirLockNameForOS("A-Pro", "linux"), modelDirLockNameForOS("a-pro", "linux"); upper == lower {
+		t.Fatalf("Linux lock names = %q and %q, want distinct", upper, lower)
+	}
+}
+
 func TestInstallArtifactReusesMatchingDirectoryAfterWaitingForModelDirLock(t *testing.T) {
 	payload := []byte("installed by another worker")
 	artifact := config.Artifact{

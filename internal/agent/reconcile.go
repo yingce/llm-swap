@@ -432,7 +432,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			continue
 		}
 		modelDirName := config.ResolvedModelDir(modelName, model)
-		desiredByModelDir[filepath.Clean(modelDirName)] = artifactInstallFence{
+		desiredByModelDir[config.ModelDirIdentity(modelDirName)] = artifactInstallFence{
 			ConfigRevision:      cfg.ConfigRevision,
 			ArtifactFingerprint: artifactFingerprint(model.Artifact),
 		}
@@ -445,7 +445,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			delete(installs, modelName)
 			continue
 		}
-		winner, reusedModelDir := desiredByModelDir[filepath.Clean(state.key.ModelDir)]
+		winner, reusedModelDir := desiredByModelDir[config.ModelDirIdentity(state.key.ModelDir)]
 		if !reusedModelDir {
 			winner = artifactInstallFence{
 				ConfigRevision:      cfg.ConfigRevision,
