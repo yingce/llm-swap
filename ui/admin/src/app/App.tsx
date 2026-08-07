@@ -14,6 +14,7 @@ import {
   getRequests,
   ModelBillingConfig,
   ModelStatus,
+  ServiceNamePromotion,
   RequestLogEntry,
   StatusResponse,
   TagPolicyConfig,
@@ -22,7 +23,9 @@ import {
   warmModel,
   WorkerEvent,
   WorkerStatus,
-  dryRunConfig
+  dryRunConfig,
+  promoteServiceName,
+  rollbackServiceName
 } from "../api";
 import { removeAlias, setAliasTarget, validateAliasDraft } from "../modelAliases";
 import {
@@ -343,6 +346,22 @@ export function App() {
     }
   }
 
+  async function promoteCanonicalServiceName(serviceName: string, targetModel: string) {
+    const promotion = await promoteServiceName(serviceName, targetModel);
+    await refreshConfig();
+    await refresh();
+    await loadEvents(0);
+    return promotion;
+  }
+
+  async function rollbackCanonicalServiceName(promotion: ServiceNamePromotion) {
+    const result = await rollbackServiceName(promotion);
+    await refreshConfig();
+    await refresh();
+    await loadEvents(0);
+    return result;
+  }
+
   return (
     <AppShell
       appContentRef={appContentRef}
@@ -400,6 +419,8 @@ export function App() {
               onModelTagsChange={replaceModelTags}
               onCreateModel={createModel}
               onAliasesChange={replaceModelAliases}
+              onPromoteServiceName={promoteCanonicalServiceName}
+              onRollbackServiceName={rollbackCanonicalServiceName}
               appContentRef={appContentRef}
             />
           )}
@@ -1118,6 +1139,8 @@ function ConfigOps({
   onModelTagsChange,
   onCreateModel,
   onAliasesChange,
+  onPromoteServiceName,
+  onRollbackServiceName,
   appContentRef
 }: {
   status: StatusResponse | null;
@@ -1136,6 +1159,8 @@ function ConfigOps({
   onModelTagsChange: (modelName: string, nextModel: EditableModelConfig, selectedTags: string[]) => void;
   onCreateModel: (modelName: string, model: EditableModelConfig, selectedTags: string[]) => void;
   onAliasesChange: (nextAliases: Record<string, string>) => void;
+  onPromoteServiceName: (serviceName: string, targetModel: string) => Promise<ServiceNamePromotion>;
+  onRollbackServiceName: (promotion: ServiceNamePromotion) => Promise<ServiceNamePromotion>;
   appContentRef: React.RefObject<HTMLElement | null>;
 }) {
   const modelNames = useMemo(() => sortedKeys(draft?.models), [draft]);
@@ -1151,6 +1176,10 @@ function ConfigOps({
   const [discardCreateConfirm, setDiscardCreateConfirm] = useState(false);
   const [createError, setCreateError] = useState("");
   const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const [promotionTarget, setPromotionTarget] = useState("");
+  const [confirmPromotion, setConfirmPromotion] = useState(false);
+  const [promotion, setPromotion] = useState<ServiceNamePromotion | null>(null);
+  const [promotionError, setPromotionError] = useState("");
 
   useEffect(() => {
     if (!selectedModel || !visibleModelNames.includes(selectedModel)) {
@@ -1184,6 +1213,7 @@ function ConfigOps({
   const selectedModelConfig = currentDraft.models[selectedModel];
   const selectedModelTags = tagNames.filter((tagName) => currentDraft.tag_policies[tagName].allowed_models.includes(selectedModel));
   const liveModelMap = new Map((status?.models ?? []).map((model) => [model.name, model]));
+  const promotionTargets = modelNames.filter((name) => name !== selectedModel && !currentDraft.models[name]?.disabled && (liveModelMap.get(name)?.ready_workers ?? 0) >= Math.max(1, currentDraft.models[name]?.min_loaded ?? 0));
 
   function startCreate(trigger: HTMLButtonElement) {
     const nextDraft: ModelCreateDraft = {
@@ -1310,6 +1340,39 @@ function ConfigOps({
               onChange={(nextModel) => onModelChange(selectedModel, nextModel)}
               onTagsChange={(nextModel, nextTags) => onModelTagsChange(selectedModel, nextModel, nextTags)}
             />
+          ) : null}
+
+          {promotion ? (
+            <div className="config-card service-name-promotion">
+              <div className="config-card-head"><div><h3>Promotion active</h3><p>{promotion.service_name} → {promotion.target_model}</p></div></div>
+              <div className="service-name-promotion-body">
+                <p className="muted mono">Archive {promotion.archive_id}</p>
+                <p>Rollback removes the service alias and restores the archived canonical definition. It is refused if the alias or touched placement policy changes later.</p>
+                <button type="button" onClick={async () => { try { await onRollbackServiceName(promotion); setPromotion(null); setPromotionTarget(""); } catch (error) { setPromotionError(error instanceof Error ? error.message : String(error)); } }}>Rollback promotion</button>
+              </div>
+            </div>
+          ) : selectedModelConfig?.disabled ? (
+            <div className="config-card service-name-promotion">
+              <div className="config-card-head">
+                <div><h3>Promote service name</h3><p>Convert this disabled canonical name into a stable public alias.</p></div>
+              </div>
+              <div className="service-name-promotion-body">
+                <p>This archives the disabled canonical model <strong>{selectedModel}</strong> and removes it from active placement policies.</p>
+                {dirty ? <p className="alert">Apply or reset the current draft before promoting a service name.</p> : null}
+                <label><span>Ready target</span><select value={promotionTarget} onChange={(event) => setPromotionTarget(event.target.value)}>
+                  <option value="">Select a ready canonical model</option>
+                  {promotionTargets.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select></label>
+                {promotionTarget ? <p className="notice">The target is already ready: <strong>{promotionTarget}</strong>. New requests for {selectedModel} will route there immediately.</p> : null}
+                <p className="muted">Rollback removes the service alias and restores the archived canonical definition. It is refused if the alias or touched placement policy changes later.</p>
+                {promotionError ? <div className="alert">{promotionError}</div> : null}
+                <button type="button" className="danger" disabled={dirty || !promotionTarget} onClick={() => setConfirmPromotion(true)}>Promote service name</button>
+              </div>
+              {confirmPromotion ? <div className="modal-backdrop"><section className="model-create-modal" role="dialog" aria-modal="true" aria-label="Confirm service-name promotion">
+                <header><h2>Confirm service-name promotion</h2><p>This is an audited namespace change.</p></header>
+                <div className="model-create-modal-body"><p><strong>{selectedModel}</strong> will stop being a canonical model and become an alias for ready target <strong>{promotionTarget}</strong>.</p><p>Rollback removes the service alias and restores the archived canonical definition.</p><div className="model-card-actions"><button type="button" onClick={() => setConfirmPromotion(false)}>Cancel</button><button type="button" className="danger" onClick={async () => { try { const result = await onPromoteServiceName(selectedModel, promotionTarget); setPromotion(result); setConfirmPromotion(false); setPromotionError(""); } catch (error) { setPromotionError(error instanceof Error ? error.message : String(error)); setConfirmPromotion(false); } }}>Confirm promotion</button></div></div>
+              </section></div> : null}
+            </div>
           ) : null}
 
           <ImpactSummary applyMode={applyMode} impacts={impacts} changes={changes} />

@@ -84,6 +84,7 @@ func NewServerWithConfigRevisionStore(ctx context.Context, cfg config.GatewayCon
 	if err != nil {
 		return nil, err
 	}
+	manager.promotionStore = newFileServiceNameArchiveStore(DefaultGatewayServiceNameArchivePath)
 	return newServerWithConfigManager(cfg, requestLogPath, workerEventLogPath, configPath, manager), nil
 }
 
@@ -189,6 +190,8 @@ func newServerWithConfigManager(cfg config.GatewayConfig, requestLogPath string,
 	s.mux.Handle("POST /ui/api/config/validate", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigValidate)))
 	s.mux.Handle("POST /ui/api/config/dry-run", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigDryRun)))
 	s.mux.Handle("POST /ui/api/config/apply", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigApply)))
+	s.mux.Handle("POST /ui/api/service-names/promote", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIServiceNamePromote)))
+	s.mux.Handle("POST /ui/api/service-names/rollback", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIServiceNameRollback)))
 	s.mux.Handle("POST /ui/api/workers/{id}/drain", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIWorkerDrain)))
 	s.mux.Handle("POST /ui/api/workers/{id}/undrain", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIWorkerUndrain)))
 	s.mux.Handle("POST /ui/api/models/{model}/warm", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIModelWarm)))

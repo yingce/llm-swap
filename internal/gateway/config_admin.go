@@ -1,14 +1,109 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"llm-swap/internal/config"
+	"llm-swap/internal/protocol"
 )
+
+func (s *Server) handleUIServiceNamePromote(w http.ResponseWriter, r *http.Request) {
+	var req serviceNamePromotionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON request", http.StatusBadRequest)
+		return
+	}
+	resp, err := s.configManager.PromoteServiceName(r.Context(), req, func(cfg config.GatewayConfig) error {
+		return s.validateServiceNamePromotionState(cfg, strings.TrimSpace(req.ServiceName), strings.TrimSpace(req.TargetModel), time.Now())
+	})
+	if err != nil {
+		writeServiceNameTransactionError(w, err)
+		return
+	}
+	cfg, _ := s.configManager.Snapshot()
+	s.applyRuntimeConfig(cfg)
+	s.recordGatewayWorkerEvent("gateway", protocol.AgentEvent{Event: "gateway_service_name_promoted", Model: resp.ServiceName, Object: resp.ArchiveID})
+	s.logEvent("gateway_service_name_promoted", map[string]any{"service_name": resp.ServiceName, "target_model": resp.TargetModel, "archive_id": resp.ArchiveID, "version": resp.Version})
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleUIServiceNameRollback(w http.ResponseWriter, r *http.Request) {
+	var req serviceNamePromotionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON request", http.StatusBadRequest)
+		return
+	}
+	resp, err := s.configManager.RollbackServiceName(r.Context(), req)
+	if err != nil {
+		writeServiceNameTransactionError(w, err)
+		return
+	}
+	cfg, _ := s.configManager.Snapshot()
+	s.applyRuntimeConfig(cfg)
+	s.recordGatewayWorkerEvent("gateway", protocol.AgentEvent{Event: "gateway_service_name_rollback", Model: resp.ServiceName, Object: resp.ArchiveID})
+	s.logEvent("gateway_service_name_rollback", map[string]any{"service_name": resp.ServiceName, "target_model": resp.TargetModel, "archive_id": resp.ArchiveID, "version": resp.Version})
+	writeJSON(w, resp)
+}
+
+func writeServiceNameTransactionError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	var conflict serviceNameConflict
+	var invalid errInvalidConfig
+	if errors.As(err, &conflict) {
+		status = http.StatusConflict
+	} else if errors.As(err, &invalid) {
+		status = http.StatusBadRequest
+	}
+	w.WriteHeader(status)
+	writeJSON(w, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) validateServiceNamePromotionState(cfg config.GatewayConfig, serviceName, target string, now time.Time) error {
+	if s.accounting.ModelActive(serviceName) > 0 || s.limiter.Active("model:"+serviceName) > 0 || s.limiter.Queued("model:"+serviceName) > 0 {
+		return serviceNameConflict{message: "old canonical has active or pending requests"}
+	}
+	ready := 0
+	for _, worker := range s.workers.Snapshot(now) {
+		if s.limiter.Active(workerModelLimitKey(worker.ID, serviceName)) > 0 || s.limiter.Queued(workerModelLimitKey(worker.ID, serviceName)) > 0 {
+			return serviceNameConflict{message: "old canonical has active or pending worker requests"}
+		}
+		targetReady := false
+		for _, running := range worker.RunningModels {
+			if running.Model == serviceName {
+				return serviceNameConflict{message: "old canonical has a running replica in state " + running.State}
+			}
+			if running.Model == target && strings.EqualFold(running.State, "ready") && artifactReady(worker, target) && s.workers.Healthy(worker.ID, now) && workerAllowsModel(cfg, worker, target) && !s.replicaCooldowns.Active(worker.ID, target, now) {
+				targetReady = true
+			}
+		}
+		if targetReady {
+			ready++
+		}
+		if status := strings.ToLower(strings.TrimSpace(worker.Artifacts[serviceName])); status != "" && status != "ready" && status != "missing" && status != "unavailable" && status != "error" {
+			return serviceNameConflict{message: "old canonical artifact activity is " + status}
+		}
+		if worker.NeedsRestart && (len(worker.RunningModels) > 0 || containsStringValue(worker.Artifacts, serviceName)) {
+			return serviceNameConflict{message: "old canonical has pending worker restart activity"}
+		}
+	}
+	model := cfg.Models[target]
+	floor := model.MinLoaded
+	if floor < 1 {
+		floor = 1
+	}
+	if ready < floor {
+		return serviceNameConflict{message: fmt.Sprintf("target has %d ready replicas; ready floor is %d", ready, floor)}
+	}
+	return nil
+}
+
+func containsStringValue(values map[string]string, key string) bool { _, ok := values[key]; return ok }
 
 func (s *Server) handleUIConfig(w http.ResponseWriter, r *http.Request) {
 	if s.configManager == nil {

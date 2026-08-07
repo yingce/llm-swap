@@ -3575,3 +3575,14 @@ textarea {
     padding: 7px 8px;
   }
 }
+
+.service-name-promotion-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.service-name-promotion-body label {
+  display: grid;
+  gap: 6px;
+}

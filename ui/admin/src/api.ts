@@ -341,6 +341,14 @@ export type BillingSummary = {
   request_costs?: BillingRequestCost[];
 };
 
+export type ServiceNamePromotion = {
+  action: "promote" | "rollback";
+  service_name: string;
+  target_model: string;
+  archive_id: string;
+  version: number;
+};
+
 export type BillingGroupBy = "canonical" | "alias";
 
 export type BillingGroupKind = "alias" | "unattributed";
@@ -480,6 +488,26 @@ export function applyConfig(yaml: string): Promise<ConfigDryRunResponse> {
   return request<ConfigDryRunResponse>("/ui/api/config/apply", {
     method: "POST",
     body: yaml
+  });
+}
+
+export function promoteServiceName(serviceName: string, targetModel: string): Promise<ServiceNamePromotion> {
+  return request<ServiceNamePromotion>("/ui/api/service-names/promote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ service_name: serviceName, target_model: targetModel })
+  });
+}
+
+export function rollbackServiceName(promotion: ServiceNamePromotion): Promise<ServiceNamePromotion> {
+  return request<ServiceNamePromotion>("/ui/api/service-names/rollback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      service_name: promotion.service_name,
+      target_model: promotion.target_model,
+      archive_id: promotion.archive_id
+    })
   });
 }
 

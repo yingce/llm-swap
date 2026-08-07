@@ -56,6 +56,9 @@ disabled the gateway still runs with no external database.
 - `model_alias`: stable public request name that maps directly to one canonical
   model through top-level `model_aliases`. Aliases are not worker identities and
   cannot chain or collide with canonical model names.
+- `service-name promotion`: a guarded Config Ops transaction for reclaiming one
+  disabled, idle canonical name as an alias to a ready replacement. This is not
+  ordinary alias editing and does not relax canonical/alias collision checks.
 - `artifact`: downloadable model payload. Supported kinds are `file` and
   `tar_gz`.
 - `tag_policy`: gateway policy for workers with a tag. It defines installable
@@ -95,6 +98,22 @@ disabled the gateway still runs with no external database.
   - Heartbeat events are cached and persisted to worker event JSONL.
   - `/v1/models` lists available canonical models and aliases whose canonical
     targets are currently available.
+
+- `internal/gateway/service_name_promotion.go`
+  - Implements the audited `Promote service name` and rollback transactions.
+  - Promotion requires the old canonical to be disabled with no running,
+    installing, active, or queued work. The target must have at least its
+    configured ready floor, with a minimum of one routable ready replica even
+    when `min_loaded` is zero.
+  - The transaction archives the old definition and touched tag-policy fields,
+    removes the old active namespace entry, and creates the alias in one
+    serialized config operation. Rollback verifies the alias, target, archive,
+    and touched policies still match before restoring anything, so it cannot
+    overwrite later operator edits.
+  - Production archives are stored atomically under
+    `/opt/llmswap/state/service-name-promotions.json`; the model artifact
+    directory is not deleted. Requests, billing, and historical canonical
+    identities are never rewritten.
 
 - `internal/gateway/proxy.go`
   - OpenAI-compatible chat proxy path.
@@ -914,6 +933,12 @@ gateway-side tailnet path.
   the new pointer. The gateway permits an unready target for cold-start and
   recovery cases, but Config Ops exposes zero-ready status so routine rollouts
   can remain ready-first.
+- If a desired public service name is already a canonical model, first disable
+  and fully unload it, ready the replacement canonical to its floor, then use
+  the dedicated Config Ops `Promote service name` confirmation. Do not create a
+  colliding alias in Advanced YAML. Keep the returned archive identity for the
+  guarded rollback; rollback is refused after the alias or touched placement
+  policies have been edited.
 - Roll back by repointing the alias to the old, still-ready canonical model.
   Versioned directories are not deleted automatically, preserving the old
   artifact for this pointer rollback. Editing `model_dir` in place is different:

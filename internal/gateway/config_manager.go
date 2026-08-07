@@ -19,15 +19,16 @@ import (
 const uiConfigRedactedSecret = "__LLMSWAP_REDACTED__"
 
 type ConfigManager struct {
-	applyMu       sync.Mutex
-	mu            sync.RWMutex
-	cfg           config.GatewayConfig
-	fileCfg       config.GatewayConfig
-	rawYAML       []byte
-	version       int64
-	revisionStore ConfigRevisionStore
-	configPath    string
-	runtimePins   runtimeConfigPins
+	applyMu        sync.Mutex
+	mu             sync.RWMutex
+	cfg            config.GatewayConfig
+	fileCfg        config.GatewayConfig
+	rawYAML        []byte
+	version        int64
+	revisionStore  ConfigRevisionStore
+	promotionStore serviceNameArchiveStore
+	configPath     string
+	runtimePins    runtimeConfigPins
 }
 
 type runtimeConfigPins struct {
@@ -118,12 +119,13 @@ func NewConfigManagerWithOverridesAndRevisionStore(ctx context.Context, cfg conf
 		}
 	}
 	return &ConfigManager{
-		cfg:           cloneGatewayConfig(cfg),
-		fileCfg:       cloneGatewayConfig(fileCfg),
-		rawYAML:       rawYAML,
-		version:       revision,
-		revisionStore: store,
-		configPath:    configPath,
+		cfg:            cloneGatewayConfig(cfg),
+		fileCfg:        cloneGatewayConfig(fileCfg),
+		rawYAML:        rawYAML,
+		version:        revision,
+		revisionStore:  store,
+		promotionStore: promotionStoreForConfigPath(configPath),
+		configPath:     configPath,
 		runtimePins: runtimeConfigPins{
 			Tokens:           cfg.Tokens,
 			ListenAddr:       cfg.Gateway.ListenAddr,
@@ -131,6 +133,13 @@ func NewConfigManagerWithOverridesAndRevisionStore(ctx context.Context, cfg conf
 			PinProxyAttempts: overrides.ProxyAttempts,
 		},
 	}, nil
+}
+
+func promotionStoreForConfigPath(configPath string) serviceNameArchiveStore {
+	if strings.TrimSpace(configPath) == "" {
+		return newMemoryServiceNameArchiveStore()
+	}
+	return newFileServiceNameArchiveStore(filepath.Join(filepath.Dir(configPath), "service-name-promotions.json"))
 }
 
 func normalizeGatewayConfigForServer(cfg config.GatewayConfig) config.GatewayConfig {
