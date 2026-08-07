@@ -90,7 +90,12 @@ disabled the gateway still runs with no external database.
 
 - `cmd/gateway/main.go`
   - Loads runtime config through `config.LoadGatewayRuntime`.
-  - Creates `gateway.NewServerWithGatewayPersistencePaths`.
+  - Creates `gateway.NewServerWithConfigRevisionStore`, passing the standard
+    request/event JSONL paths plus a file-backed revision allocator at
+    `gateway.DefaultGatewayConfigRevisionPath`.
+  - Allocates and persists a new global configuration revision during server
+    construction. Startup fails instead of publishing an unversioned snapshot
+    when the state directory or revision document cannot be used.
   - Starts the loaded-replica reconciler every 30 seconds.
 
 - `internal/gateway/server.go`
