@@ -108,18 +108,24 @@ With `group_by=alias`, request usage from a service alias is combined across
 all canonical versions used during the selected period. The gateway reads the
 `requested_model` snapshot persisted on each request; it never looks at the
 alias's current target to rewrite history. Direct canonical requests have no
-alias snapshot and are reported under `_unattributed` instead of being assigned
-to an alias.
+alias snapshot and are reported with `group_kind: "unattributed"` and an empty
+`model` instead of being assigned to an alias. Alias rows use
+`group_kind: "alias"`; consumers should identify alias-view rows by the pair
+`(group_kind, model)`. This keeps a real alias literally named `_unattributed`
+distinct from direct traffic.
 
 Request JSONL and Postgres records both persist this snapshot. Older records
-created before `requested_model` was stored also remain `_unattributed`; the
+created before `requested_model` was stored also use the unattributed row; the
 gateway does not guess their historic alias from current configuration.
 
 Ready occupancy still originates from the canonical ledger. In the alias view,
 each canonical model's occupancy is distributed by that period's request-count
 share and every row is explicitly marked `cost_basis: "allocated"`. A canonical
-model with no requests is allocated to `_unattributed`. These are reporting
-allocations, not claims about which alias actually kept a runtime loaded.
+model with no requests is allocated to the structured unattributed row. These
+are reporting allocations, not claims about which alias actually kept a runtime
+loaded. Allocation uses unrounded occupancy values and deterministic
+micro-dollar remainder assignment, so alias rows and canonical-version
+breakdowns add back exactly to the rounded actual occupancy total.
 
 Alias rows include `canonical_versions[]` with:
 

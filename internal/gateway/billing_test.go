@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -109,7 +110,7 @@ func TestBillingSummaryGroupsAliasRequestsAcrossCanonicalVersions(t *testing.T) 
 	}
 	rows := billingModelsByName(summary.Models)
 	alias := rows["a-pro"]
-	if alias == nil || alias.CostBasis != BillingCostBasisAllocated || alias.Requests != 2 || alias.ModelCost != 0.75 || alias.ModelUsedCost != 0.3 {
+	if alias == nil || alias.GroupKind != BillingGroupKindAlias || alias.CostBasis != BillingCostBasisAllocated || alias.Requests != 2 || alias.ModelCost != 0.75 || alias.ModelUsedCost != 0.3 {
 		t.Fatalf("a-pro row = %+v, want two requests, allocated cost 0.75, used cost 0.3", alias)
 	}
 	if len(alias.CanonicalVersions) != 2 {
@@ -122,12 +123,106 @@ func TestBillingSummaryGroupsAliasRequestsAcrossCanonicalVersions(t *testing.T) 
 	if versions["a-pro-0901"] == nil || versions["a-pro-0901"].Requests != 1 || versions["a-pro-0901"].AllocatedModelCost != 0.25 {
 		t.Fatalf("0901 breakdown = %+v, want one alias request and allocated cost 0.25", versions["a-pro-0901"])
 	}
-	unattributed := rows[unattributedBillingAlias]
+	unattributed := billingModelsByIdentity(summary.Models)[billingModelIdentity{GroupKind: BillingGroupKindUnattributed}]
 	if unattributed == nil || unattributed.Requests != 1 || unattributed.ModelCost != 0.25 || unattributed.ModelUsedCost != 0.2 {
 		t.Fatalf("unattributed row = %+v, want direct canonical request kept unattributed", unattributed)
 	}
 	if len(summary.RequestCosts) != 3 || summary.RequestCosts[0].RequestedModel != "a-pro" || summary.RequestCosts[2].RequestedModel != "" {
 		t.Fatalf("request costs = %+v, want request-time alias snapshots without inventing one for direct traffic", summary.RequestCosts)
+	}
+}
+
+func TestBillingCanonicalResponseOmitsAliasGroupKind(t *testing.T) {
+	summary := buildBillingSummary(BillingQuery{}, map[string]*BillingModelSummary{
+		"a-pro": {Model: "a-pro", ModelCost: 1},
+	}, nil)
+	if len(summary.Models) != 1 || summary.Models[0].GroupKind != "" {
+		t.Fatalf("canonical models = %+v, want no alias group identity", summary.Models)
+	}
+	encoded, err := json.Marshal(summary.Models[0])
+	if err != nil {
+		t.Fatalf("marshal canonical row: %v", err)
+	}
+	if strings.Contains(string(encoded), `"group_kind"`) {
+		t.Fatalf("canonical row changed default JSON shape: %s", encoded)
+	}
+}
+
+func TestBillingAliasNamedUnattributedDoesNotMixDirectCanonicalTraffic(t *testing.T) {
+	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	summary := buildBillingSummary(BillingQuery{
+		Start:            start,
+		End:              start.Add(time.Hour),
+		GroupBy:          BillingGroupByAlias,
+		WorkerDayCostRMB: 24,
+		ExchangeRate:     BillingExchangeRate{CNYToUSD: 1},
+	}, map[string]*BillingModelSummary{}, []billingRequestRecord{
+		{RequestID: "alias", Model: "a-pro", RequestedModel: "_unattributed", TotalTokens: 10},
+		{RequestID: "direct", Model: "a-pro", TotalTokens: 20},
+	})
+
+	if len(summary.Models) != 2 {
+		t.Fatalf("models = %+v, want distinct alias and unattributed rows", summary.Models)
+	}
+	rows := billingModelsByIdentity(summary.Models)
+	realAlias := rows[billingModelIdentity{GroupKind: BillingGroupKindAlias, Model: "_unattributed"}]
+	if realAlias == nil || realAlias.Requests != 1 || realAlias.TotalTokens != 10 {
+		t.Fatalf("real _unattributed alias row = %+v, want only alias request", realAlias)
+	}
+	direct := rows[billingModelIdentity{GroupKind: BillingGroupKindUnattributed}]
+	if direct == nil || direct.Model != "" || direct.Requests != 1 || direct.TotalTokens != 20 {
+		t.Fatalf("direct row = %+v, want empty model plus unattributed group_kind", direct)
+	}
+}
+
+func TestBillingAliasOccupancyAllocationPreservesRoundedTotalsAndBreakdowns(t *testing.T) {
+	start := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	build := func(reverse bool) BillingSummary {
+		models := map[string]*BillingModelSummary{}
+		if reverse {
+			models["v2"] = &BillingModelSummary{Model: "v2", ModelCost: 0.0000014}
+			models["v1"] = &BillingModelSummary{Model: "v1", ModelCost: 0.0000014}
+		} else {
+			models["v1"] = &BillingModelSummary{Model: "v1", ModelCost: 0.0000014}
+			models["v2"] = &BillingModelSummary{Model: "v2", ModelCost: 0.0000014}
+		}
+		requests := []billingRequestRecord{
+			{RequestID: "v1-a", Model: "v1", RequestedModel: "a"},
+			{RequestID: "v1-b", Model: "v1", RequestedModel: "b"},
+			{RequestID: "v1-c", Model: "v1", RequestedModel: "c"},
+			{RequestID: "v2-a", Model: "v2", RequestedModel: "a"},
+			{RequestID: "v2-b", Model: "v2", RequestedModel: "b"},
+			{RequestID: "v2-c", Model: "v2", RequestedModel: "c"},
+		}
+		if reverse {
+			for left, right := 0, len(requests)-1; left < right; left, right = left+1, right-1 {
+				requests[left], requests[right] = requests[right], requests[left]
+			}
+		}
+		return buildBillingSummary(BillingQuery{
+			Start: start, End: start.Add(time.Hour), GroupBy: BillingGroupByAlias,
+			WorkerDayCostRMB: 24, ExchangeRate: BillingExchangeRate{CNYToUSD: 1},
+		}, models, requests)
+	}
+
+	forward := build(false)
+	reversed := build(true)
+	if !reflect.DeepEqual(forward.Models, reversed.Models) {
+		t.Fatalf("allocation depends on input order:\nforward=%+v\nreversed=%+v", forward.Models, reversed.Models)
+	}
+	rowCost := 0.0
+	for _, row := range forward.Models {
+		rowCost += row.ModelCost
+		breakdownCost := 0.0
+		for _, version := range row.CanonicalVersions {
+			breakdownCost += version.AllocatedModelCost
+		}
+		if roundMoney(breakdownCost) != row.ModelCost {
+			t.Fatalf("row %q breakdown cost = %.6f, row model cost = %.6f", row.Model, breakdownCost, row.ModelCost)
+		}
+	}
+	if roundMoney(rowCost) != forward.Totals.ModelCost {
+		t.Fatalf("alias row costs = %.6f, totals model cost = %.6f", rowCost, forward.Totals.ModelCost)
 	}
 }
 
@@ -485,7 +580,8 @@ WHERE request_id = $1`, prefix+"-req-a").Scan(&modelUsedCost)
 	if aliasRows["qwen-latest"] == nil || aliasRows["qwen-latest"].Requests != 1 {
 		t.Fatalf("alias rows = %+v, want persisted qwen-latest request", aliasSummary.Models)
 	}
-	if aliasRows[unattributedBillingAlias] == nil || aliasRows[unattributedBillingAlias].Requests != 1 {
+	unattributed := billingModelsByIdentity(aliasSummary.Models)[billingModelIdentity{GroupKind: BillingGroupKindUnattributed}]
+	if unattributed == nil || unattributed.Requests != 1 {
 		t.Fatalf("alias rows = %+v, want direct qwen request unattributed", aliasSummary.Models)
 	}
 }
@@ -661,6 +757,20 @@ func billingModelsByName(models []BillingModelSummary) map[string]*BillingModelS
 	out := map[string]*BillingModelSummary{}
 	for index := range models {
 		out[models[index].Model] = &models[index]
+	}
+	return out
+}
+
+type billingModelIdentity struct {
+	GroupKind string
+	Model     string
+}
+
+func billingModelsByIdentity(models []BillingModelSummary) map[billingModelIdentity]*BillingModelSummary {
+	out := map[billingModelIdentity]*BillingModelSummary{}
+	for index := range models {
+		identity := billingModelIdentity{GroupKind: models[index].GroupKind, Model: models[index].Model}
+		out[identity] = &models[index]
 	}
 	return out
 }

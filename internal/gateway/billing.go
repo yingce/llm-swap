@@ -16,11 +16,12 @@ import (
 const defaultWorkerDayCostRMB = 55.0
 const fallbackCNYToUSDRate = 0.14
 const unattributedBillingAppID = "_unattributed"
-const unattributedBillingAlias = "_unattributed"
 const BillingGroupByCanonical = "canonical"
 const BillingGroupByAlias = "alias"
 const BillingCostBasisActual = "actual"
 const BillingCostBasisAllocated = "allocated"
+const BillingGroupKindAlias = "alias"
+const BillingGroupKindUnattributed = "unattributed"
 
 var billingLocalLocation = time.FixedZone("UTC+8", 8*60*60)
 
@@ -56,6 +57,7 @@ type BillingCostTotals struct {
 
 type BillingModelSummary struct {
 	Model                  string                           `json:"model"`
+	GroupKind              string                           `json:"group_kind,omitempty"`
 	CostBasis              string                           `json:"cost_basis"`
 	ReadySeconds           float64                          `json:"ready_seconds"`
 	BillableWorkerSeconds  float64                          `json:"billable_worker_seconds"`
@@ -564,11 +566,20 @@ func calculateModelReadyCosts(intervals []billingReadyInterval, start, end time.
 }
 
 func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSummary, requests []billingRequestRecord) BillingSummary {
+	if query.GroupBy == "" {
+		query.GroupBy = BillingGroupByCanonical
+	}
 	requestsByModel := map[string][]billingRequestRecord{}
 	totalReadySeconds := 0.0
 	totalBillableSeconds := 0.0
 	totalModelCost := 0.0
-	for model, row := range models {
+	canonicalNames := make([]string, 0, len(models))
+	for model := range models {
+		canonicalNames = append(canonicalNames, model)
+	}
+	sort.Strings(canonicalNames)
+	for _, model := range canonicalNames {
+		row := models[model]
 		totalReadySeconds += row.ReadySeconds
 		totalBillableSeconds += row.BillableWorkerSeconds
 		totalModelCost += row.ModelCost
@@ -643,12 +654,15 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		if totalModelCost > 0 {
 			row.CostShare = row.ModelCost / totalModelCost
 		}
-		row.ReadySeconds = roundSeconds(row.ReadySeconds)
-		row.BillableWorkerSeconds = roundSeconds(row.BillableWorkerSeconds)
-		row.RequestDurationSeconds = roundSeconds(row.RequestDurationSeconds)
-		row.ModelCost = roundMoney(row.ModelCost)
-		row.ModelUsedCost = roundMoney(row.ModelUsedCost)
-		row.ModelIdleCost = roundMoney(row.ModelCost - row.ModelUsedCost)
+		if query.GroupBy == BillingGroupByCanonical {
+			row.CostBasis = BillingCostBasisActual
+			row.ReadySeconds = roundSeconds(row.ReadySeconds)
+			row.BillableWorkerSeconds = roundSeconds(row.BillableWorkerSeconds)
+			row.RequestDurationSeconds = roundSeconds(row.RequestDurationSeconds)
+			row.ModelCost = roundMoney(row.ModelCost)
+			row.ModelUsedCost = roundMoney(row.ModelUsedCost)
+			row.ModelIdleCost = roundMoney(row.ModelCost - row.ModelUsedCost)
+		}
 		modelRows = append(modelRows, *row)
 	}
 	sort.Slice(modelRows, func(i, j int) bool {
@@ -691,15 +705,8 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 		totalUsedCost += row.ModelUsedCost
 	}
 
-	if query.GroupBy == "" {
-		query.GroupBy = BillingGroupByCanonical
-	}
 	if query.GroupBy == BillingGroupByAlias {
 		modelRows = groupBillingModelsByAlias(modelRows, requests, query.ModelPricing)
-	} else {
-		for index := range modelRows {
-			modelRows[index].CostBasis = BillingCostBasisActual
-		}
 	}
 
 	return BillingSummary{
@@ -731,21 +738,33 @@ func buildBillingSummary(query BillingQuery, models map[string]*BillingModelSumm
 	}
 }
 
+type billingAliasGroup struct {
+	Kind string
+	Name string
+}
+
+type billingAliasAllocationCell struct {
+	Canonical string
+	Group     billingAliasGroup
+	RawMicros float64
+	Micros    int64
+}
+
 func groupBillingModelsByAlias(canonicalRows []BillingModelSummary, requests []billingRequestRecord, pricing map[string]config.ModelBilling) []BillingModelSummary {
-	groups := map[string]*BillingModelSummary{}
-	breakdowns := map[string]map[string]*BillingCanonicalVersionSummary{}
-	requestCounts := map[string]map[string]int{}
+	groups := map[billingAliasGroup]*BillingModelSummary{}
+	breakdowns := map[billingAliasGroup]map[string]*BillingCanonicalVersionSummary{}
+	requestCounts := map[string]map[billingAliasGroup]int{}
 	requestsByCanonical := map[string]int{}
 
-	ensureGroup := func(name string) *BillingModelSummary {
-		row := groups[name]
+	ensureGroup := func(group billingAliasGroup) *BillingModelSummary {
+		row := groups[group]
 		if row == nil {
-			row = &BillingModelSummary{Model: name, CostBasis: BillingCostBasisAllocated}
-			groups[name] = row
+			row = &BillingModelSummary{Model: group.Name, GroupKind: group.Kind, CostBasis: BillingCostBasisAllocated}
+			groups[group] = row
 		}
 		return row
 	}
-	ensureBreakdown := func(group, canonical string) *BillingCanonicalVersionSummary {
+	ensureBreakdown := func(group billingAliasGroup, canonical string) *BillingCanonicalVersionSummary {
 		byCanonical := breakdowns[group]
 		if byCanonical == nil {
 			byCanonical = map[string]*BillingCanonicalVersionSummary{}
@@ -760,9 +779,9 @@ func groupBillingModelsByAlias(canonicalRows []BillingModelSummary, requests []b
 	}
 
 	for _, request := range requests {
-		group := strings.TrimSpace(request.RequestedModel)
-		if group == "" {
-			group = unattributedBillingAlias
+		group := billingAliasGroup{Kind: BillingGroupKindUnattributed}
+		if requested := strings.TrimSpace(request.RequestedModel); requested != "" {
+			group = billingAliasGroup{Kind: BillingGroupKindAlias, Name: requested}
 		}
 		row := ensureGroup(group)
 		breakdown := ensureBreakdown(group, request.Model)
@@ -785,33 +804,65 @@ func groupBillingModelsByAlias(canonicalRows []BillingModelSummary, requests []b
 		breakdown.ModelUsedCost += usedCost
 
 		if requestCounts[request.Model] == nil {
-			requestCounts[request.Model] = map[string]int{}
+			requestCounts[request.Model] = map[billingAliasGroup]int{}
 		}
 		requestCounts[request.Model][group]++
 		requestsByCanonical[request.Model]++
 	}
 
+	sort.Slice(canonicalRows, func(i, j int) bool { return canonicalRows[i].Model < canonicalRows[j].Model })
 	totalReadySeconds := 0.0
 	totalModelCost := 0.0
+	allocationCells := make([]billingAliasAllocationCell, 0)
 	for _, canonical := range canonicalRows {
 		totalReadySeconds += canonical.ReadySeconds
 		totalModelCost += canonical.ModelCost
 		counts := requestCounts[canonical.Model]
 		if requestsByCanonical[canonical.Model] == 0 {
-			counts = map[string]int{unattributedBillingAlias: 1}
+			counts = map[billingAliasGroup]int{{Kind: BillingGroupKindUnattributed}: 1}
 		}
 		denominator := 0
 		for _, count := range counts {
 			denominator += count
 		}
-		for group, count := range counts {
+		groupKeys := make([]billingAliasGroup, 0, len(counts))
+		for group := range counts {
+			groupKeys = append(groupKeys, group)
+		}
+		sort.Slice(groupKeys, func(i, j int) bool {
+			if groupKeys[i].Kind == groupKeys[j].Kind {
+				return groupKeys[i].Name < groupKeys[j].Name
+			}
+			return groupKeys[i].Kind < groupKeys[j].Kind
+		})
+		for _, group := range groupKeys {
+			count := counts[group]
 			share := float64(count) / float64(denominator)
 			row := ensureGroup(group)
 			row.ReadySeconds += canonical.ReadySeconds * share
 			row.BillableWorkerSeconds += canonical.BillableWorkerSeconds * share
-			row.ModelCost += canonical.ModelCost * share
-			breakdown := ensureBreakdown(group, canonical.Model)
-			breakdown.AllocatedModelCost += canonical.ModelCost * share
+			ensureBreakdown(group, canonical.Model)
+			allocationCells = append(allocationCells, billingAliasAllocationCell{
+				Canonical: canonical.Model,
+				Group:     group,
+				RawMicros: canonical.ModelCost * share * 1_000_000,
+			})
+		}
+	}
+	allocateBillingMicros(allocationCells, int64(math.Round(totalModelCost*1_000_000)))
+	groupCostMicros := map[billingAliasGroup]int64{}
+	versionCostMicros := map[billingAliasGroup]map[string]int64{}
+	for _, cell := range allocationCells {
+		groupCostMicros[cell.Group] += cell.Micros
+		if versionCostMicros[cell.Group] == nil {
+			versionCostMicros[cell.Group] = map[string]int64{}
+		}
+		versionCostMicros[cell.Group][cell.Canonical] += cell.Micros
+	}
+	for group, micros := range groupCostMicros {
+		ensureGroup(group).ModelCost = float64(micros) / 1_000_000
+		for canonical, versionMicros := range versionCostMicros[group] {
+			ensureBreakdown(group, canonical).AllocatedModelCost = float64(versionMicros) / 1_000_000
 		}
 	}
 
@@ -841,11 +892,39 @@ func groupBillingModelsByAlias(canonicalRows []BillingModelSummary, requests []b
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].ModelCost == rows[j].ModelCost {
+			if rows[i].Model == rows[j].Model {
+				return rows[i].GroupKind < rows[j].GroupKind
+			}
 			return rows[i].Model < rows[j].Model
 		}
 		return rows[i].ModelCost > rows[j].ModelCost
 	})
 	return rows
+}
+
+func allocateBillingMicros(cells []billingAliasAllocationCell, targetMicros int64) {
+	allocated := int64(0)
+	for index := range cells {
+		cells[index].Micros = int64(math.Floor(cells[index].RawMicros))
+		allocated += cells[index].Micros
+	}
+	sort.SliceStable(cells, func(i, j int) bool {
+		iRemainder := cells[i].RawMicros - float64(cells[i].Micros)
+		jRemainder := cells[j].RawMicros - float64(cells[j].Micros)
+		if iRemainder != jRemainder {
+			return iRemainder > jRemainder
+		}
+		if cells[i].Canonical != cells[j].Canonical {
+			return cells[i].Canonical < cells[j].Canonical
+		}
+		if cells[i].Group.Kind != cells[j].Group.Kind {
+			return cells[i].Group.Kind < cells[j].Group.Kind
+		}
+		return cells[i].Group.Name < cells[j].Group.Name
+	})
+	for remaining, index := targetMicros-allocated, int64(0); remaining > 0 && len(cells) > 0; remaining, index = remaining-1, index+1 {
+		cells[index%int64(len(cells))].Micros++
+	}
 }
 
 func calculateConfiguredUsageCost(pricing config.ModelBilling, request billingRequestRecord) float64 {
