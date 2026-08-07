@@ -76,6 +76,18 @@ func NewServerWithGatewayPersistencePathsAndConfigPathAndOverrides(cfg config.Ga
 }
 
 func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string, configPath string, overrides config.GatewayRuntimeOverrides) *Server {
+	return newServerWithConfigManager(cfg, requestLogPath, workerEventLogPath, configPath, NewConfigManagerWithOverrides(cfg, configPath, overrides))
+}
+
+func NewServerWithConfigRevisionStore(ctx context.Context, cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string, configPath string, overrides config.GatewayRuntimeOverrides, revisionStore ConfigRevisionStore) (*Server, error) {
+	manager, err := NewConfigManagerWithOverridesAndRevisionStore(ctx, cfg, configPath, overrides, revisionStore)
+	if err != nil {
+		return nil, err
+	}
+	return newServerWithConfigManager(cfg, requestLogPath, workerEventLogPath, configPath, manager), nil
+}
+
+func newServerWithConfigManager(cfg config.GatewayConfig, requestLogPath string, workerEventLogPath string, configPath string, configManager *ConfigManager) *Server {
 	if cfg.Tokens.LlamaSwap == "" {
 		cfg.Tokens.LlamaSwap = cfg.Tokens.Agent
 	}
@@ -127,7 +139,7 @@ func newServerWithPaths(cfg config.GatewayConfig, requestLogPath string, workerE
 	transportLeases, transportLeaseErr := NewTransportLeaseManager(transportLeaseStore, nil, nil)
 
 	s := &Server{
-		configManager:      NewConfigManagerWithOverrides(cfg, configPath, overrides),
+		configManager:      configManager,
 		workers:            NewWorkerRegistry(6 * time.Second),
 		accounting:         NewAccounting(),
 		limiter:            NewQueueLimiter(),

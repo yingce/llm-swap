@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,13 +19,15 @@ import (
 const uiConfigRedactedSecret = "__LLMSWAP_REDACTED__"
 
 type ConfigManager struct {
-	mu          sync.RWMutex
-	cfg         config.GatewayConfig
-	fileCfg     config.GatewayConfig
-	rawYAML     []byte
-	version     int64
-	configPath  string
-	runtimePins runtimeConfigPins
+	applyMu       sync.Mutex
+	mu            sync.RWMutex
+	cfg           config.GatewayConfig
+	fileCfg       config.GatewayConfig
+	rawYAML       []byte
+	version       int64
+	revisionStore ConfigRevisionStore
+	configPath    string
+	runtimePins   runtimeConfigPins
 }
 
 type runtimeConfigPins struct {
@@ -81,6 +84,28 @@ func NewConfigManager(cfg config.GatewayConfig, configPath string) *ConfigManage
 }
 
 func NewConfigManagerWithOverrides(cfg config.GatewayConfig, configPath string, overrides config.GatewayRuntimeOverrides) *ConfigManager {
+	manager, err := NewConfigManagerWithOverridesAndRevisionStore(context.Background(), cfg, configPath, overrides, NewMemoryConfigRevisionStore())
+	if err != nil {
+		panic(fmt.Sprintf("initialize in-memory configuration revision: %v", err))
+	}
+	return manager
+}
+
+func NewConfigManagerWithRevisionStore(ctx context.Context, cfg config.GatewayConfig, configPath string, store ConfigRevisionStore) (*ConfigManager, error) {
+	return NewConfigManagerWithOverridesAndRevisionStore(ctx, cfg, configPath, config.GatewayRuntimeOverrides{}, store)
+}
+
+func NewConfigManagerWithOverridesAndRevisionStore(ctx context.Context, cfg config.GatewayConfig, configPath string, overrides config.GatewayRuntimeOverrides, store ConfigRevisionStore) (*ConfigManager, error) {
+	if store == nil {
+		return nil, fmt.Errorf("configuration revision store is required")
+	}
+	revision, err := store.Allocate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("allocate startup configuration revision: %w", err)
+	}
+	if revision <= 0 {
+		return nil, fmt.Errorf("allocate startup configuration revision: store returned non-positive revision %d", revision)
+	}
 	cfg = normalizeGatewayConfigForServer(cfg)
 	fileCfg := cfg
 	var rawYAML []byte
@@ -93,18 +118,19 @@ func NewConfigManagerWithOverrides(cfg config.GatewayConfig, configPath string, 
 		}
 	}
 	return &ConfigManager{
-		cfg:        cloneGatewayConfig(cfg),
-		fileCfg:    cloneGatewayConfig(fileCfg),
-		rawYAML:    rawYAML,
-		version:    1,
-		configPath: configPath,
+		cfg:           cloneGatewayConfig(cfg),
+		fileCfg:       cloneGatewayConfig(fileCfg),
+		rawYAML:       rawYAML,
+		version:       revision,
+		revisionStore: store,
+		configPath:    configPath,
 		runtimePins: runtimeConfigPins{
 			Tokens:           cfg.Tokens,
 			ListenAddr:       cfg.Gateway.ListenAddr,
 			ProxyAttempts:    cfg.Gateway.ProxyAttempts,
 			PinProxyAttempts: overrides.ProxyAttempts,
 		},
-	}
+	}, nil
 }
 
 func normalizeGatewayConfigForServer(cfg config.GatewayConfig) config.GatewayConfig {
@@ -214,9 +240,26 @@ func (m *ConfigManager) dryRun(raw []byte) (uiConfigDryRunResponse, config.Gatew
 }
 
 func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
+	return m.ApplyContext(context.Background(), raw)
+}
+
+func (m *ConfigManager) ApplyContext(ctx context.Context, raw []byte) (uiConfigApplyResponse, error) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	dryRun, runtimeCfg, fileCfg, preparedRaw := m.dryRun(raw)
 	if !dryRun.Valid {
 		return uiConfigApplyResponse{}, errInvalidConfig{message: dryRun.Error}
+	}
+	var revision int64
+	if !dryRun.RequiresGatewayRestart {
+		var err error
+		revision, err = m.revisionStore.Allocate(ctx)
+		if err != nil {
+			return uiConfigApplyResponse{}, fmt.Errorf("allocate hot-apply configuration revision: %w", err)
+		}
+		if revision <= dryRun.Version {
+			return uiConfigApplyResponse{}, fmt.Errorf("allocate hot-apply configuration revision: store returned %d after %d", revision, dryRun.Version)
+		}
 	}
 	if strings.TrimSpace(m.configPath) != "" {
 		if err := os.MkdirAll(filepath.Dir(m.configPath), 0o755); err != nil {
@@ -243,8 +286,8 @@ func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
 	m.cfg = cloneGatewayConfig(runtimeCfg)
 	m.fileCfg = cloneGatewayConfig(fileCfg)
 	m.rawYAML = append([]byte(nil), preparedRaw...)
-	m.version++
-	version := m.version
+	m.version = revision
+	version := revision
 	m.mu.Unlock()
 	return uiConfigApplyResponse{
 		Version:                version,

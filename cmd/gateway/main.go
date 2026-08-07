@@ -12,21 +12,27 @@ import (
 )
 
 func main() {
-	runtime, err := config.LoadGatewayRuntime(context.Background(), config.GatewayRuntimeOptions{
+	ctx := context.Background()
+	runtime, err := config.LoadGatewayRuntime(ctx, config.GatewayRuntimeOptions{
 		Args: os.Args[1:],
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	srv := gateway.NewServerWithGatewayPersistencePathsAndConfigPathAndOverrides(
+	srv, err := gateway.NewServerWithConfigRevisionStore(
+		ctx,
 		runtime.Config,
 		gateway.DefaultGatewayRequestLogPath,
 		gateway.DefaultGatewayWorkerEventLogPath,
 		runtime.ConfigPath,
 		runtime.Overrides,
+		gateway.NewFileConfigRevisionStore(gateway.DefaultGatewayConfigRevisionPath),
 	)
-	go srv.RunLoadedReconciler(context.Background(), 30*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
+	go srv.RunLoadedReconciler(ctx, 30*time.Second)
 
 	log.Fatal(http.ListenAndServe(runtime.ListenAddr, srv))
 }

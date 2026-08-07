@@ -49,7 +49,7 @@ func (s *Server) handleUIConfigApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read config", http.StatusBadRequest)
 		return
 	}
-	resp, err := s.configManager.Apply(raw)
+	resp, err := s.configManager.ApplyContext(r.Context(), raw)
 	if err != nil {
 		status := http.StatusInternalServerError
 		var invalid errInvalidConfig
