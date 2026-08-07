@@ -52,6 +52,11 @@ The Gateway remains the authority for desired configuration. The shared state is
 only a cross-process fence for Agents that mount the same model root; it does
 not move scheduling or replica policy to workers.
 
+Gateway configuration revisions are globally increasing across process
+restarts. The first backend stores the revision atomically under the Gateway
+state directory behind a small storage interface; a future Redis backend may
+implement the same allocation contract.
+
 ### Failure handling and observability
 
 - Superseded work emits `artifact_install_cancelled` with the old and winning

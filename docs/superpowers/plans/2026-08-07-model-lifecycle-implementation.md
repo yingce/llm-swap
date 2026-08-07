@@ -28,6 +28,18 @@
 - [ ] Populate the response from the Gateway configuration snapshot version.
 - [ ] Re-run targeted tests; commit `feat: expose gateway config revision to agents`.
 
+### Task 1B: Persist the global configuration revision
+
+**Files:** Gateway configuration manager/persistence files, focused Gateway tests, and Gateway startup wiring.
+
+**Produces:** a storage interface for allocating globally increasing configuration revisions, with an atomic file implementation under the Gateway state directory; a later Redis implementation can satisfy the same interface.
+
+- [ ] Write failing tests proving revision remains greater after constructing a new Gateway process against the same state directory.
+- [ ] Add the revision-store interface and atomic state-file implementation.
+- [ ] Allocate a new revision on Gateway startup and each successful hot apply; never reset to `1` while state is preserved.
+- [ ] Keep the existing in-memory implementation available for tests that do not configure persistence.
+- [ ] Run focused Gateway tests and the full Gateway package; commit `feat: persist gateway config revision`.
+
 ### Task 2: Fence shared artifact commits and cancel stale work
 
 **Files:** `internal/agent/artifacts.go`, `internal/agent/artifacts_lock_unix.go`, `internal/agent/artifacts_lock_windows.go`, `internal/agent/reconcile.go`, `internal/agent/artifacts_test.go`, `internal/agent/reconcile_test.go`
