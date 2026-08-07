@@ -238,6 +238,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 }
 
 type artifactInstallKey struct {
+	Revision  int64
 	Model     string
 	ModelDir  string
 	Object    string
@@ -249,6 +250,7 @@ type artifactInstallState struct {
 	key     artifactInstallKey
 	running bool
 	err     error
+	cancel  context.CancelCauseFunc
 }
 
 type artifactInstallResult struct {
@@ -257,14 +259,26 @@ type artifactInstallResult struct {
 	err   error
 }
 
-func artifactKey(modelName string, modelDirName string, artifactObject string, artifactKind string, artifactCRC string) artifactInstallKey {
-	return artifactInstallKey{
+func artifactKey(modelName string, modelDirName string, artifactObject string, artifactKind string, artifactCRC string, revision ...int64) artifactInstallKey {
+	key := artifactInstallKey{
 		Model:     modelName,
 		ModelDir:  modelDirName,
 		Object:    artifactObject,
 		Kind:      artifactKind,
 		CRC64ECMA: artifactCRC,
 	}
+	if len(revision) > 0 {
+		key.Revision = revision[0]
+	}
+	return key
+}
+
+func (k artifactInstallKey) fingerprint() string {
+	return artifactFingerprint(config.Artifact{Object: k.Object, Kind: k.Kind, CRC64ECMA: k.CRC64ECMA})
+}
+
+func (k artifactInstallKey) fence() artifactInstallFence {
+	return artifactInstallFence{ConfigRevision: k.Revision, ArtifactFingerprint: k.fingerprint()}
 }
 
 func (r *Reconciler) reconcileRunOnce(ctx context.Context, installs map[string]*artifactInstallState, installDone chan artifactInstallResult) (protocol.HeartbeatResponse, error) {
@@ -407,6 +421,48 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 	var installing bool
 	installRunning := false
 	startedNewInstall := false
+	allowedModels := make(map[string]struct{}, len(cfg.TagPolicy.AllowedModels))
+	for _, modelName := range cfg.TagPolicy.AllowedModels {
+		allowedModels[modelName] = struct{}{}
+	}
+	desiredByModelDir := make(map[string]artifactInstallFence, len(cfg.TagPolicy.AllowedModels))
+	for _, modelName := range cfg.TagPolicy.AllowedModels {
+		model, ok := cfg.Models[modelName]
+		if !ok {
+			continue
+		}
+		modelDirName := config.ResolvedModelDir(modelName, model)
+		desiredByModelDir[filepath.Clean(modelDirName)] = artifactInstallFence{
+			ConfigRevision:      cfg.ConfigRevision,
+			ArtifactFingerprint: artifactFingerprint(model.Artifact),
+		}
+	}
+	for modelName, state := range installs {
+		if _, allowed := allowedModels[modelName]; allowed {
+			continue
+		}
+		if !state.running {
+			delete(installs, modelName)
+			continue
+		}
+		winner, reusedModelDir := desiredByModelDir[filepath.Clean(state.key.ModelDir)]
+		if !reusedModelDir {
+			winner = artifactInstallFence{
+				ConfigRevision:      cfg.ConfigRevision,
+				ArtifactFingerprint: removedArtifactFingerprint(),
+			}
+		}
+		published, _, err := publishArtifactInstallFence(ctx, r.ModelRoot, state.key.ModelDir, winner)
+		if err != nil {
+			outErr = errors.Join(outErr, fmt.Errorf("publish artifact removal fence for %q: %w", modelName, err))
+		} else {
+			winner = published
+		}
+		if state.cancel != nil {
+			state.cancel(newArtifactInstallSupersededError(state.key.fence(), winner))
+		}
+		installing = true
+	}
 	for _, state := range installs {
 		if state.running {
 			installRunning = true
@@ -423,13 +479,13 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 		}
 
 		modelDirName := config.ResolvedModelDir(modelName, model)
-		key := artifactKey(modelName, modelDirName, model.Artifact.Object, model.Artifact.Kind, model.Artifact.CRC64ECMA)
-		if state, ok := installs[modelName]; ok && state.running && state.key == key {
-			status[modelName] = "installing"
-			installing = true
+		key := artifactKey(modelName, modelDirName, model.Artifact.Object, model.Artifact.Kind, model.Artifact.CRC64ECMA, cfg.ConfigRevision)
+		winner, desiredCurrent, err := publishArtifactInstallFence(ctx, r.ModelRoot, modelDirName, key.fence())
+		if err != nil {
+			status[modelName] = "error"
+			outErr = errors.Join(outErr, fmt.Errorf("publish artifact fence for %q: %w", modelName, err))
 			continue
 		}
-
 		modelDir := filepath.Join(r.ModelRoot, modelDirName)
 		matches, err := MarkerMatches(modelDir, modelName, model.Artifact)
 		if err != nil {
@@ -437,11 +493,32 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			outErr = errors.Join(outErr, fmt.Errorf("read artifact marker for %q: %w", modelName, err))
 			continue
 		}
-		if matches {
+		if matches && desiredCurrent {
+			if state, ok := installs[modelName]; ok && state.running && state.key != key && state.cancel != nil {
+				state.cancel(newArtifactInstallSupersededError(state.key.fence(), winner))
+			}
 			status[modelName] = "ready"
 			if state, ok := installs[modelName]; ok && !state.running {
 				delete(installs, modelName)
 			}
+			continue
+		}
+		if state, ok := installs[modelName]; ok && state.running && (state.key != key || !desiredCurrent) {
+			if state.cancel != nil {
+				state.cancel(newArtifactInstallSupersededError(state.key.fence(), winner))
+			}
+			status[modelName] = "pending"
+			installing = true
+			continue
+		}
+		if !desiredCurrent {
+			status[modelName] = "pending"
+			installing = true
+			continue
+		}
+		if state, ok := installs[modelName]; ok && state.running && state.key == key {
+			status[modelName] = "installing"
+			installing = true
 			continue
 		}
 
@@ -462,11 +539,13 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			continue
 		}
 
-		installs[modelName] = &artifactInstallState{key: key, running: true}
+		installCtx, cancelInstall := context.WithCancelCause(ctx)
+		installs[modelName] = &artifactInstallState{key: key, running: true, cancel: cancelInstall}
 		status[modelName] = "installing"
 		installing = true
 		startedNewInstall = true
-		go func(modelName string, modelDirName string, key artifactInstallKey) {
+		go func(modelName string, modelDirName string, key artifactInstallKey, installCtx context.Context, cancelInstall context.CancelCauseFunc) {
+			defer cancelInstall(nil)
 			started := time.Now()
 			r.recordEvent(protocol.AgentEvent{
 				Event:     "artifact_install_start",
@@ -475,7 +554,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 				Kind:      model.Artifact.Kind,
 				CRC64ECMA: model.Artifact.CRC64ECMA,
 			})
-			_, err := InstallArtifactWithProgressAt(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, modelDirName, model.Artifact, func(progress ArtifactProgress) {
+			_, err := installArtifactWithProgressAtRevision(installCtx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, modelDirName, key.Revision, model.Artifact, func(progress ArtifactProgress) {
 				r.recordEvent(protocol.AgentEvent{
 					Event:           "artifact_download_progress",
 					Model:           modelName,
@@ -485,9 +564,35 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 					TotalBytes:      progress.TotalBytes,
 					Percent:         progress.Percent,
 				})
+			}, func(observation artifactInstallObservation) {
+				r.recordEvent(protocol.AgentEvent{
+					Event:     observation.Event,
+					Model:     modelName,
+					Object:    model.Artifact.Object,
+					Kind:      model.Artifact.Kind,
+					CRC64ECMA: model.Artifact.CRC64ECMA,
+					FromState: observation.Fingerprint,
+					ToState:   observation.WinningFingerprint,
+				})
 			})
 			durationMS := time.Since(started).Milliseconds()
-			if err != nil {
+			var superseded *artifactInstallSupersededError
+			if !errors.As(err, &superseded) {
+				_ = errors.As(context.Cause(installCtx), &superseded)
+			}
+			if superseded != nil {
+				r.recordEvent(protocol.AgentEvent{
+					Event:      "artifact_install_cancelled",
+					Model:      modelName,
+					Object:     model.Artifact.Object,
+					Kind:       model.Artifact.Kind,
+					CRC64ECMA:  model.Artifact.CRC64ECMA,
+					FromState:  superseded.Fingerprint,
+					ToState:    superseded.WinningFingerprint,
+					DurationMS: durationMS,
+				})
+				err = nil
+			} else if err != nil {
 				r.recordEvent(protocol.AgentEvent{
 					Event:      "artifact_install_error",
 					Model:      modelName,
@@ -510,7 +615,7 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			case installDone <- result:
 			case <-ctx.Done():
 			}
-		}(modelName, modelDirName, key)
+		}(modelName, modelDirName, key, installCtx, cancelInstall)
 	}
 
 	return status, installing, outErr
@@ -745,7 +850,21 @@ func (r *Reconciler) installAllowedArtifacts(ctx context.Context, cfg protocol.A
 			continue
 		}
 		modelDirName := config.ResolvedModelDir(modelName, model)
-		if _, err := InstallArtifactAt(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, modelDirName, model.Artifact); err != nil {
+		if _, err := installArtifactWithProgressAtRevision(ctx, r.HTTPClient, cfg.OSS.BaseURL, r.ModelRoot, modelName, modelDirName, cfg.ConfigRevision, model.Artifact, nil, nil); err != nil {
+			var superseded *artifactInstallSupersededError
+			if errors.As(err, &superseded) {
+				status[modelName] = "pending"
+				r.recordEvent(protocol.AgentEvent{
+					Event:     "artifact_install_cancelled",
+					Model:     modelName,
+					Object:    model.Artifact.Object,
+					Kind:      model.Artifact.Kind,
+					CRC64ECMA: model.Artifact.CRC64ECMA,
+					FromState: superseded.Fingerprint,
+					ToState:   superseded.WinningFingerprint,
+				})
+				continue
+			}
 			status[modelName] = "error"
 			outErr = errors.Join(outErr, fmt.Errorf("install artifact for %q: %w", modelName, err))
 			continue

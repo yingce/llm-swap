@@ -1621,7 +1621,7 @@ func TestRunHeartbeatsWhileArtifactInstallBlocked(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotStartNewArtifactInstallWhileSameModelRunning(t *testing.T) {
+func TestRunCancelsSupersededArtifactInstallBeforeStartingReplacement(t *testing.T) {
 	payloadA := []byte("model payload A")
 	payloadB := []byte("model payload B")
 	crcA := crc64String(payloadA)
@@ -1768,28 +1768,26 @@ func TestRunDoesNotStartNewArtifactInstallWhileSameModelRunning(t *testing.T) {
 	select {
 	case hb := <-postBHeartbeat:
 		if got := hb.Artifacts["qwen"]; got != "pending" {
-			t.Fatalf("post-change artifact status = %q, want pending behind old artifact install", got)
+			t.Fatalf("post-change artifact status = %q, want pending while old artifact cancels", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("heartbeat after artifact B config was not observed")
 	}
 	select {
 	case <-bGetStarted:
-		t.Fatal("artifact B GET started while artifact A install was still running")
+	case <-time.After(time.Second):
+		t.Fatal("artifact B GET did not start after artifact A was superseded")
+	}
+	select {
 	case got := <-concurrentGET:
 		t.Fatalf("concurrent artifact GETs = %d, want at most 1", got)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
-	if got := getCount.Load(); got != 1 {
-		t.Fatalf("artifact GET count before releasing A = %d, want 1", got)
+	if got := getCount.Load(); got != 2 {
+		t.Fatalf("artifact GET count after supersession = %d, want 2 sequential requests", got)
 	}
 
 	closeReleaseA.Do(func() { close(releaseA) })
-	select {
-	case <-bGetStarted:
-	case <-time.After(time.Second):
-		t.Fatal("artifact B GET did not start after artifact A finished")
-	}
 	closeReleaseB.Do(func() { close(releaseB) })
 
 	cancel()
@@ -1802,6 +1800,332 @@ func TestRunDoesNotStartNewArtifactInstallWhileSameModelRunning(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Run() did not stop after cancellation")
+	}
+}
+
+func TestTwoReconcilersSharedRootCancelSupersededInstallAndPreserveWinningMarker(t *testing.T) {
+	oldPayload := []byte("old model payload")
+	newPayload := []byte("new model payload")
+	oldArtifact := config.Artifact{Object: "models/old.gguf", Kind: "file", CRC64ECMA: crc64String(oldPayload)}
+	newArtifact := config.Artifact{Object: "models/new.gguf", Kind: "file", CRC64ECMA: crc64String(newPayload)}
+
+	oldGETStarted := make(chan struct{})
+	oldGETCancelled := make(chan struct{})
+	releaseOldGET := make(chan struct{})
+	var closeOldStarted sync.Once
+	var closeOldCancelled sync.Once
+	var closeReleaseOld sync.Once
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload []byte
+		var artifact config.Artifact
+		switch r.URL.Path {
+		case "/models/old.gguf":
+			payload = oldPayload
+			artifact = oldArtifact
+		case "/models/new.gguf":
+			payload = newPayload
+			artifact = newArtifact
+		default:
+			t.Fatalf("unexpected artifact path %s", r.URL.Path)
+		}
+		w.Header().Set("x-oss-hash-crc64ecma", artifact.CRC64ECMA)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			if artifact.Object == oldArtifact.Object {
+				closeOldStarted.Do(func() { close(oldGETStarted) })
+				select {
+				case <-releaseOldGET:
+				case <-r.Context().Done():
+					closeOldCancelled.Do(func() { close(oldGETCancelled) })
+					return
+				}
+			}
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	t.Cleanup(func() {
+		closeReleaseOld.Do(func() { close(releaseOldGET) })
+		oss.Close()
+	})
+
+	modelRoot := t.TempDir()
+	oldCfg := reconcileConfigWithArtifact(oss.URL, oldArtifact)
+	oldCfg.ConfigRevision = 1
+	newCfg := reconcileConfigWithArtifact(oss.URL, newArtifact)
+	newCfg.ConfigRevision = 2
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	oldReconciler := &Reconciler{ModelRoot: modelRoot, HTTPClient: oss.Client()}
+	newReconciler := &Reconciler{ModelRoot: modelRoot, HTTPClient: oss.Client()}
+	oldInstalls := make(map[string]*artifactInstallState)
+	newInstalls := make(map[string]*artifactInstallState)
+	oldDone := make(chan artifactInstallResult, 1)
+	newDone := make(chan artifactInstallResult, 1)
+
+	status, _, err := oldReconciler.installAllowedArtifactsAsync(ctx, oldCfg, oldInstalls, oldDone)
+	if err != nil {
+		t.Fatalf("start old install: %v", err)
+	}
+	if got := status["qwen"]; got != "installing" {
+		t.Fatalf("old artifact status = %q, want installing", got)
+	}
+	select {
+	case <-oldGETStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old artifact GET did not start")
+	}
+
+	status, _, err = newReconciler.installAllowedArtifactsAsync(ctx, newCfg, newInstalls, newDone)
+	if err != nil {
+		t.Fatalf("start new install: %v", err)
+	}
+	if got := status["qwen"]; got != "installing" {
+		t.Fatalf("new artifact status = %q, want installing", got)
+	}
+	select {
+	case result := <-newDone:
+		newReconciler.applyInstallResult(newInstalls, result)
+		if result.err != nil {
+			t.Fatalf("new install result: %v", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("new artifact install did not finish")
+	}
+
+	if _, _, err := oldReconciler.installAllowedArtifactsAsync(ctx, newCfg, oldInstalls, oldDone); err != nil {
+		t.Fatalf("publish new revision to old reconciler: %v", err)
+	}
+	select {
+	case <-oldGETCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("old artifact request context was not cancelled by newer revision")
+	}
+	select {
+	case result := <-oldDone:
+		oldReconciler.applyInstallResult(oldInstalls, result)
+		if result.err != nil {
+			t.Fatalf("superseded install was reported as an installation error: %v", result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("superseded install did not finish after cancellation")
+	}
+
+	wantOldFingerprint := artifactLockName("", oldArtifact)
+	wantWinningFingerprint := artifactLockName("", newArtifact)
+	var cancellation *protocol.AgentEvent
+	for i := range oldReconciler.events {
+		if oldReconciler.events[i].Event == "artifact_install_cancelled" {
+			cancellation = &oldReconciler.events[i]
+			break
+		}
+	}
+	if cancellation == nil {
+		t.Fatalf("events = %+v, want artifact_install_cancelled", oldReconciler.events)
+	}
+	if cancellation.FromState != wantOldFingerprint || cancellation.ToState != wantWinningFingerprint {
+		t.Fatalf("cancellation fingerprints = %q -> %q, want %q -> %q", cancellation.FromState, cancellation.ToState, wantOldFingerprint, wantWinningFingerprint)
+	}
+
+	modelDir := filepath.Join(modelRoot, "qwen")
+	winningMatches, err := MarkerMatches(modelDir, "qwen", newArtifact)
+	if err != nil {
+		t.Fatalf("read winning marker: %v", err)
+	}
+	if !winningMatches {
+		t.Fatal("newer artifact marker was not preserved")
+	}
+	oldMatches, err := MarkerMatches(modelDir, "qwen", oldArtifact)
+	if err != nil {
+		t.Fatalf("read old marker: %v", err)
+	}
+	if oldMatches {
+		t.Fatal("superseded artifact replaced the winning marker")
+	}
+}
+
+func TestNewerConfigRevisionCancelsInstallWhenArtifactFingerprintIsUnchanged(t *testing.T) {
+	payload := []byte("model payload")
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: crc64String(payload)}
+	getStarted := make(chan struct{})
+	getCancelled := make(chan struct{})
+	var closeStarted sync.Once
+	var closeCancelled sync.Once
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-oss-hash-crc64ecma", artifact.CRC64ECMA)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			closeStarted.Do(func() { close(getStarted) })
+			<-r.Context().Done()
+			closeCancelled.Do(func() { close(getCancelled) })
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	oldCfg := reconcileConfigWithArtifact(oss.URL, artifact)
+	oldCfg.ConfigRevision = 41
+	newCfg := reconcileConfigWithArtifact(oss.URL, artifact)
+	newCfg.ConfigRevision = 42
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rec := &Reconciler{ModelRoot: t.TempDir(), HTTPClient: oss.Client()}
+	installs := make(map[string]*artifactInstallState)
+	installDone := make(chan artifactInstallResult, 1)
+
+	if _, _, err := rec.installAllowedArtifactsAsync(ctx, oldCfg, installs, installDone); err != nil {
+		t.Fatalf("start revision 41 install: %v", err)
+	}
+	select {
+	case <-getStarted:
+	case <-time.After(time.Second):
+		t.Fatal("revision 41 artifact GET did not start")
+	}
+	if _, _, err := rec.installAllowedArtifactsAsync(ctx, newCfg, installs, installDone); err != nil {
+		t.Fatalf("publish revision 42: %v", err)
+	}
+	select {
+	case <-getCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("revision-only supersession did not cancel the old request context")
+	}
+	select {
+	case result := <-installDone:
+		if result.err != nil {
+			t.Fatalf("revision-only supersession reported an installation error: %v", result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("revision 41 install did not finish after cancellation")
+	}
+
+	fingerprint := artifactFingerprint(artifact)
+	for _, event := range rec.events {
+		if event.Event == "artifact_install_cancelled" {
+			if event.FromState != fingerprint || event.ToState != fingerprint {
+				t.Fatalf("revision-only cancellation fingerprints = %q -> %q, want %q -> %q", event.FromState, event.ToState, fingerprint, fingerprint)
+			}
+			return
+		}
+	}
+	t.Fatalf("events = %+v, want artifact_install_cancelled", rec.events)
+}
+
+func TestRemovingAllowedModelCancelsInstallAndPublishesTombstoneFence(t *testing.T) {
+	payload := []byte("model payload")
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: crc64String(payload)}
+	getStarted := make(chan struct{})
+	getCancelled := make(chan struct{})
+	var closeStarted sync.Once
+	var closeCancelled sync.Once
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-oss-hash-crc64ecma", artifact.CRC64ECMA)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			closeStarted.Do(func() { close(getStarted) })
+			<-r.Context().Done()
+			closeCancelled.Do(func() { close(getCancelled) })
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	oldCfg := reconcileConfigWithArtifact(oss.URL, artifact)
+	oldCfg.ConfigRevision = 51
+	newCfg := reconcileConfigWithArtifact(oss.URL, artifact)
+	newCfg.ConfigRevision = 52
+	newCfg.TagPolicy.AllowedModels = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rec := &Reconciler{ModelRoot: t.TempDir(), HTTPClient: oss.Client()}
+	installs := make(map[string]*artifactInstallState)
+	installDone := make(chan artifactInstallResult, 1)
+
+	if _, _, err := rec.installAllowedArtifactsAsync(ctx, oldCfg, installs, installDone); err != nil {
+		t.Fatalf("start allowed model install: %v", err)
+	}
+	select {
+	case <-getStarted:
+	case <-time.After(time.Second):
+		t.Fatal("allowed model artifact GET did not start")
+	}
+	if _, _, err := rec.installAllowedArtifactsAsync(ctx, newCfg, installs, installDone); err != nil {
+		t.Fatalf("reconcile removed allowed model: %v", err)
+	}
+	select {
+	case <-getCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("removing allowed model did not cancel its request context")
+	}
+	select {
+	case result := <-installDone:
+		if result.err != nil {
+			t.Fatalf("removed model cancellation reported an installation error: %v", result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("removed model install did not finish after cancellation")
+	}
+
+	fence, exists, err := readArtifactInstallFence(rec.ModelRoot, "qwen")
+	if err != nil {
+		t.Fatalf("read removal fence: %v", err)
+	}
+	if !exists || fence.ConfigRevision != 52 || fence.ArtifactFingerprint != removedArtifactFingerprint() {
+		t.Fatalf("removal fence = %+v exists=%v, want revision 52 tombstone %s", fence, exists, removedArtifactFingerprint())
+	}
+	if _, err := os.Stat(filepath.Join(rec.ModelRoot, "qwen", markerName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed model marker exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestReplacingAllowedModelInPathEquivalentDirectoryPublishesReplacementFence(t *testing.T) {
+	oldArtifact := config.Artifact{Object: "models/old.gguf", Kind: "file", CRC64ECMA: "111"}
+	newArtifact := config.Artifact{Object: "models/new.gguf", Kind: "file", CRC64ECMA: "222"}
+	modelRoot := t.TempDir()
+	oldKey := artifactKey("old", "family/tmp/../v1", oldArtifact.Object, oldArtifact.Kind, oldArtifact.CRC64ECMA, 61)
+	if _, current, err := publishArtifactInstallFence(context.Background(), modelRoot, oldKey.ModelDir, oldKey.fence()); err != nil || !current {
+		t.Fatalf("publish old fence: current=%v err=%v", current, err)
+	}
+	installCtx, cancelInstall := context.WithCancelCause(context.Background())
+	defer cancelInstall(nil)
+	installs := map[string]*artifactInstallState{
+		"old": {key: oldKey, running: true, cancel: cancelInstall},
+	}
+	cfg := protocol.AgentConfigResponse{
+		ConfigRevision: 62,
+		Models: map[string]config.Model{
+			"family/v1": {Artifact: newArtifact},
+		},
+		TagPolicy: protocol.AgentTagPolicy{AllowedModels: []string{"family/v1"}},
+	}
+	rec := &Reconciler{ModelRoot: modelRoot}
+
+	status, _, err := rec.installAllowedArtifactsAsync(context.Background(), cfg, installs, make(chan artifactInstallResult, 1))
+	if err != nil {
+		t.Fatalf("reconcile replacement model: %v", err)
+	}
+	if status["family/v1"] != "pending" {
+		t.Fatalf("replacement status = %q, want pending while removed install cancels", status["family/v1"])
+	}
+	if cause := context.Cause(installCtx); cause == nil {
+		t.Fatal("removed model install was not cancelled")
+	}
+	fence, exists, err := readArtifactInstallFence(modelRoot, "family/v1")
+	if err != nil {
+		t.Fatalf("read replacement fence: %v", err)
+	}
+	wantFingerprint := artifactFingerprint(newArtifact)
+	if !exists || fence.ConfigRevision != 62 || fence.ArtifactFingerprint != wantFingerprint {
+		t.Fatalf("replacement fence = %+v exists=%v, want revision 62 fingerprint %s", fence, exists, wantFingerprint)
 	}
 }
 

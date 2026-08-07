@@ -44,6 +44,36 @@ type ArtifactProgress struct {
 
 type ArtifactProgressFunc func(ArtifactProgress)
 
+type artifactInstallFence struct {
+	ConfigRevision      int64  `json:"config_revision"`
+	ArtifactFingerprint string `json:"artifact_fingerprint"`
+}
+
+type artifactInstallSupersededError struct {
+	Revision           int64
+	Fingerprint        string
+	WinningRevision    int64
+	WinningFingerprint string
+}
+
+func (e *artifactInstallSupersededError) Error() string {
+	return fmt.Sprintf(
+		"artifact install revision %d fingerprint %s was superseded by revision %d fingerprint %s",
+		e.Revision,
+		e.Fingerprint,
+		e.WinningRevision,
+		e.WinningFingerprint,
+	)
+}
+
+type artifactInstallObservation struct {
+	Event              string
+	Fingerprint        string
+	WinningFingerprint string
+}
+
+type artifactInstallObserver func(artifactInstallObservation)
+
 type artifactProgressTracker struct {
 	total      int64
 	nextPct    float64
@@ -116,6 +146,24 @@ func (r *artifactProgressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(p)
+	if err == nil {
+		if contextErr := r.ctx.Err(); contextErr != nil {
+			return n, contextErr
+		}
+	}
+	return n, err
+}
+
 func WriteMarker(dir, model string, artifact config.Artifact) error {
 	return writeMarker(dir, dir, model, artifact)
 }
@@ -162,6 +210,10 @@ func MarkerMatches(dir, model string, artifact config.Artifact) (bool, error) {
 }
 
 func CRC64ECMAFile(path string) (string, error) {
+	return crc64ECMAFileContext(context.Background(), path)
+}
+
+func crc64ECMAFileContext(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -169,7 +221,7 @@ func CRC64ECMAFile(path string) (string, error) {
 	defer file.Close()
 
 	hash := crc64.New(crc64.MakeTable(crc64.ECMA))
-	if _, err := io.Copy(hash, file); err != nil {
+	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: file}); err != nil {
 		return "", err
 	}
 
@@ -189,6 +241,37 @@ func InstallArtifactWithProgress(ctx context.Context, httpClient *http.Client, o
 }
 
 func InstallArtifactWithProgressAt(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName, modelDirName string, artifact config.Artifact, onProgress ArtifactProgressFunc) (bool, error) {
+	return installArtifactWithProgressAtRevision(ctx, httpClient, ossBaseURL, modelRoot, modelName, modelDirName, 0, artifact, onProgress, nil)
+}
+
+func installArtifactWithProgressAtRevision(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelName, modelDirName string, configRevision int64, artifact config.Artifact, onProgress ArtifactProgressFunc, observe artifactInstallObserver) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if err := os.MkdirAll(modelRoot, 0o755); err != nil {
+		return false, err
+	}
+
+	desired := artifactInstallFence{
+		ConfigRevision:      configRevision,
+		ArtifactFingerprint: artifactFingerprint(artifact),
+	}
+	winner, desiredCurrent, err := publishArtifactInstallFence(ctx, modelRoot, modelDirName, desired)
+	if err != nil {
+		return false, err
+	}
+	if !desiredCurrent {
+		observeArtifactInstall(observe, artifactInstallObservation{
+			Event:              "artifact_install_stale_fence",
+			Fingerprint:        desired.ArtifactFingerprint,
+			WinningFingerprint: winner.ArtifactFingerprint,
+		})
+		return false, newArtifactInstallSupersededError(desired, winner)
+	}
+
 	modelDir := filepath.Join(modelRoot, modelDirName)
 	matches, err := MarkerMatches(modelDir, modelName, artifact)
 	if err != nil {
@@ -198,79 +281,98 @@ func InstallArtifactWithProgressAt(ctx context.Context, httpClient *http.Client,
 		return false, nil
 	}
 
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	if err := os.MkdirAll(modelRoot, 0o755); err != nil {
-		return false, err
-	}
-
-	lockFile, err := acquireArtifactLock(ctx, modelRoot, modelName, artifact)
+	sourcePath, targetReady, err := prepareArtifactSource(ctx, httpClient, ossBaseURL, modelRoot, modelDir, modelName, artifact, onProgress)
 	if err != nil {
 		return false, err
+	}
+	if targetReady {
+		return false, nil
+	}
+
+	var stageDir string
+	switch artifact.Kind {
+	case "file":
+		stageDir, err = stageFileArtifact(ctx, sourcePath, modelDir, artifact)
+	case "tar_gz":
+		stageDir, err = stageTarGzArtifact(ctx, sourcePath, modelRoot)
+	default:
+		return false, fmt.Errorf("unsupported artifact kind %q", artifact.Kind)
+	}
+	if err != nil {
+		return false, err
+	}
+	stageMoved := false
+	defer func() {
+		if !stageMoved {
+			_ = os.RemoveAll(stageDir)
+		}
+	}()
+
+	installed, err := commitStagedArtifact(ctx, modelRoot, modelDirName, stageDir, modelDir, modelName, desired, artifact, observe)
+	if err != nil {
+		return false, err
+	}
+	stageMoved = installed
+
+	return installed, nil
+}
+
+func prepareArtifactSource(ctx context.Context, httpClient *http.Client, ossBaseURL, modelRoot, modelDir, modelName string, artifact config.Artifact, onProgress ArtifactProgressFunc) (string, bool, error) {
+	lockFile, err := acquireArtifactLock(ctx, modelRoot, modelName, artifact)
+	if err != nil {
+		return "", false, err
 	}
 	defer func() {
 		_ = unlockArtifactFile(lockFile)
 		_ = lockFile.Close()
 	}()
 
-	matches, err = MarkerMatches(modelDir, modelName, artifact)
+	matches, err := MarkerMatches(modelDir, modelName, artifact)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	if matches {
-		return false, nil
+		return "", true, nil
 	}
 
-	sourcePath, sourceReady, err := localArtifactSource(modelRoot, artifact)
+	sourcePath, sourceReady, err := localArtifactSourceContext(ctx, modelRoot, artifact)
 	if err != nil {
-		return false, err
+		return "", false, err
+	}
+	if sourceReady {
+		return sourcePath, false, nil
 	}
 
 	downloadURL := artifactURL(ossBaseURL, artifact.Object)
-	if !sourceReady {
-		if err := checkRemoteCRC(ctx, httpClient, downloadURL, artifact.CRC64ECMA); err != nil {
-			return false, err
-		}
-
-		tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot, onProgress)
-		if err != nil {
-			return false, err
-		}
-		tmpMoved := false
-		defer func() {
-			if !tmpMoved {
-				_ = os.Remove(tmpFile)
-			}
-		}()
-
-		gotCRC, err := CRC64ECMAFile(tmpFile)
-		if err != nil {
-			return false, err
-		}
-		if gotCRC != artifact.CRC64ECMA {
-			return false, fmt.Errorf("downloaded artifact crc64ecma mismatch for %s: got %s, want %s", artifact.Object, gotCRC, artifact.CRC64ECMA)
-		}
-		if err := persistArtifactSource(tmpFile, sourcePath); err != nil {
-			return false, err
-		}
-		tmpMoved = true
+	if err := checkRemoteCRC(ctx, httpClient, downloadURL, artifact.CRC64ECMA); err != nil {
+		return "", false, err
 	}
-
-	switch artifact.Kind {
-	case "file":
-		if err := installFileArtifact(sourcePath, modelDir, modelName, artifact); err != nil {
-			return false, err
-		}
-	case "tar_gz":
-		if err := installTarGzArtifact(sourcePath, modelRoot, modelDir, modelName, artifact); err != nil {
-			return false, err
-		}
-	default:
-		return false, fmt.Errorf("unsupported artifact kind %q", artifact.Kind)
+	tmpFile, err := downloadArtifact(ctx, httpClient, downloadURL, modelRoot, onProgress)
+	if err != nil {
+		return "", false, err
 	}
+	tmpMoved := false
+	defer func() {
+		if !tmpMoved {
+			_ = os.Remove(tmpFile)
+		}
+	}()
 
-	return true, nil
+	gotCRC, err := crc64ECMAFileContext(ctx, tmpFile)
+	if err != nil {
+		return "", false, err
+	}
+	if gotCRC != artifact.CRC64ECMA {
+		return "", false, fmt.Errorf("downloaded artifact crc64ecma mismatch for %s: got %s, want %s", artifact.Object, gotCRC, artifact.CRC64ECMA)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if err := persistArtifactSource(tmpFile, sourcePath); err != nil {
+		return "", false, err
+	}
+	tmpMoved = true
+	return sourcePath, false, nil
 }
 
 func artifactURL(ossBaseURL, object string) string {
@@ -282,12 +384,34 @@ func artifactLockName(_ string, artifact config.Artifact) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func artifactFingerprint(artifact config.Artifact) string {
+	return artifactLockName("", artifact)
+}
+
+func removedArtifactFingerprint() string {
+	sum := sha256.Sum256([]byte("removed"))
+	return hex.EncodeToString(sum[:])
+}
+
+func modelDirLockName(modelDirName string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(modelDirName)))
+	return "model-dir-" + hex.EncodeToString(sum[:])
+}
+
 func acquireArtifactLock(ctx context.Context, modelRoot, modelName string, artifact config.Artifact) (*os.File, error) {
+	return acquireLockFile(ctx, modelRoot, artifactLockName(modelName, artifact)+".lock")
+}
+
+func acquireModelDirLock(ctx context.Context, modelRoot, modelDirName string) (*os.File, error) {
+	return acquireLockFile(ctx, modelRoot, modelDirLockName(modelDirName)+".lock")
+}
+
+func acquireLockFile(ctx context.Context, modelRoot, lockName string) (*os.File, error) {
 	lockDir := filepath.Join(modelRoot, ".locks")
 	if err := os.MkdirAll(lockDir, 0o755); err != nil {
 		return nil, err
 	}
-	lockPath := filepath.Join(lockDir, artifactLockName(modelName, artifact)+".lock")
+	lockPath := filepath.Join(lockDir, lockName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
@@ -299,14 +423,131 @@ func acquireArtifactLock(ctx context.Context, modelRoot, modelName string, artif
 	return lockFile, nil
 }
 
+func publishArtifactInstallFence(ctx context.Context, modelRoot, modelDirName string, desired artifactInstallFence) (artifactInstallFence, bool, error) {
+	lockFile, err := acquireModelDirLock(ctx, modelRoot, modelDirName)
+	if err != nil {
+		return artifactInstallFence{}, false, err
+	}
+	defer func() {
+		_ = unlockArtifactFile(lockFile)
+		_ = lockFile.Close()
+	}()
+
+	current, exists, err := readArtifactInstallFence(modelRoot, modelDirName)
+	if err != nil {
+		return artifactInstallFence{}, false, err
+	}
+	if exists && !artifactFenceShouldAdvance(current, desired) {
+		return current, artifactFencesEqual(current, desired), nil
+	}
+	if err := writeArtifactInstallFence(modelRoot, modelDirName, desired); err != nil {
+		return artifactInstallFence{}, false, err
+	}
+	return desired, true, nil
+}
+
+func artifactFenceShouldAdvance(current, desired artifactInstallFence) bool {
+	if desired.ConfigRevision > current.ConfigRevision {
+		return true
+	}
+	return desired.ConfigRevision == 0 && current.ConfigRevision == 0 && desired.ArtifactFingerprint != current.ArtifactFingerprint
+}
+
+func artifactFencesEqual(left, right artifactInstallFence) bool {
+	return left.ConfigRevision == right.ConfigRevision && left.ArtifactFingerprint == right.ArtifactFingerprint
+}
+
+func artifactInstallFencePath(modelRoot, modelDirName string) string {
+	return filepath.Join(modelRoot, ".locks", modelDirLockName(modelDirName)+".json")
+}
+
+func readArtifactInstallFence(modelRoot, modelDirName string) (artifactInstallFence, bool, error) {
+	data, err := os.ReadFile(artifactInstallFencePath(modelRoot, modelDirName))
+	if errors.Is(err, os.ErrNotExist) {
+		return artifactInstallFence{}, false, nil
+	}
+	if err != nil {
+		return artifactInstallFence{}, false, err
+	}
+	var fence artifactInstallFence
+	if err := json.Unmarshal(data, &fence); err != nil {
+		return artifactInstallFence{}, false, err
+	}
+	if fence.ArtifactFingerprint == "" {
+		return artifactInstallFence{}, false, errors.New("artifact install fence fingerprint is empty")
+	}
+	return fence, true, nil
+}
+
+func writeArtifactInstallFence(modelRoot, modelDirName string, fence artifactInstallFence) error {
+	lockDir := filepath.Join(modelRoot, ".locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(fence, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(lockDir, ".model-dir-fence-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, artifactInstallFencePath(modelRoot, modelDirName)); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func newArtifactInstallSupersededError(desired, winner artifactInstallFence) error {
+	return &artifactInstallSupersededError{
+		Revision:           desired.ConfigRevision,
+		Fingerprint:        desired.ArtifactFingerprint,
+		WinningRevision:    winner.ConfigRevision,
+		WinningFingerprint: winner.ArtifactFingerprint,
+	}
+}
+
+func observeArtifactInstall(observe artifactInstallObserver, observation artifactInstallObservation) {
+	if observe != nil {
+		observe(observation)
+	}
+}
+
 func localArtifactSource(modelRoot string, artifact config.Artifact) (string, bool, error) {
+	return localArtifactSourceContext(context.Background(), modelRoot, artifact)
+}
+
+func localArtifactSourceContext(ctx context.Context, modelRoot string, artifact config.Artifact) (string, bool, error) {
 	filename := filepath.Base(filepath.FromSlash(artifact.Object))
 	if filename == "." || filename == string(filepath.Separator) || filename == "" {
 		return "", false, fmt.Errorf("artifact object %q has no base filename", artifact.Object)
 	}
 
 	sourcePath := filepath.Join(modelRoot, ".locks", artifactLockName("", artifact)+".source")
-	gotCRC, err := CRC64ECMAFile(sourcePath)
+	gotCRC, err := crc64ECMAFileContext(ctx, sourcePath)
 	if err == nil && gotCRC == artifact.CRC64ECMA {
 		return sourcePath, true, nil
 	}
@@ -315,7 +556,7 @@ func localArtifactSource(modelRoot string, artifact config.Artifact) (string, bo
 	}
 
 	legacyPath := filepath.Join(modelRoot, filename)
-	legacyCRC, err := CRC64ECMAFile(legacyPath)
+	legacyCRC, err := crc64ECMAFileContext(ctx, legacyPath)
 	if err == nil && legacyCRC == artifact.CRC64ECMA {
 		return legacyPath, true, nil
 	}
@@ -401,72 +642,114 @@ func downloadArtifact(ctx context.Context, httpClient *http.Client, downloadURL,
 	return tmpPath, nil
 }
 
-func installFileArtifact(tmpFile, modelDir, modelName string, artifact config.Artifact) error {
+func stageFileArtifact(ctx context.Context, sourcePath, modelDir string, artifact config.Artifact) (string, error) {
 	stageDir, err := os.MkdirTemp(filepath.Dir(modelDir), ".llm-agent-artifact-stage-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	stageDir = filepath.Clean(stageDir)
-	stageMoved := false
+	ready := false
 	defer func() {
-		if !stageMoved {
+		if !ready {
 			_ = os.RemoveAll(stageDir)
 		}
 	}()
 
 	filename := filepath.Base(filepath.FromSlash(artifact.Object))
 	if filename == "." || filename == string(filepath.Separator) || filename == "" {
-		return fmt.Errorf("artifact object %q has no base filename", artifact.Object)
+		return "", fmt.Errorf("artifact object %q has no base filename", artifact.Object)
 	}
 	targetPath := filepath.Join(stageDir, filename)
-	if err := linkOrCopyFile(tmpFile, targetPath); err != nil {
-		return err
+	if err := linkOrCopyFileContext(ctx, sourcePath, targetPath); err != nil {
+		return "", err
 	}
-	if err := writeMarker(stageDir, modelDir, modelName, artifact); err != nil {
-		return err
-	}
-	if err := replaceDir(stageDir, modelDir); err != nil {
-		return err
-	}
-	stageMoved = true
-	return nil
+	ready = true
+	return stageDir, nil
 }
 
-func installTarGzArtifact(tmpFile, modelRoot, modelDir, modelName string, artifact config.Artifact) error {
+func stageTarGzArtifact(ctx context.Context, sourcePath, modelRoot string) (string, error) {
 	extractDir, err := os.MkdirTemp(modelRoot, ".llm-agent-artifact-extract-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	extractDir = filepath.Clean(extractDir)
-	extractMoved := false
+	ready := false
 	defer func() {
-		if !extractMoved {
+		if !ready {
 			_ = os.RemoveAll(extractDir)
 		}
 	}()
 
-	if err := extractTarGz(tmpFile, extractDir); err != nil {
-		return err
+	if err := extractTarGzContext(ctx, sourcePath, extractDir); err != nil {
+		return "", err
 	}
 
-	if err := flattenSingleTopLevelDir(extractDir); err != nil {
-		return err
+	if err := flattenSingleTopLevelDirContext(ctx, extractDir); err != nil {
+		return "", err
 	}
-
-	if err := writeMarker(extractDir, modelDir, modelName, artifact); err != nil {
-		return err
-	}
-
-	if err := replaceDir(extractDir, modelDir); err != nil {
-		return err
-	}
-	extractMoved = true
-	return nil
+	ready = true
+	return extractDir, nil
 }
 
-func linkOrCopyFile(sourcePath, targetPath string) error {
+func commitStagedArtifact(ctx context.Context, modelRoot, modelDirName, stageDir, modelDir, modelName string, desired artifactInstallFence, artifact config.Artifact, observe artifactInstallObserver) (bool, error) {
+	observeArtifactInstall(observe, artifactInstallObservation{
+		Event:       "artifact_model_dir_lock_wait",
+		Fingerprint: desired.ArtifactFingerprint,
+	})
+	lockFile, err := acquireModelDirLock(ctx, modelRoot, modelDirName)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = unlockArtifactFile(lockFile)
+		_ = lockFile.Close()
+	}()
+
+	winner, exists, err := readArtifactInstallFence(modelRoot, modelDirName)
+	if err != nil {
+		return false, err
+	}
+	if !exists || !artifactFencesEqual(winner, desired) {
+		observeArtifactInstall(observe, artifactInstallObservation{
+			Event:              "artifact_install_stale_fence",
+			Fingerprint:        desired.ArtifactFingerprint,
+			WinningFingerprint: winner.ArtifactFingerprint,
+		})
+		return false, newArtifactInstallSupersededError(desired, winner)
+	}
+
+	matches, err := MarkerMatches(modelDir, modelName, artifact)
+	if err != nil {
+		return false, err
+	}
+	if matches {
+		return false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := writeMarker(stageDir, modelDir, modelName, artifact); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := replaceDir(stageDir, modelDir); err != nil {
+		return false, err
+	}
+	observeArtifactInstall(observe, artifactInstallObservation{
+		Event:       "artifact_install_commit",
+		Fingerprint: desired.ArtifactFingerprint,
+	})
+	return true, nil
+}
+
+func linkOrCopyFileContext(ctx context.Context, sourcePath, targetPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.Link(sourcePath, targetPath); err == nil {
-		return nil
+		return ctx.Err()
 	}
 
 	in, err := os.Open(sourcePath)
@@ -479,14 +762,17 @@ func linkOrCopyFile(sourcePath, targetPath string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, &contextReader{ctx: ctx, reader: in}); err != nil {
 		_ = out.Close()
 		return err
 	}
 	return out.Close()
 }
 
-func flattenSingleTopLevelDir(dir string) error {
+func flattenSingleTopLevelDirContext(ctx context.Context, dir string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -518,6 +804,9 @@ func flattenSingleTopLevelDir(dir string) error {
 		return err
 	}
 	for _, entry := range rootEntries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.Rename(filepath.Join(rootPath, entry.Name()), filepath.Join(dir, entry.Name())); err != nil {
 			return err
 		}
@@ -525,7 +814,7 @@ func flattenSingleTopLevelDir(dir string) error {
 	return os.Remove(rootPath)
 }
 
-func extractTarGz(archivePath, destDir string) error {
+func extractTarGzContext(ctx context.Context, archivePath, destDir string) error {
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -540,6 +829,9 @@ func extractTarGz(archivePath, destDir string) error {
 
 	tr := tar.NewReader(gz)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -547,13 +839,16 @@ func extractTarGz(archivePath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := extractTarEntry(tr, header, destDir); err != nil {
+		if err := extractTarEntryContext(ctx, tr, header, destDir); err != nil {
 			return err
 		}
 	}
 }
 
-func extractTarEntry(reader io.Reader, header *tar.Header, destDir string) error {
+func extractTarEntryContext(ctx context.Context, reader io.Reader, header *tar.Header, destDir string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cleanName := slashpath.Clean(header.Name)
 	if cleanName == "." {
 		return nil
@@ -582,7 +877,7 @@ func extractTarEntry(reader io.Reader, header *tar.Header, destDir string) error
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(out, reader); err != nil {
+		if _, err := io.Copy(out, &contextReader{ctx: ctx, reader: reader}); err != nil {
 			_ = out.Close()
 			return err
 		}

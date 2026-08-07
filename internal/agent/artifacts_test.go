@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"hash/crc64"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -591,6 +593,226 @@ func TestInstallArtifactRechecksMarkerAfterWaitingForLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("InstallArtifact() did not return after lock release")
+	}
+}
+
+func TestInstallArtifactReusesMatchingDirectoryAfterWaitingForModelDirLock(t *testing.T) {
+	payload := []byte("installed by another worker")
+	artifact := config.Artifact{
+		Object:    "models/model.gguf",
+		Kind:      "file",
+		CRC64ECMA: crc64String(payload),
+	}
+	server := artifactServer(t, payload, artifact.CRC64ECMA)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	modelName := "qwen"
+	modelDirName := "shared-qwen"
+	modelDir := filepath.Join(modelRoot, modelDirName)
+	lockWait := make(chan struct{})
+	continueCommit := make(chan struct{})
+	var closeLockWait sync.Once
+
+	resultCh := make(chan struct {
+		installed bool
+		err       error
+	}, 1)
+	go func() {
+		installed, err := installArtifactWithProgressAtRevision(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			modelRoot,
+			modelName,
+			modelDirName,
+			7,
+			artifact,
+			nil,
+			func(observation artifactInstallObservation) {
+				if observation.Event == "artifact_model_dir_lock_wait" {
+					closeLockWait.Do(func() { close(lockWait) })
+					<-continueCommit
+				}
+			},
+		)
+		resultCh <- struct {
+			installed bool
+			err       error
+		}{installed: installed, err: err}
+	}()
+
+	select {
+	case <-lockWait:
+	case <-time.After(time.Second):
+		t.Fatal("installer did not reach model directory lock")
+	}
+	lockFile, err := acquireModelDirLock(context.Background(), modelRoot, modelDirName)
+	if err != nil {
+		t.Fatalf("acquire model directory lock: %v", err)
+	}
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create model directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "model.gguf"), payload, 0o644); err != nil {
+		t.Fatalf("write installed payload: %v", err)
+	}
+	if err := WriteMarker(modelDir, modelName, artifact); err != nil {
+		t.Fatalf("write installed marker: %v", err)
+	}
+	close(continueCommit)
+	select {
+	case result := <-resultCh:
+		t.Fatalf("installer returned while model directory lock was held: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := unlockArtifactFile(lockFile); err != nil {
+		t.Fatalf("unlock model directory: %v", err)
+	}
+	if err := lockFile.Close(); err != nil {
+		t.Fatalf("close model directory lock: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("install after lock wait: %v", result.err)
+		}
+		if result.installed {
+			t.Fatal("installed = true, want reuse of another worker's matching directory")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("installer did not return after model directory lock release")
+	}
+}
+
+func TestStaleInstallerCannotCommitAfterNewerFenceIsPublished(t *testing.T) {
+	existingArtifact := config.Artifact{Object: "models/existing.gguf", Kind: "file", CRC64ECMA: "existing-crc"}
+	stalePayload := []byte("stale model payload")
+	staleArtifact := config.Artifact{Object: "models/stale.gguf", Kind: "file", CRC64ECMA: crc64String(stalePayload)}
+	winningArtifact := config.Artifact{Object: "models/winning.gguf", Kind: "file", CRC64ECMA: "winning-crc"}
+	server := artifactServer(t, stalePayload, staleArtifact.CRC64ECMA)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	modelName := "qwen"
+	modelDirName := "shared-qwen"
+	modelDir := filepath.Join(modelRoot, modelDirName)
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create existing model directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "existing.gguf"), []byte("existing payload"), 0o644); err != nil {
+		t.Fatalf("write existing payload: %v", err)
+	}
+	if err := WriteMarker(modelDir, modelName, existingArtifact); err != nil {
+		t.Fatalf("write existing marker: %v", err)
+	}
+
+	lockWait := make(chan struct{})
+	continueCommit := make(chan struct{})
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := installArtifactWithProgressAtRevision(
+			context.Background(), server.Client(), server.URL, modelRoot, modelName, modelDirName, 1, staleArtifact, nil,
+			func(observation artifactInstallObservation) {
+				if observation.Event == "artifact_model_dir_lock_wait" {
+					close(lockWait)
+					<-continueCommit
+				}
+			},
+		)
+		resultCh <- err
+	}()
+
+	select {
+	case <-lockWait:
+	case <-time.After(time.Second):
+		t.Fatal("stale installer did not reach commit fence")
+	}
+	winner := artifactInstallFence{ConfigRevision: 2, ArtifactFingerprint: artifactFingerprint(winningArtifact)}
+	if got, current, err := publishArtifactInstallFence(context.Background(), modelRoot, modelDirName, winner); err != nil {
+		t.Fatalf("publish winning fence: %v", err)
+	} else if !current || !artifactFencesEqual(got, winner) {
+		t.Fatalf("published fence = %+v current=%v, want %+v current", got, current, winner)
+	}
+	close(continueCommit)
+
+	select {
+	case err := <-resultCh:
+		var superseded *artifactInstallSupersededError
+		if !errors.As(err, &superseded) {
+			t.Fatalf("stale install error = %v, want artifactInstallSupersededError", err)
+		}
+		if superseded.WinningRevision != 2 || superseded.WinningFingerprint != artifactFingerprint(winningArtifact) {
+			t.Fatalf("superseded winner = %+v, want revision 2 fingerprint %s", superseded, artifactFingerprint(winningArtifact))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale installer did not stop at commit fence")
+	}
+
+	if got, err := os.ReadFile(filepath.Join(modelDir, "existing.gguf")); err != nil || string(got) != "existing payload" {
+		t.Fatalf("existing payload = %q, %v; want preserved", got, err)
+	}
+	matches, err := MarkerMatches(modelDir, modelName, existingArtifact)
+	if err != nil {
+		t.Fatalf("read existing marker: %v", err)
+	}
+	if !matches {
+		t.Fatal("existing marker was changed by stale installer")
+	}
+	if _, err := os.Stat(filepath.Join(modelDir, "stale.gguf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale payload exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestCancelledStagedInstallPreservesExistingReadyDirectory(t *testing.T) {
+	existingArtifact := config.Artifact{Object: "models/existing.gguf", Kind: "file", CRC64ECMA: "existing-crc"}
+	newPayload := []byte("new model payload")
+	newArtifact := config.Artifact{Object: "models/new.gguf", Kind: "file", CRC64ECMA: crc64String(newPayload)}
+	server := artifactServer(t, newPayload, newArtifact.CRC64ECMA)
+	defer server.Close()
+
+	modelRoot := t.TempDir()
+	modelName := "qwen"
+	modelDir := filepath.Join(modelRoot, modelName)
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create existing model directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "existing.gguf"), []byte("existing payload"), 0o644); err != nil {
+		t.Fatalf("write existing payload: %v", err)
+	}
+	if err := WriteMarker(modelDir, modelName, existingArtifact); err != nil {
+		t.Fatalf("write existing marker: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	installed, err := installArtifactWithProgressAtRevision(
+		ctx, server.Client(), server.URL, modelRoot, modelName, modelName, 9, newArtifact, nil,
+		func(observation artifactInstallObservation) {
+			if observation.Event == "artifact_model_dir_lock_wait" {
+				cancel()
+			}
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled install error = %v, want context.Canceled", err)
+	}
+	if installed {
+		t.Fatal("cancelled install reported installed")
+	}
+
+	if got, err := os.ReadFile(filepath.Join(modelDir, "existing.gguf")); err != nil || string(got) != "existing payload" {
+		t.Fatalf("existing payload = %q, %v; want preserved", got, err)
+	}
+	matches, err := MarkerMatches(modelDir, modelName, existingArtifact)
+	if err != nil {
+		t.Fatalf("read existing marker: %v", err)
+	}
+	if !matches {
+		t.Fatal("existing marker was changed by cancelled installer")
+	}
+	if _, err := os.Stat(filepath.Join(modelDir, "new.gguf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new payload exists or stat failed unexpectedly: %v", err)
 	}
 }
 
