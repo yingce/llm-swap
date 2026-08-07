@@ -1,9 +1,52 @@
 import { describe, expect, it } from "vitest";
 
-import type { RequestLogEntry, WorkerEvent } from "../api";
-import { buildEventRows, buildRequestRows, classifyBillingError, recommendedBillingPricing } from "./observeView";
+import type { BillingSummary, RequestLogEntry, WorkerEvent } from "../api";
+import { buildEventRows, buildRequestRows, classifyBillingError, recommendedBillingPricing, reduceBillingView, type BillingViewState } from "./observeView";
 
 describe("observe view model", () => {
+  it("clears the previous grouping while a newly selected billing view loads", () => {
+    const previous = { group_by: "canonical" } as BillingSummary;
+    const initial: BillingViewState = {
+      billing: previous,
+      rangeHours: 24,
+      groupBy: "canonical",
+      loading: false,
+      error: "old error",
+      requestID: 1
+    };
+
+    expect(reduceBillingView(initial, { type: "start", requestID: 2, rangeHours: 72, groupBy: "alias" })).toEqual({
+      billing: null,
+      rangeHours: 72,
+      groupBy: "alias",
+      loading: true,
+      error: "",
+      requestID: 2
+    });
+  });
+
+  it("ignores a slower response after a newer billing selection wins", () => {
+    const initial: BillingViewState = {
+      billing: null,
+      rangeHours: 24,
+      groupBy: "alias",
+      loading: true,
+      error: "",
+      requestID: 2
+    };
+    const oldActual = { group_by: "canonical" } as BillingSummary;
+    const currentAlias = { group_by: "alias" } as BillingSummary;
+
+    expect(reduceBillingView(initial, { type: "success", requestID: 1, billing: oldActual })).toBe(initial);
+    expect(reduceBillingView(initial, { type: "failure", requestID: 1, error: "late failure" })).toBe(initial);
+    expect(reduceBillingView(initial, { type: "success", requestID: 2, billing: currentAlias })).toMatchObject({
+      billing: currentAlias,
+      loading: false,
+      error: "",
+      requestID: 2
+    });
+  });
+
   it("classifies disabled billing storage as neutral without hiding auth or network failures", () => {
     expect(classifyBillingError("Billing unavailable: records store is not enabled")).toEqual({
       tone: "neutral",
@@ -59,6 +102,7 @@ describe("observe view model", () => {
       request_duration_seconds: 3600,
       ready_share: 1,
       cost_share: 1,
+      cost_basis: "actual",
       model_cost: 1,
       model_used_cost: 1,
       model_idle_cost: 0,

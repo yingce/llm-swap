@@ -322,6 +322,7 @@ export type BillingSummary = {
   exchange_rate_stale: boolean;
   worker_day_cost_rmb: number;
   worker_day_cost_usd: number;
+  group_by: BillingGroupBy;
   totals: {
     ready_seconds: number;
     billable_worker_seconds: number;
@@ -340,8 +341,16 @@ export type BillingSummary = {
   request_costs?: BillingRequestCost[];
 };
 
+export type BillingGroupBy = "canonical" | "alias";
+
+export type BillingGroupKind = "alias" | "unattributed";
+
+export type BillingCostBasis = "actual" | "allocated";
+
 export type BillingModelSummary = {
   model: string;
+  group_kind?: BillingGroupKind;
+  cost_basis: BillingCostBasis;
   ready_seconds: number;
   billable_worker_seconds: number;
   request_duration_seconds: number;
@@ -355,6 +364,18 @@ export type BillingModelSummary = {
   output_tokens: number;
   cached_input_tokens: number;
   total_tokens: number;
+  canonical_versions?: BillingCanonicalVersionSummary[];
+};
+
+export type BillingCanonicalVersionSummary = {
+  canonical_model: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  total_tokens: number;
+  model_used_cost: number;
+  allocated_model_cost: number;
 };
 
 export type BillingAppSummary = {
@@ -374,6 +395,7 @@ export type BillingRequestCost = {
   request_id: string;
   time: string;
   model: string;
+  requested_model?: string;
   app_id?: string;
   worker_id?: string;
   input_tokens: number;
@@ -469,13 +491,18 @@ export function getTrafficSummary(range = "24h"): Promise<TrafficSummaryResponse
   return request<TrafficSummaryResponse>(`/ui/traffic?range=${encodeURIComponent(range)}`);
 }
 
-export async function getBilling(rangeHours = 24, includeRequests = false): Promise<BillingSummary> {
+export async function getBilling(
+  rangeHours = 24,
+  includeRequests = false,
+  groupBy: BillingGroupBy = "canonical"
+): Promise<BillingSummary> {
   const end = new Date();
   const start = new Date(end.getTime() - rangeHours * 60 * 60 * 1000);
   const params = new URLSearchParams({
     start: start.toISOString(),
     end: end.toISOString(),
-    worker_day_cost_rmb: "55"
+    worker_day_cost_rmb: "55",
+    group_by: groupBy
   });
   if (includeRequests) {
     params.set("include_requests", "1");

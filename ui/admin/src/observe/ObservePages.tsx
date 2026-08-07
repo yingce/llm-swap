@@ -1,4 +1,4 @@
-import type { BillingSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
+import type { BillingGroupBy, BillingModelSummary, BillingSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
 import type { EditableModelConfig } from "../modelLifecycle";
 import { EmptyState, StatusIndicator } from "../components/primitives";
 import { buildEventRows, buildRequestRows, classifyBillingError, recommendedBillingPricing } from "./observeView";
@@ -51,6 +51,8 @@ export function ActivityPage({
 
 export function BillingPage({
   billing,
+  groupBy,
+  loading,
   rangeHours,
   error,
   pricingDraft,
@@ -58,10 +60,13 @@ export function BillingPage({
   pricingMessage,
   pricingError,
   onRangeChange,
+  onGroupByChange,
   onPriceChange,
   onSavePricing
 }: {
   billing: BillingSummary | null;
+  groupBy: BillingGroupBy;
+  loading: boolean;
   rangeHours: number;
   error: string;
   pricingDraft: { models: Record<string, EditableModelConfig> } | null;
@@ -69,12 +74,14 @@ export function BillingPage({
   pricingMessage: string;
   pricingError: string;
   onRangeChange: (hours: number) => void;
+  onGroupByChange: (groupBy: BillingGroupBy) => void;
   onPriceChange: (modelName: string, field: keyof ModelBillingConfig, value: number | undefined) => void;
   onSavePricing: () => void;
 }) {
   const notice = classifyBillingError(error);
   const pricingModels = Object.entries(pricingDraft?.models ?? {}).sort(([left], [right]) => left.localeCompare(right));
-  const billingByModel = new Map((billing?.models ?? []).map((model) => [model.model, model]));
+  const isCanonicalBilling = (billing?.group_by ?? groupBy ?? "canonical") === "canonical";
+  const billingByModel = new Map((billing && isCanonicalBilling ? billing.models : []).map((model) => [model.model, model]));
   return (
     <div className="observe-page">
       <section className="observe-heading">
@@ -82,42 +89,50 @@ export function BillingPage({
           <h2>Billing</h2>
           <p>Cost and usage records. Disabled local storage is informational; auth and network errors remain visible.</p>
         </div>
-        <div className="billing-range-tabs" aria-label="Billing time range">
-          {[1, 6, 24, 72, 168].map((hours) => (
-            <button
-              type="button"
-              key={hours}
-              className={rangeHours === hours ? "active" : ""}
-              onClick={() => onRangeChange(hours)}
-            >
-              {formatRangeLabel(hours)}
-            </button>
-          ))}
+        <div className="billing-controls">
+          <div className="billing-view-tabs" aria-label="Billing grouping">
+            <button type="button" className={groupBy === "canonical" ? "active" : ""} aria-pressed={groupBy === "canonical"} onClick={() => onGroupByChange("canonical")}>Actual models</button>
+            <button type="button" className={groupBy === "alias" ? "active" : ""} aria-pressed={groupBy === "alias"} onClick={() => onGroupByChange("alias")}>Service aliases</button>
+          </div>
+          <div className="billing-range-tabs" aria-label="Billing time range">
+            {[1, 6, 24, 72, 168].map((hours) => (
+              <button
+                type="button"
+                key={hours}
+                className={rangeHours === hours ? "active" : ""}
+                onClick={() => onRangeChange(hours)}
+              >
+                {formatRangeLabel(hours)}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
       {notice ? <div className={notice.tone === "bad" ? "alert" : "notice"}><strong>{notice.title}</strong> · {notice.detail}</div> : null}
-      {billing ? (
+      {loading ? <EmptyState title="Billing is loading" body={`Loading ${groupBy === "alias" ? "service alias allocations" : "actual model costs"} for the selected range.`} /> : billing && billing.models.length > 0 ? (
         <div className="billing-ledger">
           <div className="traffic-summary">
             <Metric label="Requests" value={formatNumber(billing.totals.requests)} />
             <Metric label="Tokens" value={formatNumber(billing.totals.total_tokens)} />
-            <Metric label="Used cost" value={formatMoney(billing.totals.model_used_cost)} />
-            <Metric label="Idle cost" value={formatMoney(billing.totals.model_idle_cost)} />
+            <Metric label="Configured usage cost" value={formatMoney(billing.totals.model_used_cost)} />
+            <Metric label={groupBy === "alias" ? "Allocated model cost" : "Actual model cost"} value={formatMoney(billing.totals.model_cost)} />
+            <Metric label={groupBy === "alias" ? "Allocated idle cost" : "Actual idle cost"} value={formatMoney(billing.totals.model_idle_cost)} />
           </div>
+          {groupBy === "alias" ? <p className="billing-basis-note">Occupancy cost is allocated by request share for this period. It is not the runtime accounting ledger.</p> : null}
           <div className="observe-table-wrap">
             <table className="observe-table">
-              <thead><tr><th>Model</th><th>Requests</th><th>Tokens</th><th>Used</th></tr></thead>
-              <tbody>{billing.models.map((model) => <tr key={model.model}><td>{model.model}</td><td>{formatNumber(model.requests)}</td><td>{formatNumber(model.total_tokens)}</td><td>{formatMoney(model.model_used_cost)}</td></tr>)}</tbody>
+              <thead><tr><th>{groupBy === "alias" ? "Service identity" : "Actual model"}</th><th>Requests</th><th>Tokens</th><th>Configured usage</th><th>{groupBy === "alias" ? "Allocated model cost" : "Actual model cost"}</th></tr></thead>
+              <tbody>{billing.models.map((model) => <BillingModelRow key={`${model.group_kind ?? "canonical"}:${model.model}`} model={model} groupBy={groupBy} />)}</tbody>
             </table>
           </div>
         </div>
-      ) : !notice ? <EmptyState title="Billing is loading" body="Waiting for the selected range." /> : null}
+      ) : billing && !notice ? <EmptyState title="No billing activity" body={`No ${groupBy === "alias" ? "service alias or direct request" : "actual model"} costs were recorded for the selected range.`} /> : !notice ? <EmptyState title="Billing is loading" body="Waiting for the selected range." /> : null}
       {pricingDraft ? (
         <section className="billing-pricing-panel">
           <div className="table-heading">
             <div>
               <h3>Manual model pricing</h3>
-              <p>Configure USD pricing. Each suggestion independently recovers compute cost from the selected range.</p>
+              <p>{groupBy === "alias" ? "Configure USD pricing. Switch to Actual models for compute-cost pricing suggestions." : "Configure USD pricing. Each suggestion independently recovers compute cost from the selected range."}</p>
             </div>
             <div className="pricing-save-row">
               <StatusIndicator tone={pricingDirty ? "warn" : "good"} label={pricingDirty ? "pricing draft" : "in sync"} />
@@ -160,6 +175,37 @@ export function BillingPage({
         </section>
       ) : null}
     </div>
+  );
+}
+
+function BillingModelRow({ model, groupBy }: { model: BillingModelSummary; groupBy: BillingGroupBy }) {
+  const isUnattributed = groupBy === "alias" && model.group_kind === "unattributed";
+  const versions = model.canonical_versions ?? [];
+  return (
+    <tr>
+      <td className="billing-identity-cell">
+        <strong>{isUnattributed ? "Direct / historic traffic" : model.model}</strong>
+        {isUnattributed ? <span className="billing-kind-label">Unattributed</span> : null}
+        {groupBy === "alias" && model.group_kind === "alias" ? <span className="billing-kind-label">Service alias</span> : null}
+        {groupBy === "alias" && versions.length > 0 ? (
+          <details className="billing-version-breakdown">
+            <summary>{versions.length} canonical {versions.length === 1 ? "version" : "versions"}</summary>
+            <ul>
+              {versions.map((version) => (
+                <li key={version.canonical_model}>
+                  <span>{version.canonical_model}</span>
+                  <small>{formatNumber(version.requests)} req · {formatNumber(version.total_tokens)} tokens · {formatMoney(version.model_used_cost)} configured usage · {formatMoney(version.allocated_model_cost)} allocated</small>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </td>
+      <td>{formatNumber(model.requests)}</td>
+      <td>{formatNumber(model.total_tokens)}</td>
+      <td>{formatMoney(model.model_used_cost)}</td>
+      <td>{formatMoney(model.model_cost)}</td>
+    </tr>
   );
 }
 

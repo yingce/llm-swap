@@ -1,4 +1,38 @@
-import type { BillingModelSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
+import type { BillingGroupBy, BillingModelSummary, BillingSummary, ModelBillingConfig, RequestLogEntry, WorkerEvent } from "../api";
+
+export type BillingViewState = {
+  billing: BillingSummary | null;
+  rangeHours: number;
+  groupBy: BillingGroupBy;
+  loading: boolean;
+  error: string;
+  requestID: number;
+};
+
+export type BillingViewAction =
+  | { type: "start"; requestID: number; rangeHours: number; groupBy: BillingGroupBy }
+  | { type: "success"; requestID: number; billing: BillingSummary }
+  | { type: "failure"; requestID: number; error: string };
+
+export function reduceBillingView(state: BillingViewState, action: BillingViewAction): BillingViewState {
+  if (action.type === "start") {
+    return {
+      billing: null,
+      rangeHours: action.rangeHours,
+      groupBy: action.groupBy,
+      loading: true,
+      error: "",
+      requestID: action.requestID
+    };
+  }
+  if (action.requestID !== state.requestID) {
+    return state;
+  }
+  if (action.type === "success") {
+    return { ...state, billing: action.billing, loading: false, error: "" };
+  }
+  return { ...state, billing: null, loading: false, error: action.error };
+}
 
 export type ObserveNotice = {
   tone: "neutral" | "bad";

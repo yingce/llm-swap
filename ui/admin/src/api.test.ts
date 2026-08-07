@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { normalizeStatus, type StatusResponse, type WorkerStatus } from "./api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getBilling, normalizeStatus, type StatusResponse, type WorkerStatus } from "./api";
 
 const statusFixture = {
   generated_at: "2026-07-31T06:00:00Z",
@@ -150,5 +150,22 @@ describe("normalizeStatus", () => {
     delete (legacyStatus.workers[0] as Partial<WorkerStatus>).live_capacity_available;
 
     expect(normalizeStatus(legacyStatus).workers[0].live_capacity_available).toBe(false);
+  });
+});
+
+describe("getBilling", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("requests the selected service-alias grouping", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ group_by: "alias", models: [], apps: [] })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getBilling(24, true, "alias");
+
+    const requestedURL = String(fetchMock.mock.calls[0][0]);
+    expect(new URL(requestedURL, "http://gateway.test").searchParams.get("group_by")).toBe("alias");
   });
 });

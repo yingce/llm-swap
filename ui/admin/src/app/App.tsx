@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   applyConfig,
@@ -45,6 +45,7 @@ import { OverviewPage } from "../overview/OverviewPage";
 import { ModelsPage } from "../models/ModelsPage";
 import { WorkersPage } from "../workers/WorkersPage";
 import { ActivityPage, BillingPage, RequestsPage } from "../observe/ObservePages";
+import { reduceBillingView } from "../observe/observeView";
 import {
   cloneEditableConfig as cloneConfigDraft,
   hasLegacyCapacityCeiling,
@@ -76,9 +77,15 @@ export function App() {
   const [requests, setRequests] = useState<RequestLogEntry[]>([]);
   const [requestOffset, setRequestOffset] = useState(0);
   const [hasMoreRequests, setHasMoreRequests] = useState(false);
-  const [billing, setBilling] = useState<BillingSummary | null>(null);
-  const [billingRangeHours, setBillingRangeHours] = useState(24);
-  const [billingError, setBillingError] = useState("");
+  const [billingView, dispatchBillingView] = useReducer(reduceBillingView, {
+    billing: null,
+    rangeHours: 24,
+    groupBy: "canonical",
+    loading: false,
+    error: "",
+    requestID: 0
+  });
+  const billingRequestID = useRef(0);
   const [notice, setNotice] = useState("");
 
   const [configResponse, setConfigResponse] = useState<ConfigResponse | null>(null);
@@ -129,14 +136,14 @@ export function App() {
     setHasMoreRequests(page.has_more);
   }
 
-  async function loadBilling(rangeHours = billingRangeHours) {
+  async function loadBilling(rangeHours = billingView.rangeHours, groupBy = billingView.groupBy) {
+    const requestID = ++billingRequestID.current;
+    dispatchBillingView({ type: "start", requestID, rangeHours, groupBy });
     try {
-      const next = await getBilling(rangeHours, true);
-      setBilling(next);
-      setBillingRangeHours(rangeHours);
-      setBillingError("");
+      const next = await getBilling(rangeHours, true, groupBy);
+      dispatchBillingView({ type: "success", requestID, billing: next });
     } catch (err) {
-      setBillingError(err instanceof Error ? err.message : String(err));
+      dispatchBillingView({ type: "failure", requestID, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -190,7 +197,7 @@ export function App() {
     if (keys.includes("requests") && requests.length === 0 && requestOffset === 0) {
       void loadRequests(0);
     }
-    if (keys.includes("billing") && !billing) {
+    if (keys.includes("billing") && !billingView.billing && !billingView.loading) {
       void loadBilling(24);
     }
   }, [tab]);
@@ -323,7 +330,7 @@ export function App() {
 
   async function applyPricingDraft() {
     await applyDraft();
-    await loadBilling(billingRangeHours);
+    await loadBilling(billingView.rangeHours, billingView.groupBy);
   }
 
   async function copyAdvancedYAML() {
@@ -354,14 +361,17 @@ export function App() {
           {tab === "workers" && <WorkersPage status={status} onAction={runAction} />}
           {tab === "billing" && (
             <BillingPage
-              billing={billing}
-              rangeHours={billingRangeHours}
-              error={billingError}
+              billing={billingView.billing}
+              groupBy={billingView.groupBy}
+              loading={billingView.loading}
+              rangeHours={billingView.rangeHours}
+              error={billingView.error}
               pricingDraft={configDraft}
               pricingDirty={configDirty}
               pricingMessage={configMessage}
               pricingError={configError}
-              onRangeChange={(hours) => void loadBilling(hours)}
+              onRangeChange={(hours) => void loadBilling(hours, billingView.groupBy)}
+              onGroupByChange={(groupBy) => void loadBilling(billingView.rangeHours, groupBy)}
               onPriceChange={updateModelBillingPrice}
               onSavePricing={() => void applyPricingDraft()}
             />
