@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,18 +17,18 @@ import (
 func (s *Server) handleUIServiceNamePromote(w http.ResponseWriter, r *http.Request) {
 	var req serviceNamePromotionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.auditServiceNameRejection("promotion", "", "invalid_request")
 		http.Error(w, "invalid JSON request", http.StatusBadRequest)
 		return
 	}
 	resp, err := s.configManager.PromoteServiceName(r.Context(), req, func(cfg config.GatewayConfig) error {
 		return s.validateServiceNamePromotionState(cfg, strings.TrimSpace(req.ServiceName), strings.TrimSpace(req.TargetModel), time.Now())
-	})
+	}, s.applyRuntimeConfig)
 	if err != nil {
+		s.auditServiceNameRejection("promotion", req.ServiceName, serviceNameReasonCode(err))
 		writeServiceNameTransactionError(w, err)
 		return
 	}
-	cfg, _ := s.configManager.Snapshot()
-	s.applyRuntimeConfig(cfg)
 	s.recordGatewayWorkerEvent("gateway", protocol.AgentEvent{Event: "gateway_service_name_promoted", Model: resp.ServiceName, Object: resp.ArchiveID})
 	s.logEvent("gateway_service_name_promoted", map[string]any{"service_name": resp.ServiceName, "target_model": resp.TargetModel, "archive_id": resp.ArchiveID, "version": resp.Version})
 	writeJSON(w, resp)
@@ -36,16 +37,16 @@ func (s *Server) handleUIServiceNamePromote(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleUIServiceNameRollback(w http.ResponseWriter, r *http.Request) {
 	var req serviceNamePromotionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.auditServiceNameRejection("rollback", "", "invalid_request")
 		http.Error(w, "invalid JSON request", http.StatusBadRequest)
 		return
 	}
-	resp, err := s.configManager.RollbackServiceName(r.Context(), req)
+	resp, err := s.configManager.RollbackServiceName(r.Context(), req, s.applyRuntimeConfig)
 	if err != nil {
+		s.auditServiceNameRejection("rollback", req.ServiceName, serviceNameReasonCode(err))
 		writeServiceNameTransactionError(w, err)
 		return
 	}
-	cfg, _ := s.configManager.Snapshot()
-	s.applyRuntimeConfig(cfg)
 	s.recordGatewayWorkerEvent("gateway", protocol.AgentEvent{Event: "gateway_service_name_rollback", Model: resp.ServiceName, Object: resp.ArchiveID})
 	s.logEvent("gateway_service_name_rollback", map[string]any{"service_name": resp.ServiceName, "target_model": resp.TargetModel, "archive_id": resp.ArchiveID, "version": resp.Version})
 	writeJSON(w, resp)
@@ -60,50 +61,96 @@ func writeServiceNameTransactionError(w http.ResponseWriter, err error) {
 	} else if errors.As(err, &invalid) {
 		status = http.StatusBadRequest
 	}
+	message := err.Error()
+	if status == http.StatusInternalServerError {
+		message = "service-name transaction failed"
+	}
 	w.WriteHeader(status)
-	writeJSON(w, map[string]string{"error": err.Error()})
+	writeJSON(w, map[string]string{"error": message, "reason_code": serviceNameReasonCode(err)})
+}
+
+func serviceNameReasonCode(err error) string {
+	var conflict serviceNameConflict
+	if errors.As(err, &conflict) && conflict.code != "" {
+		return conflict.code
+	}
+	var invalid errInvalidConfig
+	if errors.As(err, &invalid) {
+		return "invalid_config"
+	}
+	return "storage_failure"
+}
+
+func (s *Server) auditServiceNameRejection(action, serviceName, reasonCode string) {
+	eventName := "gateway_service_name_" + action + "_rejected"
+	s.recordGatewayWorkerEvent("gateway", protocol.AgentEvent{Event: eventName, Model: strings.TrimSpace(serviceName), Object: reasonCode})
+	s.logEvent(eventName, map[string]any{"service_name": strings.TrimSpace(serviceName), "reason_code": reasonCode})
 }
 
 func (s *Server) validateServiceNamePromotionState(cfg config.GatewayConfig, serviceName, target string, now time.Time) error {
 	if s.accounting.ModelActive(serviceName) > 0 || s.limiter.Active("model:"+serviceName) > 0 || s.limiter.Queued("model:"+serviceName) > 0 {
-		return serviceNameConflict{message: "old canonical has active or pending requests"}
+		return serviceNameConflict{code: "old_requests_active", message: "old canonical has active or pending requests"}
 	}
-	ready := 0
 	for _, worker := range s.workers.Snapshot(now) {
 		if s.limiter.Active(workerModelLimitKey(worker.ID, serviceName)) > 0 || s.limiter.Queued(workerModelLimitKey(worker.ID, serviceName)) > 0 {
-			return serviceNameConflict{message: "old canonical has active or pending worker requests"}
+			return serviceNameConflict{code: "old_requests_active", message: "old canonical has active or pending worker requests"}
 		}
-		targetReady := false
 		for _, running := range worker.RunningModels {
 			if running.Model == serviceName {
-				return serviceNameConflict{message: "old canonical has a running replica in state " + running.State}
+				return serviceNameConflict{code: "old_replica_active", message: "old canonical has a running replica in state " + running.State}
 			}
-			if running.Model == target && strings.EqualFold(running.State, "ready") && artifactReady(worker, target) && s.workers.Healthy(worker.ID, now) && workerAllowsModel(cfg, worker, target) && !s.replicaCooldowns.Active(worker.ID, target, now) {
-				targetReady = true
-			}
-		}
-		if targetReady {
-			ready++
 		}
 		if status := strings.ToLower(strings.TrimSpace(worker.Artifacts[serviceName])); status != "" && status != "ready" && status != "missing" && status != "unavailable" && status != "error" {
-			return serviceNameConflict{message: "old canonical artifact activity is " + status}
-		}
-		if worker.NeedsRestart && (len(worker.RunningModels) > 0 || containsStringValue(worker.Artifacts, serviceName)) {
-			return serviceNameConflict{message: "old canonical has pending worker restart activity"}
+			return serviceNameConflict{code: "old_artifact_busy", message: "old canonical artifact activity is " + status}
 		}
 	}
-	model := cfg.Models[target]
-	floor := model.MinLoaded
-	if floor < 1 {
-		floor = 1
-	}
+	ready, floor := s.serviceNameTargetReadiness(cfg, target, now)
 	if ready < floor {
-		return serviceNameConflict{message: fmt.Sprintf("target has %d ready replicas; ready floor is %d", ready, floor)}
+		return serviceNameConflict{code: "target_not_ready", message: fmt.Sprintf("target has %d ready replicas; ready floor is %d", ready, floor)}
 	}
 	return nil
 }
 
-func containsStringValue(values map[string]string, key string) bool { _, ok := values[key]; return ok }
+type uiServiceNameTargetEligibility struct {
+	Model         string `json:"model"`
+	RoutableReady int    `json:"routable_ready"`
+	ReadyFloor    int    `json:"ready_floor"`
+	Eligible      bool   `json:"eligible"`
+}
+
+type uiServiceNameEligibilityResponse struct {
+	ServiceName string                           `json:"service_name"`
+	Targets     []uiServiceNameTargetEligibility `json:"targets"`
+}
+
+func (s *Server) serviceNameTargetReadiness(cfg config.GatewayConfig, target string, now time.Time) (int, int) {
+	floor := cfg.Models[target].MinLoaded
+	if floor < 1 {
+		floor = 1
+	}
+	ready := 0
+	for _, worker := range s.workers.Snapshot(now) {
+		if runningModelReady(worker, target) && artifactReady(worker, target) && s.workers.Healthy(worker.ID, now) && workerAllowsModel(cfg, worker, target) && !s.replicaCooldowns.Active(worker.ID, target, now) {
+			ready++
+		}
+	}
+	return ready, floor
+}
+
+func (s *Server) handleUIServiceNameEligibility(w http.ResponseWriter, r *http.Request) {
+	serviceName := strings.TrimSpace(r.URL.Query().Get("service_name"))
+	cfg := s.currentConfig()
+	targets := make([]uiServiceNameTargetEligibility, 0, len(cfg.Models))
+	for name, model := range cfg.Models {
+		if name == serviceName || model.Disabled {
+			continue
+		}
+		ready, floor := s.serviceNameTargetReadiness(cfg, name, time.Now())
+		targets = append(targets, uiServiceNameTargetEligibility{Model: name, RoutableReady: ready, ReadyFloor: floor, Eligible: ready >= floor})
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].Model < targets[j].Model })
+	writeJSON(w, uiServiceNameEligibilityResponse{ServiceName: serviceName, Targets: targets})
+}
 
 func (s *Server) handleUIConfig(w http.ResponseWriter, r *http.Request) {
 	if s.configManager == nil {
@@ -144,7 +191,7 @@ func (s *Server) handleUIConfigApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read config", http.StatusBadRequest)
 		return
 	}
-	resp, err := s.configManager.ApplyContext(r.Context(), raw)
+	resp, err := s.configManager.ApplyContextWithPublish(r.Context(), raw, s.applyRuntimeConfig)
 	if err != nil {
 		status := http.StatusInternalServerError
 		var invalid errInvalidConfig
@@ -156,8 +203,6 @@ func (s *Server) handleUIConfigApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.decorateApplyImpact(&resp)
-	cfg, _ := s.configManager.Snapshot()
-	s.applyRuntimeConfig(cfg)
 	s.logEvent("gateway_config_apply", map[string]any{
 		"version":                  resp.Version,
 		"changes":                  len(resp.Changes),

@@ -153,14 +153,13 @@ func TestPromoteServiceNameRevisionOrArchiveFailureDoesNotPublishConfig(t *testi
 	tests := []struct {
 		name string
 		fail func(*Server)
-		want string
 	}{
 		{name: "revision allocation", fail: func(s *Server) {
 			s.configManager.revisionStore = &failAfterStartupRevisionStore{calls: 1, err: errors.New("revision unavailable")}
-		}, want: "revision unavailable"},
+		}},
 		{name: "archive persistence", fail: func(s *Server) {
 			s.configManager.promotionStore = failingServiceNameArchiveStore{err: errors.New("archive unavailable")}
-		}, want: "archive unavailable"},
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,7 +171,7 @@ func TestPromoteServiceNameRevisionOrArchiveFailureDoesNotPublishConfig(t *testi
 			}
 			tt.fail(srv)
 			rr := postPromotionRaw(srv, "/ui/api/service-names/promote", map[string]any{"service_name": "A-Pro", "target_model": "A-Pro-0808"})
-			if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), tt.want) {
+			if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), `"reason_code":"storage_failure"`) || strings.Contains(rr.Body.String(), "unavailable") {
 				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 			}
 			after, err := os.ReadFile(configPath)
@@ -201,7 +200,7 @@ func TestPromoteServiceNameConfigWriteFailureRemovesPreparedArchive(t *testing.T
 	srv.configManager.promotionStore = archives
 
 	rr := postPromotionRaw(srv, "/ui/api/service-names/promote", map[string]any{"service_name": "A-Pro", "target_model": "A-Pro-0808"})
-	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), "persist promoted config") {
+	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), `"reason_code":"storage_failure"`) || strings.Contains(rr.Body.String(), "persist promoted config") {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	if len(archives.archives) != 0 {
@@ -209,6 +208,156 @@ func TestPromoteServiceNameConfigWriteFailureRemovesPreparedArchive(t *testing.T
 	}
 	if _, exists := srv.currentConfig().Models["A-Pro"]; !exists {
 		t.Fatal("failed config write changed runtime namespace")
+	}
+}
+
+func TestPromoteServiceNameAllowsUnrelatedWorkerRestartWithRetainedReadyArtifact(t *testing.T) {
+	srv, _ := newPromotionTestServer(t, 1)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID: "restarting", Tags: []string{"gpu"}, LlamaSwapURL: "http://restarting",
+		Artifacts:    map[string]string{"A-Pro": "ready"},
+		NeedsRestart: true, RestartModels: []string{"other-version"},
+	}, time.Now())
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID: "new", Tags: []string{"gpu"}, LlamaSwapURL: "http://new",
+		Artifacts:     map[string]string{"A-Pro-0808": "ready"},
+		RunningModels: []protocol.RunningModel{{Model: "A-Pro-0808", State: "ready"}},
+	}, time.Now())
+
+	rr := postPromotionRaw(srv, "/ui/api/service-names/promote", map[string]any{"service_name": "A-Pro", "target_model": "A-Pro-0808"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServiceNameEligibilityReportsOnlyRoutableReadyTargets(t *testing.T) {
+	srv, _ := newPromotionTestServer(t, 1)
+	cfg, _ := srv.configManager.Snapshot()
+	for _, name := range []string{"artifact-only", "unhealthy", "cooled"} {
+		cfg.Models[name] = config.Model{MinLoaded: 1, Artifact: config.Artifact{Object: name + ".tar.gz", Kind: "tar_gz", CRC64ECMA: name}, Run: name}
+		policy := cfg.TagPolicies["gpu"]
+		policy.AllowedModels = append(policy.AllowedModels, name)
+		cfg.TagPolicies["gpu"] = policy
+	}
+	srv.configManager.cfg, srv.configManager.fileCfg = cloneGatewayConfig(cfg), cloneGatewayConfig(cfg)
+	now := time.Now()
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "ready", Tags: []string{"gpu"}, LlamaSwapURL: "http://ready", Artifacts: map[string]string{"A-Pro-0808": "ready"}, RunningModels: []protocol.RunningModel{{Model: "A-Pro-0808", State: "ready"}}}, now)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "artifact", Tags: []string{"gpu"}, LlamaSwapURL: "http://artifact", Artifacts: map[string]string{"artifact-only": "ready"}}, now)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "unhealthy", Tags: []string{"gpu"}, Artifacts: map[string]string{"unhealthy": "ready"}, RunningModels: []protocol.RunningModel{{Model: "unhealthy", State: "ready"}}}, now)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "cooled", Tags: []string{"gpu"}, LlamaSwapURL: "http://cooled", Artifacts: map[string]string{"cooled": "ready"}, RunningModels: []protocol.RunningModel{{Model: "cooled", State: "ready"}}}, now)
+	srv.replicaCooldowns.Mark("cooled", "cooled", "upstream_503", now)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/api/service-names/eligibility?service_name=A-Pro", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var response uiServiceNameEligibilityResponse
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	targets := map[string]uiServiceNameTargetEligibility{}
+	for _, target := range response.Targets {
+		targets[target.Model] = target
+	}
+	if !targets["A-Pro-0808"].Eligible || targets["A-Pro-0808"].RoutableReady != 1 {
+		t.Fatalf("ready target = %+v", targets["A-Pro-0808"])
+	}
+	for _, name := range []string{"artifact-only", "unhealthy", "cooled"} {
+		if targets[name].Eligible || targets[name].RoutableReady != 0 {
+			t.Fatalf("%s target = %+v, want ineligible", name, targets[name])
+		}
+	}
+}
+
+func TestServiceNameRejectionsEmitSafeAuditReasonCodes(t *testing.T) {
+	srv, _ := newPromotionTestServer(t, 1)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "new", Tags: []string{"gpu"}, LlamaSwapURL: "http://new", Artifacts: map[string]string{"A-Pro-0808": "ready"}, RunningModels: []protocol.RunningModel{{Model: "A-Pro-0808", State: "ready"}}}, time.Now())
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "old", Artifacts: map[string]string{"A-Pro": "installing"}}, time.Now())
+	rr := postPromotionRaw(srv, "/ui/api/service-names/promote", map[string]any{"service_name": "A-Pro", "target_model": "A-Pro-0808"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	events := srv.recentAgentEvents()
+	event := events[len(events)-1]
+	if event.Event != "gateway_service_name_promotion_rejected" || event.Object != "old_artifact_busy" || event.Error != "" {
+		t.Fatalf("audit event = %+v", event)
+	}
+
+	srv.configManager.promotionStore = failingServiceNameArchiveStore{err: errors.New("sensitive backend detail")}
+	// Remove the installing worker from consideration by aging it beyond retention.
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "old"}, time.Now().Add(-workerOfflineRetention-time.Second))
+	rr = postPromotionRaw(srv, "/ui/api/service-names/promote", map[string]any{"service_name": "A-Pro", "target_model": "A-Pro-0808"})
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	events = srv.recentAgentEvents()
+	event = events[0]
+	if event.Event != "gateway_service_name_promotion_rejected" || event.Object != "storage_failure" || strings.Contains(event.Object, "sensitive") {
+		t.Fatalf("storage audit event = %+v", event)
+	}
+}
+
+func TestRollbackServiceNameRejectionsEmitSafeAuditReasonCodes(t *testing.T) {
+	srv, _ := newPromotionTestServer(t, 1)
+	rr := postPromotionRaw(srv, "/ui/api/service-names/rollback", map[string]any{
+		"service_name": "A-Pro", "target_model": "A-Pro-0808", "archive_id": "missing",
+	})
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"reason_code":"archive_unavailable"`) {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	event := srv.recentAgentEvents()[0]
+	if event.Event != "gateway_service_name_rollback_rejected" || event.Object != "archive_unavailable" || event.Error != "" {
+		t.Fatalf("audit event = %+v", event)
+	}
+
+	srv.configManager.promotionStore = failingServiceNameArchiveStore{err: errors.New("sensitive rollback backend detail")}
+	rr = postPromotionRaw(srv, "/ui/api/service-names/rollback", map[string]any{
+		"service_name": "A-Pro", "target_model": "A-Pro-0808", "archive_id": "missing",
+	})
+	if rr.Code != http.StatusInternalServerError || strings.Contains(rr.Body.String(), "sensitive") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	event = srv.recentAgentEvents()[0]
+	if event.Event != "gateway_service_name_rollback_rejected" || event.Object != "storage_failure" || event.Error != "" {
+		t.Fatalf("storage audit event = %+v", event)
+	}
+}
+
+func TestConfigPublishCallbackStaysInsideApplyTransaction(t *testing.T) {
+	srv, _ := newPromotionTestServer(t, 1)
+	srv.workers.UpsertHeartbeat(protocol.HeartbeatRequest{AgentID: "new", Tags: []string{"gpu"}, LlamaSwapURL: "http://new", Artifacts: map[string]string{"A-Pro-0808": "ready"}, RunningModels: []protocol.RunningModel{{Model: "A-Pro-0808", State: "ready"}}}, time.Now())
+	publishEntered, releasePublish := make(chan struct{}), make(chan struct{})
+	promotionDone := make(chan error, 1)
+	go func() {
+		_, err := srv.configManager.PromoteServiceName(context.Background(), serviceNamePromotionRequest{ServiceName: "A-Pro", TargetModel: "A-Pro-0808"}, func(cfg config.GatewayConfig) error {
+			return srv.validateServiceNamePromotionState(cfg, "A-Pro", "A-Pro-0808", time.Now())
+		}, func(config.GatewayConfig) { close(publishEntered); <-releasePublish })
+		promotionDone <- err
+	}()
+	<-publishEntered
+	raw, err := srv.configManager.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyDone := make(chan error, 1)
+	go func() {
+		_, err := srv.configManager.ApplyContextWithPublish(context.Background(), raw, func(config.GatewayConfig) {})
+		applyDone <- err
+	}()
+	select {
+	case err := <-applyDone:
+		t.Fatalf("concurrent apply completed before promotion publish: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releasePublish)
+	if err := <-promotionDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-applyDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

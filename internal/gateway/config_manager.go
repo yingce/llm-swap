@@ -253,6 +253,10 @@ func (m *ConfigManager) Apply(raw []byte) (uiConfigApplyResponse, error) {
 }
 
 func (m *ConfigManager) ApplyContext(ctx context.Context, raw []byte) (uiConfigApplyResponse, error) {
+	return m.ApplyContextWithPublish(ctx, raw, nil)
+}
+
+func (m *ConfigManager) ApplyContextWithPublish(ctx context.Context, raw []byte, publish func(config.GatewayConfig)) (uiConfigApplyResponse, error) {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	dryRun, runtimeCfg, fileCfg, preparedRaw := m.dryRun(raw)
@@ -284,6 +288,9 @@ func (m *ConfigManager) ApplyContext(ctx context.Context, raw []byte) (uiConfigA
 		m.fileCfg = cloneGatewayConfig(fileCfg)
 		version := m.version
 		m.mu.Unlock()
+		if publish != nil {
+			publish(currentRuntimeConfig(m))
+		}
 		return uiConfigApplyResponse{
 			Version:                version,
 			Changes:                dryRun.Changes,
@@ -298,12 +305,21 @@ func (m *ConfigManager) ApplyContext(ctx context.Context, raw []byte) (uiConfigA
 	m.version = revision
 	version := revision
 	m.mu.Unlock()
+	if publish != nil {
+		publish(cloneGatewayConfig(runtimeCfg))
+	}
 	return uiConfigApplyResponse{
 		Version:                version,
 		Changes:                dryRun.Changes,
 		ApplyMode:              dryRun.ApplyMode,
 		RequiresGatewayRestart: dryRun.RequiresGatewayRestart,
 	}, nil
+}
+
+func currentRuntimeConfig(m *ConfigManager) config.GatewayConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneGatewayConfig(m.cfg)
 }
 
 func (m *ConfigManager) restoreRedactedFRPAuthToken(raw []byte) ([]byte, error) {

@@ -20,4 +20,11 @@ describe("Promote service name workflow", () => {
     expect(source).toContain("promotion.archive_id");
     expect(api).toContain("target_model: promotion.target_model");
   });
+
+  it("loads backend routability eligibility instead of trusting artifact-ready status counts", () => {
+    expect(api).toContain("/ui/api/service-names/eligibility");
+    expect(source).toContain("getServiceNameEligibility(selectedModel)");
+    expect(source).toContain("target.eligible");
+    expect(source).not.toContain("liveModelMap.get(name)?.ready_workers");
+  });
 });

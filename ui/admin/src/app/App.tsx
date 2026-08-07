@@ -12,9 +12,11 @@ import {
   getEvents,
   getStatus,
   getRequests,
+  getServiceNameEligibility,
   ModelBillingConfig,
   ModelStatus,
   ServiceNamePromotion,
+  ServiceNameTargetEligibility,
   RequestLogEntry,
   StatusResponse,
   TagPolicyConfig,
@@ -1180,6 +1182,7 @@ function ConfigOps({
   const [confirmPromotion, setConfirmPromotion] = useState(false);
   const [promotion, setPromotion] = useState<ServiceNamePromotion | null>(null);
   const [promotionError, setPromotionError] = useState("");
+  const [promotionEligibility, setPromotionEligibility] = useState<ServiceNameTargetEligibility[]>([]);
 
   useEffect(() => {
     if (!selectedModel || !visibleModelNames.includes(selectedModel)) {
@@ -1195,6 +1198,18 @@ function ConfigOps({
       app.inert = false;
     };
   }, [appContentRef, createDraft]);
+
+  useEffect(() => {
+    if (!selectedModel || dirty || !draft?.models[selectedModel]?.disabled) {
+      setPromotionEligibility([]);
+      return;
+    }
+    let current = true;
+    void getServiceNameEligibility(selectedModel)
+      .then((response) => { if (current) setPromotionEligibility(response.targets ?? []); })
+      .catch((error) => { if (current) { setPromotionEligibility([]); setPromotionError(error instanceof Error ? error.message : String(error)); } });
+    return () => { current = false; };
+  }, [selectedModel, dirty, draft]);
 
   useEffect(() => {
     if (createDraft !== null) return;
@@ -1213,7 +1228,7 @@ function ConfigOps({
   const selectedModelConfig = currentDraft.models[selectedModel];
   const selectedModelTags = tagNames.filter((tagName) => currentDraft.tag_policies[tagName].allowed_models.includes(selectedModel));
   const liveModelMap = new Map((status?.models ?? []).map((model) => [model.name, model]));
-  const promotionTargets = modelNames.filter((name) => name !== selectedModel && !currentDraft.models[name]?.disabled && (liveModelMap.get(name)?.ready_workers ?? 0) >= Math.max(1, currentDraft.models[name]?.min_loaded ?? 0));
+  const promotionTargets = promotionEligibility.filter((target) => target.eligible && target.model !== selectedModel && !currentDraft.models[target.model]?.disabled);
 
   function startCreate(trigger: HTMLButtonElement) {
     const nextDraft: ModelCreateDraft = {
@@ -1361,7 +1376,7 @@ function ConfigOps({
                 {dirty ? <p className="alert">Apply or reset the current draft before promoting a service name.</p> : null}
                 <label><span>Ready target</span><select value={promotionTarget} onChange={(event) => setPromotionTarget(event.target.value)}>
                   <option value="">Select a ready canonical model</option>
-                  {promotionTargets.map((name) => <option key={name} value={name}>{name}</option>)}
+                  {promotionTargets.map((target) => <option key={target.model} value={target.model}>{target.model} · ready {target.routable_ready}/{target.ready_floor}</option>)}
                 </select></label>
                 {promotionTarget ? <p className="notice">The target is already ready: <strong>{promotionTarget}</strong>. New requests for {selectedModel} will route there immediately.</p> : null}
                 <p className="muted">Rollback removes the service alias and restores the archived canonical definition. It is refused if the alias or touched placement policy changes later.</p>

@@ -194,16 +194,19 @@ type uiServiceNameTransactionResponse struct {
 	Version     int64  `json:"version"`
 }
 
-type serviceNameConflict struct{ message string }
+type serviceNameConflict struct {
+	code    string
+	message string
+}
 
 func (e serviceNameConflict) Error() string { return e.message }
 
-func (m *ConfigManager) PromoteServiceName(ctx context.Context, req serviceNamePromotionRequest, validate func(config.GatewayConfig) error) (uiServiceNameTransactionResponse, error) {
+func (m *ConfigManager) PromoteServiceName(ctx context.Context, req serviceNamePromotionRequest, validate func(config.GatewayConfig) error, publish func(config.GatewayConfig)) (uiServiceNameTransactionResponse, error) {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	current, fileCurrent, version := m.serviceNameConfigSnapshot()
 	if !sameServiceNameNamespace(current, fileCurrent) {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "persisted model namespace has pending restart changes; restart gateway before promotion"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "pending_restart_config", message: "persisted model namespace has pending restart changes; restart gateway before promotion"}
 	}
 	serviceName, target := strings.TrimSpace(req.ServiceName), strings.TrimSpace(req.TargetModel)
 	if serviceName == "" || target == "" {
@@ -211,21 +214,21 @@ func (m *ConfigManager) PromoteServiceName(ctx context.Context, req serviceNameP
 	}
 	old, exists := current.Models[serviceName]
 	if !exists {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "service name must be an existing canonical model"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "old_model_missing", message: "service name must be an existing canonical model"}
 	}
 	if !old.Disabled {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "old canonical model must be disabled"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "old_model_enabled", message: "old canonical model must be disabled"}
 	}
 	if _, exists := current.ModelAliases[serviceName]; exists {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "service name already exists as an alias"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "alias_exists", message: "service name already exists as an alias"}
 	}
 	if serviceName == target {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "target model must differ from the service name"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "invalid_target", message: "target model must differ from the service name"}
 	}
 	if targetModel, exists := current.Models[target]; !exists {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "target canonical model is not defined"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "target_missing", message: "target canonical model is not defined"}
 	} else if targetModel.Disabled {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "target canonical model is disabled"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "target_disabled", message: "target canonical model is disabled"}
 	}
 	if validate != nil {
 		if err := validate(current); err != nil {
@@ -285,35 +288,38 @@ func (m *ConfigManager) PromoteServiceName(ctx context.Context, req serviceNameP
 		return uiServiceNameTransactionResponse{}, fmt.Errorf("persist promoted config: %w", err)
 	}
 	m.commitTransactionConfig(next, fileCfg, prepared, revision)
+	if publish != nil {
+		publish(cloneGatewayConfig(next))
+	}
 	return uiServiceNameTransactionResponse{Action: "promote", ServiceName: serviceName, TargetModel: target, ArchiveID: id, Version: revision}, nil
 }
 
-func (m *ConfigManager) RollbackServiceName(ctx context.Context, req serviceNamePromotionRequest) (uiServiceNameTransactionResponse, error) {
+func (m *ConfigManager) RollbackServiceName(ctx context.Context, req serviceNamePromotionRequest, publish func(config.GatewayConfig)) (uiServiceNameTransactionResponse, error) {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	current, fileCurrent, version := m.serviceNameConfigSnapshot()
 	if !sameServiceNameNamespace(current, fileCurrent) {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "persisted model namespace has pending restart changes; restart gateway before rollback"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "pending_restart_config", message: "persisted model namespace has pending restart changes; restart gateway before rollback"}
 	}
 	archive, ok, err := m.promotionStore.Get(ctx, strings.TrimSpace(req.ArchiveID))
 	if err != nil {
 		return uiServiceNameTransactionResponse{}, fmt.Errorf("read service-name archive: %w", err)
 	}
 	if !ok || archive.RolledBack {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "promotion archive is not available"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "archive_unavailable", message: "promotion archive is not available"}
 	}
 	if archive.ServiceName != strings.TrimSpace(req.ServiceName) || archive.TargetModel != strings.TrimSpace(req.TargetModel) {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "alias, target, and archive do not match"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "archive_mismatch", message: "alias, target, and archive do not match"}
 	}
 	if _, exists := current.Models[archive.ServiceName]; exists {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "active model namespace changed after promotion"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "namespace_changed", message: "active model namespace changed after promotion"}
 	}
 	if current.ModelAliases[archive.ServiceName] != archive.TargetModel {
-		return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "service alias changed after promotion"}
+		return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "alias_changed", message: "service alias changed after promotion"}
 	}
 	for tag, expected := range archive.AfterTagPolicies {
 		if !reflect.DeepEqual(current.TagPolicies[tag], expected) {
-			return uiServiceNameTransactionResponse{}, serviceNameConflict{message: "tag policy changed after promotion"}
+			return uiServiceNameTransactionResponse{}, serviceNameConflict{code: "policy_changed", message: "tag policy changed after promotion"}
 		}
 	}
 
@@ -341,6 +347,9 @@ func (m *ConfigManager) RollbackServiceName(ctx context.Context, req serviceName
 		return uiServiceNameTransactionResponse{}, fmt.Errorf("persist rollback config: %w", err)
 	}
 	m.commitTransactionConfig(next, fileCfg, prepared, revision)
+	if publish != nil {
+		publish(cloneGatewayConfig(next))
+	}
 	archive.RolledBack = true
 	_ = m.promotionStore.Put(context.Background(), archive)
 	return uiServiceNameTransactionResponse{Action: "rollback", ServiceName: archive.ServiceName, TargetModel: archive.TargetModel, ArchiveID: archive.ArchiveID, Version: revision}, nil

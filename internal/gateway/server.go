@@ -192,6 +192,7 @@ func newServerWithConfigManager(cfg config.GatewayConfig, requestLogPath string,
 	s.mux.Handle("POST /ui/api/config/apply", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIConfigApply)))
 	s.mux.Handle("POST /ui/api/service-names/promote", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIServiceNamePromote)))
 	s.mux.Handle("POST /ui/api/service-names/rollback", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIServiceNameRollback)))
+	s.mux.Handle("GET /ui/api/service-names/eligibility", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIServiceNameEligibility)))
 	s.mux.Handle("POST /ui/api/workers/{id}/drain", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIWorkerDrain)))
 	s.mux.Handle("POST /ui/api/workers/{id}/undrain", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIWorkerUndrain)))
 	s.mux.Handle("POST /ui/api/models/{model}/warm", uiAuth(cfg.Tokens.Agent, http.HandlerFunc(s.handleUIModelWarm)))

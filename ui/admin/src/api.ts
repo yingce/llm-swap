@@ -349,6 +349,18 @@ export type ServiceNamePromotion = {
   version: number;
 };
 
+export type ServiceNameTargetEligibility = {
+  model: string;
+  routable_ready: number;
+  ready_floor: number;
+  eligible: boolean;
+};
+
+export type ServiceNameEligibilityResponse = {
+  service_name: string;
+  targets: ServiceNameTargetEligibility[];
+};
+
 export type BillingGroupBy = "canonical" | "alias";
 
 export type BillingGroupKind = "alias" | "unattributed";
@@ -497,6 +509,10 @@ export function promoteServiceName(serviceName: string, targetModel: string): Pr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ service_name: serviceName, target_model: targetModel })
   });
+}
+
+export function getServiceNameEligibility(serviceName: string): Promise<ServiceNameEligibilityResponse> {
+  return request<ServiceNameEligibilityResponse>(`/ui/api/service-names/eligibility?service_name=${encodeURIComponent(serviceName)}`);
 }
 
 export function rollbackServiceName(promotion: ServiceNamePromotion): Promise<ServiceNamePromotion> {
