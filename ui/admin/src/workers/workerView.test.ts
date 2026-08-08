@@ -9,6 +9,7 @@ import { buildWorkerFilters, buildWorkerRows, workerHasDiagnosticWarning } from 
 import * as workerView from "./workerView";
 
 const workersPageSource = readFileSync(new URL("./WorkersPage.tsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../app/App.tsx", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 
 describe("buildWorkerRows", () => {
@@ -102,6 +103,21 @@ describe("Worker request pressure", () => {
 });
 
 describe("Worker diagnostics", () => {
+  it("routes workers exclusively through the current version-only page", () => {
+    expect(appSource).toContain('<WorkersPage status={status} onAction={runAction} />');
+    for (const obsolete of [
+      "function Workers(",
+      "function GPUDeviceView(",
+      "function shortCommit(",
+      "function agentVersionTone(",
+      "worker.agent_build?.commit",
+      'status === "current"',
+      'status === "outdated"'
+    ]) {
+      expect(appSource).not.toContain(obsolete);
+    }
+  });
+
   it("shows agent version and conditional compatibility guidance in a transient tooltip", () => {
     const popoverStart = workersPageSource.indexOf('className="worker-diagnostics-popover"');
     const popoverSource = workersPageSource.slice(popoverStart, workersPageSource.indexOf("</dl>", popoverStart));

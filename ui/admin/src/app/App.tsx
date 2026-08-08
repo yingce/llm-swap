@@ -6,7 +6,6 @@ import {
   ConfigChange,
   ConfigImpact,
   ConfigResponse,
-  drainWorker,
   getConfig,
   getBilling,
   getEvents,
@@ -21,10 +20,8 @@ import {
   StatusResponse,
   TagPolicyConfig,
   unloadModel,
-  undrainWorker,
   warmModel,
   WorkerEvent,
-  WorkerStatus,
   dryRunConfig,
   promoteServiceName,
   rollbackServiceName
@@ -605,95 +602,6 @@ function ModelActions({
       <button disabled={!loadedWorker} onClick={() => loadedWorker && void onAction(() => unloadModel(model.name, loadedWorker.worker_id))}>
         Unload
       </button>
-    </div>
-  );
-}
-
-function Workers({
-  workers,
-  onAction
-}: {
-  workers: WorkerStatus[];
-  onAction: (action: () => Promise<{ action: string; worker_id?: string; model?: string }>) => Promise<void>;
-}) {
-  return (
-    <div className="worker-grid">
-      {workers.map((worker) => {
-        const runningModels = worker.running_models ?? [];
-        const tags = worker.tags ?? [];
-        const gpuDevices = worker.gpu_devices ?? [];
-        const agentCommit = shortCommit(worker.agent_build?.commit);
-        const agentVersion = worker.agent_build?.version || "unknown";
-        return (
-          <article className="worker" key={worker.id}>
-            <div className="worker-head">
-              <strong>{worker.id}</strong>
-              <Badge tone={worker.health === "healthy" ? "good" : "bad"}>{worker.health}</Badge>
-            </div>
-            <p className="mono break">{worker.llama_swap_url}</p>
-            <p>{worker.active_requests} active · {runningModels.length} running · {worker.scrape_failures} scrape failures</p>
-            <p>
-              agent {agentVersion}{agentCommit ? ` · ${agentCommit}` : ""}{" "}
-              <Badge tone={agentVersionTone(worker.agent_version_status)}>{worker.agent_version_status}</Badge>
-            </p>
-            <div className="worker-models">
-              <strong>Current models</strong>
-              <div className="chips">
-                {runningModels.length > 0 ? (
-                  runningModels.map((model) => (
-                    <span key={`${worker.id}-${model.model}`} className={`model-pill ${model.state || "ready"}`}>
-                      {model.model}
-                      {model.state ? ` · ${model.state}` : ""}
-                    </span>
-                  ))
-                ) : (
-                  <span className="muted">none</span>
-                )}
-              </div>
-            </div>
-            <div className="worker-models">
-              <strong>GPU</strong>
-              {gpuDevices.length > 0 ? (
-                <div className="gpu-list">
-                  {gpuDevices.map((gpu) => <GPUDeviceView key={`${worker.id}-${gpu.index}-${gpu.uuid || gpu.name}`} gpu={gpu} />)}
-                </div>
-              ) : (
-                <span className="muted">no GPU metrics reported</span>
-              )}
-            </div>
-            <div className="actions">
-              {worker.state === "draining" ? (
-                <button onClick={() => void onAction(() => undrainWorker(worker.id))}>Undrain</button>
-              ) : (
-                <button onClick={() => void onAction(() => drainWorker(worker.id))}>Drain</button>
-              )}
-            </div>
-            <div className="chips">
-              {tags.map((tag) => <span key={tag}>{tag}</span>)}
-            </div>
-            {worker.last_error ? <div className="alert compact">{worker.last_error}</div> : null}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function GPUDeviceView({ gpu }: { gpu: WorkerStatus["gpu_devices"][number] }) {
-  const usedPercent = gpu.memory_total_mib > 0 ? Math.min(100, Math.max(0, (gpu.memory_used_mib / gpu.memory_total_mib) * 100)) : 0;
-  return (
-    <div className="gpu-card">
-      <div className="gpu-card-head">
-        <strong>{gpu.index}: {gpu.name}</strong>
-        <span>{Math.round(gpu.utilization_percent)}%</span>
-      </div>
-      <div className="gpu-bar" aria-label={`GPU ${gpu.index} memory ${Math.round(usedPercent)} percent used`}>
-        <span style={{ width: `${usedPercent}%` }} />
-      </div>
-      <div className="gpu-meta">
-        <span>{formatMiB(gpu.memory_used_mib)} / {formatMiB(gpu.memory_total_mib)}</span>
-        <span>{Math.round(gpu.temperature_celsius)}C</span>
-      </div>
     </div>
   );
 }
@@ -2339,31 +2247,6 @@ function formatBytes(value?: number) {
     unit++;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)}${units[unit]}`;
-}
-
-function formatMiB(value?: number) {
-  const mib = Number(value ?? 0);
-  if (!Number.isFinite(mib) || mib <= 0) {
-    return "0MiB";
-  }
-  if (mib >= 1024) {
-    return `${(mib / 1024).toFixed(1).replace(/\.0$/, "")}GiB`;
-  }
-  return `${Math.round(mib)}MiB`;
-}
-
-function shortCommit(commit?: string) {
-  return commit ? commit.slice(0, 12) : "";
-}
-
-function agentVersionTone(status?: string): "good" | "warn" | "bad" {
-  if (status === "current") {
-    return "good";
-  }
-  if (status === "outdated") {
-    return "bad";
-  }
-  return "warn";
 }
 
 function sortedKeys(record?: Record<string, unknown>) {
