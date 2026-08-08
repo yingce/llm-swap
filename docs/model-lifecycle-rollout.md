@@ -13,6 +13,12 @@ upgraded Agents use it to cancel and fence stale artifact work. A Gateway-only
 release that keeps the supported Agent protocol range unchanged does not
 require publishing or deploying a new Agent image.
 
+The first release that adopts `config_revision` is an Agent compatibility
+batch: deploy the Gateway and every affected Agent together. Later
+Gateway-only releases may retain the existing Agent fleet only when they do not
+change Agent behavior, the Agent release version, or the supported protocol
+range.
+
 ### Agent release metadata and protocol rollout
 
 Record the Agent's release identity separately from its source provenance:
@@ -94,31 +100,37 @@ environment values:
 
 1. The committed release ID and whether each remote release/control directory
    has uncommitted or locally modified content.
-2. Gateway and Agent image references plus immutable image IDs, current Compose
-   service state, health, and restart counts.
+2. Gateway image reference plus immutable image ID, current Compose service
+   state, health, and restart counts. For an Agent compatibility batch, also
+   record the matching Agent image references and IDs.
 3. Free space for image builds, release staging, the Gateway state backup, and
    shared-model staging.
 4. Owner-only readability and backup/restore capability for the complete
    Gateway config and state directories, including the revision and promotion
    files.
-5. A verified rollback image/reference for both Gateway and Agent, and a way to
-   restore their matching config/state snapshot.
-6. A deployment path that builds from one committed archive, updates Gateway
-   and Agents as the same release unit, health-checks both, and rolls both back
-   if either half fails.
+5. A verified rollback Gateway image/reference and a way to restore its
+   matching config/state snapshot. For an Agent compatibility batch, also
+   verify the matching Agent rollback image/reference.
+6. A deployment path that builds from one committed archive. An Agent
+   compatibility batch must update, health-check, and roll back Gateway and
+   Agents as one unit; a Gateway-only release deploys only Gateway and retains
+   the current Agent release/version and protocol.
 
 Stop before cutover if the candidate commit has not been integrated into the
 release source, a remote directory contains changes the tool would overwrite,
-state cannot be backed up and restored as one unit, or the available deploy
-command updates only one side of the protocol batch.
+state cannot be backed up and restored as one unit, or an Agent compatibility
+batch's deploy command updates only one side of that protocol batch.
 
 ## Cutover and acceptance
 
 After all gates pass, back up config/state and record immutable rollback image
-IDs. Deploy the Gateway and Agents from the same committed archive. Do not edit
-the live model configuration as part of the binary cutover.
+IDs. For an Agent compatibility batch, deploy Gateway and Agents from the same
+committed archive. For a Gateway-only release, deploy only Gateway; do not
+publish an Agent image or change Agent release/version or protocol metadata.
+Do not edit the live model configuration as part of the binary cutover.
 
-Accept the batch only after all of the following are observed:
+Accept an Agent compatibility batch only after all of the following are
+observed:
 
 - Gateway health succeeds and the revision file advances across a controlled
   restart without decreasing.
@@ -138,12 +150,15 @@ Accept the batch only after all of the following are observed:
 
 ## Rollback
 
-If either protocol side or any acceptance gate fails, stop configuration edits,
-restore the recorded Gateway and Agent images as a batch, and restore the
-matching Gateway config/state snapshot. Preserve the shared model root and
-worker logs for diagnosis. Health-check the Gateway, require fresh Agent
-heartbeats, and verify that the restored revision state is consistent before
-resuming traffic or model changes.
+If an Agent compatibility batch fails on either protocol side or any acceptance
+gate, stop configuration edits, restore the recorded Gateway and Agent images
+as a batch, and restore the matching Gateway config/state snapshot. For a
+Gateway-only release, restore only the recorded Gateway image and matching
+Gateway config/state; do not publish or change an Agent. Preserve the shared
+model root and worker logs for diagnosis. Health-check the Gateway, require
+fresh Agent heartbeats when an Agent compatibility batch was rolled back, and
+verify that the restored revision state is consistent before resuming traffic
+or model changes.
 
 Alias-only model rollback normally repoints the stable alias to the previous
 ready canonical model. Promotion rollback instead uses the stored archive ID

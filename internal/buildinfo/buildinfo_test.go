@@ -29,17 +29,20 @@ func TestCurrentAllowsExplicitVersionOverride(t *testing.T) {
 }
 
 func TestCurrentPreservesDistinctReleaseVersionAndCommit(t *testing.T) {
+	const wantVersion = "2026.08.08.1"
+	const wantCommit = "abc123"
+
 	oldVersion, oldCommit, oldBuildTime := Version, Commit, BuildTime
 	t.Cleanup(func() {
 		Version, Commit, BuildTime = oldVersion, oldCommit, oldBuildTime
 	})
-	Version, Commit, BuildTime = "2026.08.08.1", "abc123", "2026-08-08T00:00:00Z"
+	Version, Commit, BuildTime = wantVersion, wantCommit, "2026-08-08T00:00:00Z"
 
 	got := Current(2)
-	if got.Version != Version {
-		t.Fatalf("version = %q, want %q", got.Version, Version)
+	if got.Version != wantVersion {
+		t.Fatalf("version = %q, want %q", got.Version, wantVersion)
 	}
-	if got.Commit != Commit {
-		t.Fatalf("commit = %q, want %q", got.Commit, Commit)
+	if got.Commit != wantCommit {
+		t.Fatalf("commit = %q, want %q", got.Commit, wantCommit)
 	}
 }
