@@ -437,6 +437,10 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			ArtifactFingerprint: artifactFingerprint(model.Artifact),
 		}
 	}
+	globalDesiredModelDirs := make(map[string]struct{}, len(cfg.DesiredModelDirs))
+	for _, modelDirName := range cfg.DesiredModelDirs {
+		globalDesiredModelDirs[config.ModelDirIdentity(modelDirName)] = struct{}{}
+	}
 	for modelName, state := range installs {
 		if _, allowed := allowedModels[modelName]; allowed {
 			continue
@@ -445,18 +449,29 @@ func (r *Reconciler) installAllowedArtifactsAsync(ctx context.Context, cfg proto
 			delete(installs, modelName)
 			continue
 		}
-		winner, reusedModelDir := desiredByModelDir[config.ModelDirIdentity(state.key.ModelDir)]
+		modelDirIdentity := config.ModelDirIdentity(state.key.ModelDir)
+		winner, reusedModelDir := desiredByModelDir[modelDirIdentity]
+		publishWinner := reusedModelDir
+		publishTombstone := false
 		if !reusedModelDir {
+			winner = state.key.fence()
+			_, globallyDesired := globalDesiredModelDirs[modelDirIdentity]
+			publishTombstone = cfg.DesiredModelDirs != nil && !globallyDesired
+			publishWinner = publishTombstone
+		}
+		if publishTombstone {
 			winner = artifactInstallFence{
 				ConfigRevision:      cfg.ConfigRevision,
 				ArtifactFingerprint: removedArtifactFingerprint(),
 			}
 		}
-		published, _, err := publishArtifactInstallFence(ctx, r.ModelRoot, state.key.ModelDir, winner)
-		if err != nil {
-			outErr = errors.Join(outErr, fmt.Errorf("publish artifact removal fence for %q: %w", modelName, err))
-		} else {
-			winner = published
+		if publishWinner {
+			published, _, err := publishArtifactInstallFence(ctx, r.ModelRoot, state.key.ModelDir, winner)
+			if err != nil {
+				outErr = errors.Join(outErr, fmt.Errorf("publish artifact removal fence for %q: %w", modelName, err))
+			} else {
+				winner = published
+			}
 		}
 		if state.cancel != nil {
 			state.cancel(newArtifactInstallSupersededError(state.key.fence(), winner))

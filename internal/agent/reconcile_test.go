@@ -1948,6 +1948,129 @@ func TestTwoReconcilersSharedRootCancelSupersededInstallAndPreserveWinningMarker
 	}
 }
 
+func TestTwoReconcilersSharedRootSameRevisionLocalRemovalDoesNotTombstoneGloballyDesiredDir(t *testing.T) {
+	payload := []byte("shared model payload")
+	artifact := config.Artifact{Object: "models/shared.gguf", Kind: "file", CRC64ECMA: crc64String(payload)}
+	oss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-oss-hash-crc64ecma", artifact.CRC64ECMA)
+		switch r.Method {
+		case http.MethodHead:
+			return
+		case http.MethodGet:
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("unexpected OSS method %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	const oldRevision = 70
+	const sharedRevision = 71
+	const modelDir = "shared-v1"
+	modelRoot := t.TempDir()
+	oldKey := artifactKey("shared", modelDir, artifact.Object, artifact.Kind, artifact.CRC64ECMA, oldRevision)
+	if _, current, err := publishArtifactInstallFence(context.Background(), modelRoot, modelDir, oldKey.fence()); err != nil || !current {
+		t.Fatalf("publish old fence: current=%v err=%v", current, err)
+	}
+	removedInstallCtx, cancelRemovedInstall := context.WithCancelCause(context.Background())
+	defer cancelRemovedInstall(nil)
+	removedInstalls := map[string]*artifactInstallState{
+		"shared": {key: oldKey, running: true, cancel: cancelRemovedInstall},
+	}
+	removedCfg := protocol.AgentConfigResponse{
+		ConfigRevision:   sharedRevision,
+		DesiredModelDirs: []string{modelDir},
+		Models:           map[string]config.Model{},
+		TagPolicy:        protocol.AgentTagPolicy{Tag: "gpu-a"},
+	}
+	allowedCfg := protocol.AgentConfigResponse{
+		ConfigRevision:   sharedRevision,
+		DesiredModelDirs: []string{modelDir},
+		OSS:              ossConfig(oss.URL),
+		Models: map[string]config.Model{
+			"shared": {ModelDir: modelDir, Artifact: artifact},
+		},
+		TagPolicy: protocol.AgentTagPolicy{Tag: "gpu-b", AllowedModels: []string{"shared"}},
+	}
+
+	removedReconciler := &Reconciler{ModelRoot: modelRoot}
+	if _, _, err := removedReconciler.installAllowedArtifactsAsync(context.Background(), removedCfg, removedInstalls, make(chan artifactInstallResult, 1)); err != nil {
+		t.Fatalf("reconcile removed gpu-a model: %v", err)
+	}
+	if context.Cause(removedInstallCtx) == nil {
+		t.Fatal("gpu-a local install was not cancelled")
+	}
+	fence, exists, err := readArtifactInstallFence(modelRoot, modelDir)
+	if err != nil {
+		t.Fatalf("read fence after gpu-a removal: %v", err)
+	}
+	if !exists || !artifactFencesEqual(fence, oldKey.fence()) {
+		t.Fatalf("fence after gpu-a removal = %+v exists=%v, want unchanged %+v", fence, exists, oldKey.fence())
+	}
+
+	allowedReconciler := &Reconciler{ModelRoot: modelRoot, HTTPClient: oss.Client()}
+	allowedInstalls := make(map[string]*artifactInstallState)
+	allowedDone := make(chan artifactInstallResult, 1)
+	status, _, err := allowedReconciler.installAllowedArtifactsAsync(context.Background(), allowedCfg, allowedInstalls, allowedDone)
+	if err != nil {
+		t.Fatalf("start gpu-b install: %v", err)
+	}
+	if got := status["shared"]; got != "installing" {
+		t.Fatalf("gpu-b artifact status = %q, want installing", got)
+	}
+	select {
+	case result := <-allowedDone:
+		allowedReconciler.applyInstallResult(allowedInstalls, result)
+		if result.err != nil {
+			t.Fatalf("gpu-b install result: %v", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("gpu-b artifact install did not finish")
+	}
+	matches, err := MarkerMatches(filepath.Join(modelRoot, modelDir), "shared", artifact)
+	if err != nil {
+		t.Fatalf("read gpu-b marker: %v", err)
+	}
+	if !matches {
+		t.Fatal("gpu-b did not install the globally desired artifact")
+	}
+}
+
+func TestLegacyGatewayLocalRemovalCancelsWithoutPublishingTombstone(t *testing.T) {
+	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: "123"}
+	const modelDir = "shared-v1"
+	modelRoot := t.TempDir()
+	oldKey := artifactKey("shared", modelDir, artifact.Object, artifact.Kind, artifact.CRC64ECMA, 80)
+	if _, current, err := publishArtifactInstallFence(context.Background(), modelRoot, modelDir, oldKey.fence()); err != nil || !current {
+		t.Fatalf("publish old fence: current=%v err=%v", current, err)
+	}
+	installCtx, cancelInstall := context.WithCancelCause(context.Background())
+	defer cancelInstall(nil)
+	installs := map[string]*artifactInstallState{
+		"shared": {key: oldKey, running: true, cancel: cancelInstall},
+	}
+	legacyCfg := protocol.AgentConfigResponse{
+		ConfigRevision: 81,
+		Models:         map[string]config.Model{},
+		TagPolicy:      protocol.AgentTagPolicy{Tag: "gpu-a"},
+	}
+
+	rec := &Reconciler{ModelRoot: modelRoot}
+	if _, _, err := rec.installAllowedArtifactsAsync(context.Background(), legacyCfg, installs, make(chan artifactInstallResult, 1)); err != nil {
+		t.Fatalf("reconcile legacy removal: %v", err)
+	}
+	if context.Cause(installCtx) == nil {
+		t.Fatal("legacy local install was not cancelled")
+	}
+	fence, exists, err := readArtifactInstallFence(modelRoot, modelDir)
+	if err != nil {
+		t.Fatalf("read legacy fence: %v", err)
+	}
+	if !exists || !artifactFencesEqual(fence, oldKey.fence()) {
+		t.Fatalf("legacy removal fence = %+v exists=%v, want unchanged %+v", fence, exists, oldKey.fence())
+	}
+}
+
 func TestNewerConfigRevisionCancelsInstallWhenArtifactFingerprintIsUnchanged(t *testing.T) {
 	payload := []byte("model payload")
 	artifact := config.Artifact{Object: "models/model.gguf", Kind: "file", CRC64ECMA: crc64String(payload)}
@@ -2044,6 +2167,7 @@ func TestRemovingAllowedModelCancelsInstallAndPublishesTombstoneFence(t *testing
 	newCfg := reconcileConfigWithArtifact(oss.URL, artifact)
 	newCfg.ConfigRevision = 52
 	newCfg.TagPolicy.AllowedModels = nil
+	newCfg.DesiredModelDirs = []string{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	rec := &Reconciler{ModelRoot: t.TempDir(), HTTPClient: oss.Client()}

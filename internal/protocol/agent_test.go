@@ -119,8 +119,9 @@ func TestTransportProtocolJSONContract(t *testing.T) {
 
 func TestAgentConfigResponseJSONUsesSnakeCaseConfigFields(t *testing.T) {
 	resp := AgentConfigResponse{
-		ConfigRevision: 37,
-		OSS:            config.OSSConfig{BaseURL: "https://oss.example.com"},
+		ConfigRevision:   37,
+		DesiredModelDirs: []string{"other-dir", "qwen-dir"},
+		OSS:              config.OSSConfig{BaseURL: "https://oss.example.com"},
 		Models: map[string]config.Model{
 			"qwen": {
 				MaxConcurrency: 2,
@@ -142,7 +143,7 @@ func TestAgentConfigResponseJSONUsesSnakeCaseConfigFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{`"config_revision":37`, "base_url", "max_concurrency", "queue_timeout_ms", "crc64ecma", "worker_defaults"} {
+	for _, want := range []string{`"config_revision":37`, `"desired_model_dirs":["other-dir","qwen-dir"]`, "base_url", "max_concurrency", "queue_timeout_ms", "crc64ecma", "worker_defaults"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("json %s missing %s", text, want)
 		}
@@ -151,5 +152,31 @@ func TestAgentConfigResponseJSONUsesSnakeCaseConfigFields(t *testing.T) {
 		if strings.Contains(text, bad) {
 			t.Fatalf("json %s contains Go field name %s", text, bad)
 		}
+	}
+}
+
+func TestAgentConfigResponseDistinguishesMissingFromExplicitEmptyDesiredModelDirs(t *testing.T) {
+	var legacy AgentConfigResponse
+	if err := json.Unmarshal([]byte(`{}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.DesiredModelDirs != nil {
+		t.Fatalf("legacy desired_model_dirs = %#v, want nil", legacy.DesiredModelDirs)
+	}
+
+	var current AgentConfigResponse
+	if err := json.Unmarshal([]byte(`{"desired_model_dirs":[]}`), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.DesiredModelDirs == nil || len(current.DesiredModelDirs) != 0 {
+		t.Fatalf("current desired_model_dirs = %#v, want explicit empty slice", current.DesiredModelDirs)
+	}
+
+	data, err := json.Marshal(AgentConfigResponse{DesiredModelDirs: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"desired_model_dirs":[]`) {
+		t.Fatalf("explicit empty desired_model_dirs was not preserved: %s", data)
 	}
 }

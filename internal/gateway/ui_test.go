@@ -445,12 +445,12 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 		},
 	})
 	postHeartbeat(t, srv, protocol.HeartbeatRequest{
-		AgentID:      "worker-upgrade-agent",
+		AgentID:      "worker-v2-upgrade-agent",
 		Tags:         []string{"gpu-4090"},
-		LlamaSwapURL: "http://worker-upgrade-agent",
+		LlamaSwapURL: "http://worker-v2-upgrade-agent",
 		Artifacts:    map[string]string{"qwen": "ready"},
 		AgentBuild: protocol.BuildInfo{
-			ProtocolVersion: minSupportedAgentProtocolVersion - 1,
+			ProtocolVersion: 2,
 		},
 	})
 	postHeartbeat(t, srv, protocol.HeartbeatRequest{
@@ -490,8 +490,8 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 	if got := workers["worker-current"].AgentVersionStatus; got != "compatible" {
 		t.Fatalf("worker-current version status=%q want compatible", got)
 	}
-	if got := workers["worker-upgrade-agent"].AgentVersionStatus; got != "upgrade_agent" {
-		t.Fatalf("worker-upgrade-agent version status=%q want upgrade_agent", got)
+	if got := workers["worker-v2-upgrade-agent"].AgentVersionStatus; got != "upgrade_agent" {
+		t.Fatalf("worker-v2-upgrade-agent version status=%q want upgrade_agent", got)
 	}
 	if got := workers["worker-upgrade-gateway"].AgentVersionStatus; got != "upgrade_gateway" {
 		t.Fatalf("worker-upgrade-gateway version status=%q want upgrade_gateway", got)

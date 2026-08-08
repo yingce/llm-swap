@@ -129,6 +129,9 @@ func TestAgentConfigEndpointReturnsTagScopedModels(t *testing.T) {
 	if resp.ConfigRevision != wantRevision || resp.ConfigRevision <= 0 {
 		t.Fatalf("config revision = %d, want positive snapshot revision %d", resp.ConfigRevision, wantRevision)
 	}
+	if got := strings.Join(resp.DesiredModelDirs, ","); got != "other,qwen" {
+		t.Fatalf("desired_model_dirs = %#v, want sorted global directories for both tags", resp.DesiredModelDirs)
+	}
 }
 
 func TestAgentConfigEndpointOmitsDisabledModels(t *testing.T) {
@@ -158,6 +161,34 @@ func TestAgentConfigEndpointOmitsDisabledModels(t *testing.T) {
 	}
 	if resp.TagPolicy.WarmWhenIdle != "" {
 		t.Fatalf("warm_when_idle = %q, want empty for disabled model", resp.TagPolicy.WarmWhenIdle)
+	}
+	if got := strings.Join(resp.DesiredModelDirs, ","); got != "other" {
+		t.Fatalf("desired_model_dirs = %#v, want only active model on other tag", resp.DesiredModelDirs)
+	}
+}
+
+func TestAgentConfigEndpointPreservesExplicitEmptyGlobalDesiredModelDirs(t *testing.T) {
+	cfg := testGatewayConfig()
+	for name, model := range cfg.Models {
+		model.Disabled = true
+		cfg.Models[name] = model
+	}
+	srv := NewServer(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/internal/agent/config?tags=gpu-4090", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp protocol.AgentConfigResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.DesiredModelDirs == nil || len(resp.DesiredModelDirs) != 0 {
+		t.Fatalf("desired_model_dirs = %#v, want explicit empty global set", resp.DesiredModelDirs)
 	}
 }
 

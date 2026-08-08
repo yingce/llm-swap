@@ -544,7 +544,7 @@ func (s *Server) workerLiveCapacity(cfg config.GatewayConfig, worker Worker, now
 }
 
 const (
-	minSupportedAgentProtocolVersion = 2
+	minSupportedAgentProtocolVersion = 3
 	maxSupportedAgentProtocolVersion = protocol.AgentProtocolVersion
 )
 

@@ -394,9 +394,10 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := protocol.AgentConfigResponse{
-		ConfigRevision: configRevision,
-		OSS:            cfg.OSS,
-		Models:         make(map[string]config.Model, len(policy.AllowedModels)),
+		ConfigRevision:   configRevision,
+		DesiredModelDirs: desiredModelDirs(cfg),
+		OSS:              cfg.OSS,
+		Models:           make(map[string]config.Model, len(policy.AllowedModels)),
 		TagPolicy: protocol.AgentTagPolicy{
 			Tag:            tag,
 			AllowedModels:  append([]string(nil), policy.AllowedModels...),
@@ -443,6 +444,29 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+func desiredModelDirs(cfg config.GatewayConfig) []string {
+	byIdentity := make(map[string]string)
+	for _, policy := range cfg.TagPolicies {
+		for _, modelName := range policy.AllowedModels {
+			model, ok := cfg.Models[modelName]
+			if !ok {
+				continue
+			}
+			dir := config.ResolvedModelDir(modelName, model)
+			identity := config.ModelDirIdentity(dir)
+			if _, exists := byIdentity[identity]; !exists {
+				byIdentity[identity] = dir
+			}
+		}
+	}
+	dirs := make([]string, 0, len(byIdentity))
+	for _, dir := range byIdentity {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 func (s *Server) handleTransportLease(w http.ResponseWriter, r *http.Request) {

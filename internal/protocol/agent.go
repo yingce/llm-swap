@@ -6,7 +6,7 @@ import (
 	"llm-swap/internal/config"
 )
 
-const AgentProtocolVersion = 2
+const AgentProtocolVersion = 3
 
 type BuildInfo struct {
 	Version         string `json:"version,omitempty"`
@@ -16,11 +16,12 @@ type BuildInfo struct {
 }
 
 type AgentConfigResponse struct {
-	ConfigRevision int64                        `yaml:"config_revision" json:"config_revision"`
-	OSS            config.OSSConfig             `yaml:"oss" json:"oss"`
-	Models         map[string]config.Model      `yaml:"models" json:"models"`
-	TagPolicy      AgentTagPolicy               `yaml:"tag_policy" json:"tag_policy"`
-	Transport      *EncryptedTransportBootstrap `yaml:"transport,omitempty" json:"transport,omitempty"`
+	ConfigRevision   int64                        `yaml:"config_revision" json:"config_revision"`
+	DesiredModelDirs []string                     `yaml:"desired_model_dirs,omitempty" json:"desired_model_dirs"`
+	OSS              config.OSSConfig             `yaml:"oss" json:"oss"`
+	Models           map[string]config.Model      `yaml:"models" json:"models"`
+	TagPolicy        AgentTagPolicy               `yaml:"tag_policy" json:"tag_policy"`
+	Transport        *EncryptedTransportBootstrap `yaml:"transport,omitempty" json:"transport,omitempty"`
 }
 
 type EncryptedTransportBootstrap struct {
