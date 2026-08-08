@@ -23,7 +23,8 @@ commits.
 
 ## Version ownership
 
-`BuildInfo.version` is a human release identifier such as `2026.08.08.1`.
+`BuildInfo.version` is a human release identifier. The fencing-capable Agent
+release uses `2026.08.08.1`.
 Agent release automation sets it independently from `BuildInfo.commit`.
 Gateway-only changes do not change the Agent release version and do not require
 an Agent rollout.
@@ -35,7 +36,11 @@ the Git SHA; the SHA belongs only in `LLMSWAP_BUILD_COMMIT`.
 ## Compatibility contract
 
 Gateway owns an explicit inclusive supported Agent protocol range. The current
-Agent reports one `protocol_version` in every heartbeat.
+Agent reports protocol v3 in every heartbeat, and the current Gateway's safe
+range is exactly v3 through v3. Protocol v2 predates `config_revision` and
+shared-directory artifact fencing, so a v2 heartbeat may still be accepted by
+the HTTP endpoint during cutover but must be reported as `upgrade_agent`,
+never `compatible`.
 
 Compatibility status is derived as follows:
 
@@ -49,10 +54,14 @@ Compatibility status is derived as follows:
 Release versions and commits never participate in this decision.
 
 Protocol constants change only for Gateway/Agent communication behavior that
-requires coordination. A coordinated rollout first deploys a Gateway that
-supports both old and new protocol versions, then rolls Agents, and only later
-raises the Gateway minimum. Pure Gateway behavior or UI changes do not change
-the protocol.
+requires coordination. The first fencing release is a coordinated v3
+Gateway+Agent batch because v2 cannot safely participate in the fencing
+contract; HTTP acceptance of v2 exists for rollout visibility, not a supported
+mixed serving state. After the fleet is on v3, pure Gateway behavior or UI
+changes that preserve the protocol contract do not change the protocol and do
+not require a new Agent release. A later overlap-compatible protocol change may
+use Gateway old+new support, then Agent rollout, then a minimum-version raise;
+never infer that overlap from release strings or commits.
 
 ## API compatibility
 
@@ -65,6 +74,8 @@ exact release comparison to the protocol-derived status values above.
 
 - A matching protocol with a different Agent release version is compatible.
 - A lower protocol requests an Agent upgrade.
+- A v2 heartbeat is accepted but requests an Agent upgrade under the v3 safety
+  minimum.
 - A higher protocol requests a Gateway upgrade.
 - A heartbeat without build/protocol data is legacy.
 - Workers UI displays Agent version, omits Commit and latest/old labels, and

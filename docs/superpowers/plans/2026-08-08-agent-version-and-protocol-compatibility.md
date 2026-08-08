@@ -15,6 +15,9 @@
 - Retain `BuildInfo.commit`, `BuildInfo.build_time`, and `BuildInfo.protocol_version` in heartbeat and UI APIs.
 - Normal Workers UI shows only **Agent version**; compatible workers receive no `latest` or `old` label.
 - Missing protocol is `legacy`; below the supported range is `upgrade_agent`; above it is `upgrade_gateway`; inside it is `compatible`.
+- The fencing-capable Agent is protocol v3 and the current Gateway safety
+  minimum is v3. Protocol v2 heartbeat HTTP acceptance is transitional
+  observability only and maps to `upgrade_agent`.
 - Modify source tests before production code and rebuild `internal/gateway/admin_dist` after UI changes.
 
 ---
@@ -49,7 +52,7 @@
 
   ```go
   const (
-      minSupportedAgentProtocolVersion = 2
+      minSupportedAgentProtocolVersion = 3
       maxSupportedAgentProtocolVersion = protocol.AgentProtocolVersion
   )
   ```
@@ -223,7 +226,11 @@
   - `LLMSWAP_BUILD_COMMIT` is the exact source SHA and must not be copied into the version field.
   - Gateway-only releases do not require Agent publication.
   - Compatibility uses the supported protocol range, with the four status meanings.
-  - Coordinated protocol rollout order is Gateway supporting old+new, then Agents, then raising the minimum.
+  - The initial `config_revision`/artifact-fencing adoption is a Gateway+Agent
+    v3 compatibility batch because v2 does not implement the safety contract.
+    After v3 adoption, Gateway-only releases that preserve the protocol
+    contract do not require an Agent release. Later overlap-compatible protocol
+    changes may use Gateway old+new support, then Agents, then a minimum raise.
 
 - [ ] **Step 4: Run final verification**
 

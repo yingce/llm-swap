@@ -48,6 +48,15 @@ Keep the existing artifact-source lock and add a second lock keyed by resolved
    desired state may write the marker and atomically replace the target
    directory.
 
+The tag-scoped Agent response also carries `desired_model_dirs`: the sorted
+union of resolved directories referenced by active models in every tag policy.
+An explicit empty list means no directory is globally desired; a missing/null
+field identifies an older Gateway. When a model leaves only one worker tag, its
+Agent cancels local work but must not publish a tombstone while another tag
+still desires that directory. A tombstone is published only for an explicit
+global removal. With an older Gateway the Agent takes the conservative path and
+cancels locally without publishing a tombstone.
+
 The Gateway remains the authority for desired configuration. The shared state is
 only a cross-process fence for Agents that mount the same model root; it does
 not move scheduling or replica policy to workers.
@@ -74,6 +83,11 @@ implement the same allocation contract.
 - A stale installer cannot commit after a newer desired revision is published.
 - An already-correct directory is reused after waiting on its directory lock.
 - Existing single-artifact cache de-duplication remains intact.
+- At one revision, a removal-side Reconciler cannot tombstone a shared
+  directory still desired by another tag, and the allowed-side Reconciler can
+  install it.
+- An explicit global empty desired set publishes a tombstone; a missing legacy
+  field does not.
 
 ## Model upgrade lifecycle
 

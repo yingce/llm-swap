@@ -9,26 +9,40 @@ production model values.
 
 Treat a Gateway and the Agents affected by a protocol change as one
 compatibility batch. The Gateway response now carries `config_revision`;
-upgraded Agents use it to cancel and fence stale artifact work. A Gateway-only
-release that keeps the supported Agent protocol range unchanged does not
-require publishing or deploying a new Agent image.
+upgraded Agents use it to cancel and fence stale artifact work. It also carries
+the sorted global `desired_model_dirs` set so removal from one tag cannot
+tombstone a directory still desired by another tag. An explicit empty set
+authorizes a global tombstone; a missing field from an older Gateway does not.
+A Gateway-only release that keeps this contract and the supported Agent
+protocol range unchanged does not require publishing or deploying a new Agent
+image.
 
-The first release that adopts `config_revision` is an Agent compatibility
-batch: deploy the Gateway and every affected Agent together. Later
-Gateway-only releases may retain the existing Agent fleet only when they do not
-change Agent behavior, the Agent release version, or the supported protocol
-range.
+The first release that adopts `config_revision`, global desired-directory
+tombstones, and artifact fencing is protocol v3 and is an Agent compatibility
+batch: deploy the Gateway and every affected Agent together. Protocol v2 does
+not implement these safety behaviors. Its heartbeat remains HTTP-accepted so
+operators can observe rollout progress, but the Gateway must report it as
+`upgrade_agent` rather than `compatible`. Later Gateway-only releases may
+retain the existing v3 Agent fleet when they do not change the Agent protocol
+contract.
 
 ### Agent release metadata and protocol rollout
 
 Record the Agent's release identity separately from its source provenance:
 
-- `LLMSWAP_BUILD_VERSION` is the human-readable Agent release identifier.
+- `LLMSWAP_BUILD_VERSION` is the human-readable Agent release identifier; the
+  v3 fencing release is `2026.08.08.1`.
 - `LLMSWAP_BUILD_COMMIT` is the exact source commit SHA. Never copy that SHA
   into `LLMSWAP_BUILD_VERSION`.
 
+The production worker Compose requires both as independent build args, and
+`verify.sh` rejects equal values before a build or cutover. The Gateway-only
+Fabric build injects commit and build time provenance but intentionally leaves
+the Agent release-version field unset.
+
 The Gateway compares every reported Agent protocol version to its supported
-inclusive range and reports `agent_version_status` as follows:
+inclusive range and reports `agent_version_status` as follows. The current
+Gateway safety range is v3 through v3:
 
 - `compatible`: protocol is in range.
 - `upgrade_agent`: protocol is below the Gateway minimum; deploy a newer Agent.
@@ -40,14 +54,21 @@ For compatible Agents, the normal worker UI shows the release version; the
 commit is provenance rather than the release label. Treat any other status as
 an explicit upgrade gate before advancing a protocol rollout.
 
-Roll a protocol revision forward in this order:
+For this first fencing release, roll Gateway and Agents as one v3 compatibility
+batch and require every expected Agent heartbeat to report v3. HTTP acceptance
+of v2 is only rollout visibility and does not authorize a prolonged mixed
+serving state.
+
+For a later protocol change that is explicitly designed to support overlap,
+roll it forward in this order:
 
 1. Deploy a Gateway that supports both the existing and new protocol versions.
 2. Deploy the new Agents and verify their fresh heartbeats are `compatible`.
 3. After no old Agents remain, raise the Gateway minimum protocol version.
 
-This overlap is required for a rolling deployment. Do not raise the minimum
-before the affected Agents have upgraded.
+Do not assume overlap from release versions or commits. After the v3 fencing
+batch, a pure Gateway release that preserves the protocol contract does not
+require an Agent release.
 
 Preserve and back up the Gateway state directory before cutover. It includes:
 
@@ -70,14 +91,17 @@ credentials, or production configuration.
 
 ```bash
 go test ./internal/agent -run \
-  'TestTwoReconcilersSharedRootCancelSupersededInstallAndPreserveWinningMarker|TestStaleInstallerCannotCommitAfterNewerFenceIsPublished|TestCancelledStagedInstallPreservesExistingReadyDirectory' \
+  'TestTwoReconcilersSharedRootCancelSupersededInstallAndPreserveWinningMarker|TestTwoReconcilersSharedRootSameRevisionLocalRemovalDoesNotTombstoneGloballyDesiredDir|TestLegacyGatewayLocalRemovalCancelsWithoutPublishingTombstone|TestRemovingAllowedModelCancelsInstallAndPublishesTombstoneFence|TestStaleInstallerCannotCommitAfterNewerFenceIsPublished|TestCancelledStagedInstallPreservesExistingReadyDirectory' \
   -count=1 -v
 ```
 
 The simulation proves that two independent reconcilers sharing one
 `MODEL_ROOT` converge on the newer marker, the old download receives
 cancellation, a stale installer cannot commit, and a cancelled staged install
-does not replace the previous ready directory. Its event stream must include
+does not replace the previous ready directory. It also proves that one tag's
+removal at a shared revision cannot poison another tag's desired fingerprint,
+that a legacy Gateway causes no tombstone, and that an explicit global removal
+does publish one. Its event stream must include
 `artifact_install_cancelled` for the loser and `artifact_install_commit` for the
 winner; an expected supersession must not appear as `artifact_install_error`.
 
@@ -135,7 +159,8 @@ observed:
 - Gateway health succeeds and the revision file advances across a controlled
   restart without decreasing.
 - All expected Agents report fresh heartbeats and consume a positive
-  `config_revision`.
+  `config_revision`, protocol v3, and the Gateway-provided global desired
+  directory set. No v2 Agent may remain `compatible`.
 - Replacing a test model artifact produces cancellation/stale-fence/commit
   events in the expected order, the winning marker matches the new artifact,
   the previous ready directory remains available until commit, and the model

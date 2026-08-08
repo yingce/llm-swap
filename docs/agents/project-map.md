@@ -366,6 +366,11 @@ disabled the gateway still runs with no external database.
 - `internal/agent/reconcile.go`
   - Main worker reconcile loop.
   - Fetches tag-scoped config from gateway.
+  - Consumes the Gateway's global `desired_model_dirs` union in addition to the
+    local tag policy. Removal from one tag cancels that Agent's local install
+    without publishing a shared tombstone while another active tag still
+    desires the directory. Only an explicit global absence permits a
+    tombstone; a missing field from an older Gateway is handled conservatively.
   - Treats `config_revision` as the ordering fence for desired artifacts.
     Newer revisions cancel superseded work, including a revision-only change or
     removal from the allowed model set, without turning cancellation into an
@@ -440,7 +445,8 @@ disabled the gateway still runs with no external database.
 
 Agent build metadata has two separate identities:
 
-- `LLMSWAP_BUILD_VERSION` is the human-readable Agent release identifier.
+- `LLMSWAP_BUILD_VERSION` is the human-readable Agent release identifier. The
+  current fencing-capable source fallback is `2026.08.08.1`.
 - `LLMSWAP_BUILD_COMMIT` is the exact source commit SHA for build provenance.
   Do not copy a commit SHA into the version field; release automation must keep
   the two values distinct.
@@ -450,7 +456,10 @@ an Agent only when its worker-side behavior or the supported Agent protocol
 range requires it.
 
 Gateway evaluates each Agent's reported protocol version against its supported
-inclusive range. `agent_version_status` has these meanings:
+inclusive range. The current Agent protocol is v3 and the current Gateway's
+safe range is v3 through v3. A protocol-v2 heartbeat remains HTTP-accepted for
+cutover visibility but is below the safety minimum because v2 lacks
+`config_revision`/artifact fencing. `agent_version_status` has these meanings:
 
 - `compatible`: the Agent protocol is within the Gateway-supported range.
 - `upgrade_agent`: the Agent protocol is below the Gateway minimum; upgrade
@@ -463,10 +472,14 @@ The normal worker UI presents the Agent release version. Compatibility guidance
 is shown only for a non-compatible status; the commit remains build provenance,
 not the operator-facing release name.
 
-Roll protocol changes forward in this order: first deploy a Gateway that
-supports both the old and new protocol versions, then deploy the new Agents and
-observe compatible heartbeats, then raise the Gateway minimum only after old
-Agents are retired. This preserves a supported overlap throughout the rollout.
+Adopt fencing with Gateway and Agents in the same v3 compatibility batch; v2
+must not be treated as a supported mixed state even though its heartbeat is
+accepted. After v3 adoption, a pure Gateway release that preserves the Agent
+protocol contract does not require publishing or deploying an Agent. For a
+future overlap-compatible change, first deploy a Gateway that supports both
+protocols, then Agents, then raise the minimum after the old Agents retire.
+Release versions and commits never substitute for this explicit protocol
+decision.
 
 ## Config Rules
 
@@ -624,6 +637,10 @@ Important properties:
   Tailscale, and llama-swap release layers must not copy `cmd/` or `internal/`;
   normal agent code changes should only rebuild the Go binary and the final
   lightweight agent/supervisor setup layer.
+- The production worker Compose passes `LLMSWAP_BUILD_VERSION` and
+  `LLMSWAP_BUILD_COMMIT` as separate required build args. Its verifier rejects
+  using the same value for both. Gateway-only Fabric builds inject commit and
+  build time provenance but do not inject the Agent release-version field.
 - The build runs `install-worker.sh` inside the image, so runtime installation
   logic stays in one place.
 - The image preinstalls `vllm`, `sglang`, or `llamacpp` based on
@@ -962,10 +979,13 @@ The gateway Dockerfile builds `ui/admin` with Node/Vite before compiling the Go
 binary, then copies the generated `internal/gateway/admin_dist` into the Go
 build context so the admin UI is embedded in the final binary.
 
-Gateway and Agent binaries must be released as one protocol batch when adopting
-`config_revision`. Preserve the complete state directory through deployment and
-rollback; deleting only `config-revision.json` can let an old revision appear
-newer to Agents sharing an existing model root. Follow
+Gateway and Agent binaries must be released as one protocol-v3 batch when first
+adopting `config_revision`, global desired-directory tombstones, and artifact
+fencing. Protocol-v2 heartbeats remain visible but require an Agent upgrade.
+After the v3 fleet is established, pure Gateway releases that preserve this
+contract do not require an Agent rollout. Preserve the complete state directory
+through deployment and rollback; deleting only `config-revision.json` can let
+an old revision appear newer to Agents sharing an existing model root. Follow
 `docs/model-lifecycle-rollout.md` for the repeatable simulation, preflight,
 verification, and rollback gates. The production definitions do not require or
 start Tailscale.
