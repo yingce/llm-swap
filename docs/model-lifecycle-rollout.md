@@ -7,10 +7,41 @@ production model values.
 
 ## Release unit and durable state
 
-Release the Gateway and every Agent that shares a model root as one compatibility
-batch. The Gateway response now carries `config_revision`; upgraded Agents use
-it to cancel and fence stale artifact work. Mixed versions do not provide the
-rollout safety guaranteed by this release.
+Treat a Gateway and the Agents affected by a protocol change as one
+compatibility batch. The Gateway response now carries `config_revision`;
+upgraded Agents use it to cancel and fence stale artifact work. A Gateway-only
+release that keeps the supported Agent protocol range unchanged does not
+require publishing or deploying a new Agent image.
+
+### Agent release metadata and protocol rollout
+
+Record the Agent's release identity separately from its source provenance:
+
+- `LLMSWAP_BUILD_VERSION` is the human-readable Agent release identifier.
+- `LLMSWAP_BUILD_COMMIT` is the exact source commit SHA. Never copy that SHA
+  into `LLMSWAP_BUILD_VERSION`.
+
+The Gateway compares every reported Agent protocol version to its supported
+inclusive range and reports `agent_version_status` as follows:
+
+- `compatible`: protocol is in range.
+- `upgrade_agent`: protocol is below the Gateway minimum; deploy a newer Agent.
+- `upgrade_gateway`: protocol is above the Gateway maximum; deploy a newer
+  Gateway.
+- `legacy`: the Agent did not report a protocol version.
+
+For compatible Agents, the normal worker UI shows the release version; the
+commit is provenance rather than the release label. Treat any other status as
+an explicit upgrade gate before advancing a protocol rollout.
+
+Roll a protocol revision forward in this order:
+
+1. Deploy a Gateway that supports both the existing and new protocol versions.
+2. Deploy the new Agents and verify their fresh heartbeats are `compatible`.
+3. After no old Agents remain, raise the Gateway minimum protocol version.
+
+This overlap is required for a rolling deployment. Do not raise the minimum
+before the affected Agents have upgraded.
 
 Preserve and back up the Gateway state directory before cutover. It includes:
 

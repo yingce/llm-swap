@@ -436,6 +436,38 @@ disabled the gateway still runs with no external database.
   - Restart implementations: shell command, systemd service, logging fallback.
   - Production worker install currently writes supervisor restart command.
 
+## Agent Release Identity and Protocol Compatibility
+
+Agent build metadata has two separate identities:
+
+- `LLMSWAP_BUILD_VERSION` is the human-readable Agent release identifier.
+- `LLMSWAP_BUILD_COMMIT` is the exact source commit SHA for build provenance.
+  Do not copy a commit SHA into the version field; release automation must keep
+  the two values distinct.
+
+A Gateway-only release does not require publishing a new Agent image. Publish
+an Agent only when its worker-side behavior or the supported Agent protocol
+range requires it.
+
+Gateway evaluates each Agent's reported protocol version against its supported
+inclusive range. `agent_version_status` has these meanings:
+
+- `compatible`: the Agent protocol is within the Gateway-supported range.
+- `upgrade_agent`: the Agent protocol is below the Gateway minimum; upgrade
+  the Agent.
+- `upgrade_gateway`: the Agent protocol is above the Gateway maximum; upgrade
+  the Gateway before relying on that Agent.
+- `legacy`: the Agent did not report a protocol version.
+
+The normal worker UI presents the Agent release version. Compatibility guidance
+is shown only for a non-compatible status; the commit remains build provenance,
+not the operator-facing release name.
+
+Roll protocol changes forward in this order: first deploy a Gateway that
+supports both the old and new protocol versions, then deploy the new Agents and
+observe compatible heartbeats, then raise the Gateway minimum only after old
+Agents are retired. This preserves a supported overlap throughout the rollout.
+
 ## Config Rules
 
 Gateway config:

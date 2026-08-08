@@ -27,3 +27,19 @@ func TestCurrentAllowsExplicitVersionOverride(t *testing.T) {
 		t.Fatalf("version = %q, want explicit override", got.Version)
 	}
 }
+
+func TestCurrentPreservesDistinctReleaseVersionAndCommit(t *testing.T) {
+	oldVersion, oldCommit, oldBuildTime := Version, Commit, BuildTime
+	t.Cleanup(func() {
+		Version, Commit, BuildTime = oldVersion, oldCommit, oldBuildTime
+	})
+	Version, Commit, BuildTime = "2026.08.08.1", "abc123", "2026-08-08T00:00:00Z"
+
+	got := Current(2)
+	if got.Version != Version {
+		t.Fatalf("version = %q, want %q", got.Version, Version)
+	}
+	if got.Commit != Commit {
+		t.Fatalf("commit = %q, want %q", got.Commit, Commit)
+	}
+}
