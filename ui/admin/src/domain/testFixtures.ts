@@ -135,7 +135,7 @@ export function createStatusFixture(): StatusResponse {
         scrape_failures: 0,
         replica_cooldowns: [],
         agent_build: { version: "1.0.0", commit: "abc123" },
-        agent_version_status: "current"
+        agent_version_status: "compatible"
       },
       {
         id: "worker-b",
@@ -178,7 +178,7 @@ export function createStatusFixture(): StatusResponse {
           }
         ],
         agent_build: { version: "1.0.0", commit: "def456" },
-        agent_version_status: "current"
+        agent_version_status: "upgrade_gateway"
       },
       {
         id: "worker-c",
@@ -200,7 +200,7 @@ export function createStatusFixture(): StatusResponse {
         scrape_failures: 0,
         replica_cooldowns: [],
         agent_build: { version: "0.9.0", commit: "old999" },
-        agent_version_status: "outdated"
+        agent_version_status: "upgrade_agent"
       }
     ],
     events: [

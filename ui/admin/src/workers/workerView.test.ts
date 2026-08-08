@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { modelRuntimeLabel } from "../domain/modelRuntime";
 import { createStatusFixture } from "../domain/testFixtures";
+import { agentCompatibilityGuidance } from "./WorkersPage";
 import { buildWorkerFilters, buildWorkerRows, workerHasDiagnosticWarning } from "./workerView";
 import * as workerView from "./workerView";
 
@@ -27,8 +28,8 @@ describe("buildWorkerRows", () => {
       queued_requests: 1,
       max_queue: 6,
       connectivity: "healthy · active · scrape ok",
-      agent_version: "1.0.0 · current",
-      diagnostics: "build 1.0.0 (latest) · heartbeat 2s ago · scrape failures 0"
+      agent_version: "1.0.0",
+      diagnostics: "agent 1.0.0 · heartbeat 2s ago · scrape failures 0"
     });
     expect(rows[0].gpu_devices[0]).toMatchObject({
       index: 0,
@@ -101,15 +102,20 @@ describe("Worker request pressure", () => {
 });
 
 describe("Worker diagnostics", () => {
-  it("uses a transient button tooltip instead of a persistent disclosure", () => {
+  it("shows agent version and conditional compatibility guidance in a transient tooltip", () => {
+    const popoverStart = workersPageSource.indexOf('className="worker-diagnostics-popover"');
+    const popoverSource = workersPageSource.slice(popoverStart, workersPageSource.indexOf("</dl>", popoverStart));
+
     expect(workersPageSource).toContain('className="worker-diagnostics-trigger"');
     expect(workersPageSource).toContain('type="button"');
     expect(workersPageSource).toContain('className="worker-diagnostics-popover"');
     expect(workersPageSource).toContain('role="tooltip"');
-    expect(workersPageSource).toContain("Build");
-    expect(workersPageSource).toContain("Commit");
-    expect(workersPageSource).toContain("Heartbeat");
-    expect(workersPageSource).toContain("Scrape failures");
+    expect(popoverSource).toContain("Agent version");
+    expect(popoverSource).not.toContain("Commit");
+    expect(popoverSource.toLowerCase()).not.toContain("latest");
+    expect(popoverSource.toLowerCase()).not.toContain("old");
+    expect(popoverSource).toContain("Compatibility");
+    expect(popoverSource).toContain("compatibilityGuidance");
     expect(workersPageSource).not.toContain("<details");
     expect(workersPageSource).not.toContain("<summary");
     expect(workersPageSource).not.toContain('className="worker-diagnostics" tabIndex={0} title={diagnostics}');
@@ -121,15 +127,25 @@ describe("Worker diagnostics", () => {
     expect(stylesSource).not.toContain(".worker-diagnostics[open]");
   });
 
-  it("adds a quiet warning treatment when the agent build is not current", () => {
+  it("adds a quiet warning treatment when agent compatibility is not clean", () => {
     expect(workersPageSource).toContain('diagnosticsWarning ? " diagnostic-warning" : ""');
     expect(stylesSource).toContain(".worker-diagnostics.diagnostic-warning .worker-diagnostics-trigger");
     expect(stylesSource).toMatch(/\.worker-diagnostics\.diagnostic-warning \.worker-diagnostics-trigger \{[^}]*background: transparent;/s);
   });
 
-  it("warns for stale builds or reported diagnostics without changing healthy status color", () => {
+  it("maps compatibility status to explicit upgrade guidance", () => {
+    expect(agentCompatibilityGuidance("legacy")).toBe("Legacy Agent; upgrade Agent");
+    expect(agentCompatibilityGuidance("upgrade_agent")).toBe("Upgrade Agent");
+    expect(agentCompatibilityGuidance("upgrade_gateway")).toBe("Upgrade Gateway");
+    expect(agentCompatibilityGuidance("compatible")).toBeNull();
+  });
+
+  it("warns for incompatible agents or reported diagnostics without changing healthy status color", () => {
     const status = createStatusFixture();
-    expect(workerHasDiagnosticWarning(status.workers[0])).toBe(false);
+    const compatibleWorker = status.workers[0];
+    const upgradeAgentWorker = status.workers[2];
+    expect(workerHasDiagnosticWarning(compatibleWorker)).toBe(false);
+    expect(workerHasDiagnosticWarning(upgradeAgentWorker)).toBe(true);
     expect(workerHasDiagnosticWarning({ ...status.workers[0], last_error: "scrape failed" })).toBe(true);
     expect(workerHasDiagnosticWarning(status.workers[2])).toBe(true);
   });

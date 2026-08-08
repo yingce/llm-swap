@@ -67,6 +67,8 @@ export type ReplicaCooldown = {
   remaining_seconds: number;
 };
 
+export type AgentCompatibilityStatus = "compatible" | "upgrade_agent" | "upgrade_gateway" | "legacy";
+
 export type WorkerStatus = {
   id: string;
   tags: string[];
@@ -93,7 +95,7 @@ export type WorkerStatus = {
   health_problem?: string;
   replica_cooldowns: ReplicaCooldown[];
   agent_build: BuildInfo;
-  agent_version_status: "current" | "outdated" | "legacy";
+  agent_version_status: AgentCompatibilityStatus;
 };
 
 export type BuildInfo = {

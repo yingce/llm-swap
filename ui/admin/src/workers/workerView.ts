@@ -59,7 +59,6 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
     .map((worker) => {
       const loadedModels = worker.running_models.map((model) => `${model.model}:${model.state || "ready"}`);
       const heartbeatAge = formatAge(worker.last_heartbeat_age_ms);
-      const buildState = worker.agent_version_status === "current" ? "latest" : "old";
       return {
         id: worker.id,
         tags: worker.tags,
@@ -82,8 +81,8 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
         cooldowns: worker.replica_cooldowns.map((cooldown) => `${cooldown.model}:${cooldown.reason}:${cooldown.remaining_seconds}s`),
         connectivity: summarizeConnectivity(worker),
         heartbeat: worker.last_heartbeat ? `${worker.last_heartbeat} · ${heartbeatAge}` : "heartbeat unavailable",
-        agent_version: `${worker.agent_build.version || "unknown"} · ${worker.agent_version_status}`,
-        diagnostics: `build ${worker.agent_build.version || "unknown"} (${buildState}) · heartbeat ${heartbeatAge} · scrape failures ${worker.scrape_failures}`,
+        agent_version: worker.agent_build.version || "unknown",
+        diagnostics: `agent ${worker.agent_build.version || "unknown"} · heartbeat ${heartbeatAge} · scrape failures ${worker.scrape_failures}`,
         worker
       };
     })
@@ -94,7 +93,7 @@ export function buildWorkerRows(status: StatusResponse | null, options: WorkerRo
 }
 
 export function workerHasDiagnosticWarning(worker: WorkerStatus): boolean {
-  return worker.agent_version_status !== "current"
+  return worker.agent_version_status !== "compatible"
     || Boolean(worker.last_error || worker.needs_restart || worker.health_problem)
     || Number(worker.scrape_failures ?? 0) > 0
     || ["stale", "error", "backoff"].includes(worker.health);

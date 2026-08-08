@@ -1,10 +1,23 @@
 import { useMemo, useState } from "react";
 
-import type { StatusResponse } from "../api";
+import type { AgentCompatibilityStatus, StatusResponse } from "../api";
 import { drainWorker, undrainWorker } from "../api";
 import { ConfirmDialog, EmptyState } from "../components/primitives";
 import { modelRuntimeLabel } from "../domain/modelRuntime";
 import { buildWorkerFilters, buildWorkerRows, formatWorkerPressure, modelStateTone, workerHasDiagnosticWarning, type WorkerRow } from "./workerView";
+
+export function agentCompatibilityGuidance(status: AgentCompatibilityStatus): string | null {
+  switch (status) {
+    case "legacy":
+      return "Legacy Agent; upgrade Agent";
+    case "upgrade_agent":
+      return "Upgrade Agent";
+    case "upgrade_gateway":
+      return "Upgrade Gateway";
+    case "compatible":
+      return null;
+  }
+}
 
 export function WorkersPage({
   status,
@@ -25,7 +38,7 @@ export function WorkersPage({
       <section className="worker-toolbar">
         <div>
           <h2>Workers</h2>
-          <p>Flat GPU ledger: load, model residency, request pressure, queue headroom, and agent build.</p>
+          <p>Flat GPU ledger: load, model residency, request pressure, queue headroom, and agent version.</p>
         </div>
         <label className="model-search">
           <span>Search</span>
@@ -83,7 +96,7 @@ export function WorkersPage({
 
 function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () => void; onUndrain: () => void }) {
   const hasSecondaryState = row.cooldowns.length > 0 || row.worker.needs_restart || row.worker.last_error;
-  const buildState = row.worker.agent_version_status === "current" ? "latest" : "old";
+  const compatibilityGuidance = agentCompatibilityGuidance(row.worker.agent_version_status);
   const diagnosticsWarning = workerHasDiagnosticWarning(row.worker);
   const requestPressure = formatWorkerPressure("REQ", row.active_requests, row.max_concurrency, row.live_capacity_available);
   const queuePressure = formatWorkerPressure("QUEUE", row.queued_requests, row.max_queue, row.live_capacity_available);
@@ -106,8 +119,8 @@ function WorkerTile({ row, onDrain, onUndrain }: { row: WorkerRow; onDrain: () =
               aria-describedby={`worker-diagnostics-${row.id}`}
             >?</button>
             <dl id={`worker-diagnostics-${row.id}`} className="worker-diagnostics-popover" role="tooltip">
-              <div><dt>Build</dt><dd>{row.worker.agent_build.version || "unknown"} <small>{buildState}</small></dd></div>
-              <div><dt>Commit</dt><dd>{row.worker.agent_build.commit || "unknown"}</dd></div>
+              <div><dt>Agent version</dt><dd>{row.agent_version}</dd></div>
+              {compatibilityGuidance ? <div><dt>Compatibility</dt><dd>{compatibilityGuidance}</dd></div> : null}
               <div><dt>Heartbeat</dt><dd>{row.heartbeat}</dd></div>
               <div><dt>Scrape failures</dt><dd>{row.worker.scrape_failures}</dd></div>
             </dl>

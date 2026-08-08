@@ -96,7 +96,7 @@ const statusFixture = {
         }
       ],
       agent_build: { version: "1.2.3", commit: "abc123" },
-      agent_version_status: "current"
+      agent_version_status: "compatible"
     }
   ],
   events: [
@@ -150,6 +150,13 @@ describe("normalizeStatus", () => {
     delete (legacyStatus.workers[0] as Partial<WorkerStatus>).live_capacity_available;
 
     expect(normalizeStatus(legacyStatus).workers[0].live_capacity_available).toBe(false);
+  });
+
+  it("normalizes a missing agent version status from an older gateway to legacy", () => {
+    const legacyStatus = structuredClone(statusFixture) as StatusResponse;
+    delete (legacyStatus.workers[0] as Partial<WorkerStatus>).agent_version_status;
+
+    expect(normalizeStatus(legacyStatus).workers[0].agent_version_status).toBe("legacy");
   });
 });
 
