@@ -186,6 +186,8 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 
 	models := placementModelNamesByPriority(p.Config)
 	underloadedFloor := false
+	reservedWorkers := map[string]struct{}{}
+	actions := make([]ControlAction, 0)
 	for _, modelName := range models {
 		model := p.Config.Models[modelName]
 		if model.MinLoaded <= 0 {
@@ -200,13 +202,23 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 			continue
 		}
 		underloadedFloor = true
-		if worker, ok := p.pickEmptyWarmWorker(now, workers, active, modelName); ok {
-			return []ControlAction{{
+		targetCount := min(model.MinLoaded, maxLoaded)
+		for occupiedCount < targetCount {
+			worker, ok := p.pickEmptyWarmWorkerExcluding(now, workers, active, modelName, reservedWorkers)
+			if !ok {
+				break
+			}
+			actions = append(actions, ControlAction{
 				Type:   ControlActionWarm,
 				Worker: worker,
 				Model:  modelName,
 				Reason: "warm_for_min_loaded_empty_worker",
-			}}
+			})
+			reservedWorkers[worker.ID] = struct{}{}
+			occupiedCount++
+		}
+		if occupiedCount >= targetCount || len(actions) > 0 {
+			continue
 		}
 		victim, victimModel, ok := p.pickEvictionVictimForModel(now, workers, active, loadedCounts, modelName)
 		if !ok {
@@ -219,6 +231,9 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 			Reason: "free_capacity_for_min_loaded",
 		}}
 	}
+	if len(actions) > 0 {
+		return actions
+	}
 	if underloadedFloor {
 		return nil
 	}
@@ -229,7 +244,14 @@ func (p Placement) PlanControlActions(now time.Time) []ControlAction {
 }
 
 func (p Placement) pickEmptyWarmWorker(now time.Time, workers []Worker, active map[string]int, modelName string) (Worker, bool) {
+	return p.pickEmptyWarmWorkerExcluding(now, workers, active, modelName, nil)
+}
+
+func (p Placement) pickEmptyWarmWorkerExcluding(now time.Time, workers []Worker, active map[string]int, modelName string, excluded map[string]struct{}) (Worker, bool) {
 	for _, worker := range sortedWorkersByID(workers) {
+		if _, skip := excluded[worker.ID]; skip {
+			continue
+		}
 		if !p.warmEligibleWorker(worker, now, active, modelName) {
 			continue
 		}

@@ -300,6 +300,48 @@ func TestPlacementPlansWarmForMinLoadedOnEmptyWorker(t *testing.T) {
 	}
 }
 
+func TestPlacementReservesEachWorkerForOneMinLoadedWarmAction(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"high": {Priority: 100, MinLoaded: 1},
+			"low":  {Priority: 50, MinLoaded: 1},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"both":     {AllowedModels: []string{"high", "low"}},
+			"low-only": {AllowedModels: []string{"low"}},
+		},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"both"},
+		LlamaSwapURL: "http://worker-a",
+		Artifacts:    map[string]string{"high": "ready", "low": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-b",
+		Tags:         []string{"low-only"},
+		LlamaSwapURL: "http://worker-b",
+		Artifacts:    map[string]string{"low": "ready"},
+	}, now)
+
+	actions := (Placement{Config: cfg, Workers: reg, Access: NewAccessTracker()}).PlanControlActions(now)
+	if len(actions) != 2 {
+		t.Fatalf("actions = %#v, want two min_loaded warm actions", actions)
+	}
+	got := map[string]string{}
+	for _, action := range actions {
+		if _, duplicate := got[action.Worker.ID]; duplicate {
+			t.Fatalf("actions = %#v, worker %q was assigned more than once", actions, action.Worker.ID)
+		}
+		got[action.Worker.ID] = action.Model
+	}
+	if got["worker-a"] != "high" || got["worker-b"] != "low" {
+		t.Fatalf("worker assignments = %#v, want worker-a=high and worker-b=low", got)
+	}
+}
+
 func TestPlacementDoesNotDuplicateWarmForMinLoadedWhenModelAlreadyLoading(t *testing.T) {
 	now := time.Unix(1000, 0)
 	cfg := config.GatewayConfig{

@@ -347,6 +347,149 @@ func TestLoadedReconcilerWarmsMinLoadedOnEmptyWorker(t *testing.T) {
 	}
 }
 
+func TestLoadedReconcilerDispatchesMinLoadedWarmBatchWithoutWaitingForSlowReplica(t *testing.T) {
+	now := time.Unix(1000, 0)
+	slowStarted := make(chan struct{}, 1)
+	fastStarted := make(chan struct{}, 1)
+	releaseSlow := make(chan struct{}, 1)
+
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/upstream/qwen/v1/models" {
+			t.Errorf("unexpected slow load request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		slowStarted <- struct{}{}
+		<-releaseSlow
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(slowServer.Close)
+	t.Cleanup(func() {
+		select {
+		case releaseSlow <- struct{}{}:
+		default:
+		}
+	})
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/upstream/qwen/v1/models" {
+			t.Errorf("unexpected fast load request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		fastStarted <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer fastServer.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 2},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: slowServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-b",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: fastServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+
+	reconciler := LoadedReconciler{
+		Config:  cfg,
+		Workers: reg,
+		Client:  LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:  NewAccessTracker(),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- reconciler.Reconcile(context.Background(), now)
+	}()
+
+	select {
+	case <-slowStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow replica warm did not start")
+	}
+	select {
+	case <-fastStarted:
+	case <-time.After(2 * time.Second):
+		releaseSlow <- struct{}{}
+		<-done
+		t.Fatal("fast replica warm waited for the slow replica to finish")
+	}
+	releaseSlow <- struct{}{}
+	if err := <-done; err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+}
+
+func TestLoadedReconcilerMinLoadedWarmBatchIsolatesReplicaFailure(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var failingCalls atomic.Int32
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failingCalls.Add(1)
+		http.Error(w, "failed", http.StatusInternalServerError)
+	}))
+	defer failingServer.Close()
+	var successfulCalls atomic.Int32
+	successfulServer := loadServerForModel(t, "qwen", &successfulCalls)
+	defer successfulServer.Close()
+
+	cfg := config.GatewayConfig{
+		Models: map[string]config.Model{
+			"qwen": {Priority: 100, MinLoaded: 2},
+		},
+		TagPolicies: map[string]config.TagPolicy{
+			"gpu": {AllowedModels: []string{"qwen"}},
+		},
+		Tokens: config.TokenConfig{LlamaSwap: "llama-secret"},
+	}
+	reg := NewWorkerRegistry(time.Minute)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-a",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: failingServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	reg.UpsertHeartbeat(protocol.HeartbeatRequest{
+		AgentID:      "worker-b",
+		Tags:         []string{"gpu"},
+		LlamaSwapURL: successfulServer.URL,
+		Artifacts:    map[string]string{"qwen": "ready"},
+	}, now)
+	cooldowns := NewReplicaCooldowns(time.Minute)
+
+	reconciler := LoadedReconciler{
+		Config:           cfg,
+		Workers:          reg,
+		Client:           LlamaSwapClient{BearerToken: "llama-secret"},
+		Access:           NewAccessTracker(),
+		ReplicaCooldowns: cooldowns,
+	}
+	if err := reconciler.Reconcile(context.Background(), now); err == nil {
+		t.Fatal("Reconcile error = nil, want the failed replica error")
+	}
+	if failingCalls.Load() != 1 || successfulCalls.Load() != 1 {
+		t.Fatalf("load calls = failing:%d successful:%d, want both replicas attempted", failingCalls.Load(), successfulCalls.Load())
+	}
+	if !cooldowns.Active("worker-a", "qwen", time.Now()) {
+		t.Fatal("failed replica cooldown is not active")
+	}
+	if cooldowns.Active("worker-b", "qwen", time.Now()) {
+		t.Fatal("successful replica was incorrectly cooled down")
+	}
+}
+
 func TestLoadedReconcilerRecordsControlActionMetrics(t *testing.T) {
 	now := time.Unix(1000, 0)
 	var loadCalls atomic.Int32
@@ -471,7 +614,7 @@ func TestLoadedReconcilerExecutesWarmAction(t *testing.T) {
 	}
 }
 
-func TestLoadedReconcilerExecutesOnlyOneWarmActionPerCycle(t *testing.T) {
+func TestLoadedReconcilerExecutesOnlyOnePredictiveWarmActionPerCycle(t *testing.T) {
 	now := time.Unix(1000, 0)
 	var loadA atomic.Int32
 	var loadB atomic.Int32

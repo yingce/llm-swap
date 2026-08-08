@@ -159,8 +159,9 @@ disabled the gateway still runs with no external database.
   - `min_loaded=0` models behave as opportunity cache: they can remain loaded
     while capacity is spare, and are preferred eviction candidates when another
     model needs capacity.
-  - Plans gateway-owned `min_loaded` warm actions on empty eligible workers
-    before evicting another model for capacity.
+  - Plans gateway-owned `min_loaded` recovery as a priority-ordered batch on
+    distinct empty eligible workers, reserving each worker for at most one
+    action in the batch before considering eviction for capacity.
   - Plans conservative predictive warm actions when sustained demand beats the
     current replica value plus switch cost.
 
@@ -204,8 +205,11 @@ disabled the gateway still runs with no external database.
 - `internal/gateway/reconcile.go`
   - Loaded-replica reconciler.
   - Unloads excess idle replicas over explicit hard `max_loaded`.
-  - Executes Placement control actions to warm models below `min_loaded` on
-    empty eligible workers or free capacity when no empty worker is available.
+  - Concurrently dispatches an independent batch of empty-worker warm actions
+    for models below `min_loaded`, so one slow model startup does not block the
+    rest of the floor recovery. Failures and cooldowns remain replica-scoped.
+    When no empty worker is available, capacity freeing remains a staged
+    unload-then-warm operation.
   - Executes at most one predictive warm action per cycle after hard ceiling and
     min_loaded capacity actions.
   - Records gateway-initiated unload/warm success/failure as worker events.

@@ -89,6 +89,7 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 		}
 	}
 	placement := Placement{Config: r.Config, Workers: r.Workers, Access: r.Access, Pressure: r.Pressure, Cooldowns: r.Cooldowns}
+	warmActions := make([]ControlAction, 0)
 	for _, action := range placement.PlanControlActions(now) {
 		actionActive := r.Workers.ActiveSnapshot()
 		switch action.Type {
@@ -121,26 +122,45 @@ func (r LoadedReconciler) Reconcile(ctx context.Context, now time.Time) error {
 			r.logControlAction("control_action_planned", action, nil)
 			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "planned")
 			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_start", nil)
-			if err := r.clientForWorker(action.Worker).Load(ctx, action.Worker.LlamaSwapURL, action.Model); err != nil {
-				if r.RecordReachability != nil {
-					r.RecordReachability(action.Worker.ID, err, time.Now())
-				}
-				r.markWarmCooldown(action.Worker.ID, action.Model, "control_warm_failed")
-				r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_error", err)
-				r.logControlAction("control_action_error", action, err)
-				r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
-				outErr = errors.Join(outErr, err)
-				continue
-			}
-			if r.RecordReachability != nil {
-				r.RecordReachability(action.Worker.ID, nil, time.Now())
-			}
-			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_done", nil)
-			r.logControlAction("control_action_done", action, nil)
-			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "done")
+			warmActions = append(warmActions, action)
 		default:
 			continue
 		}
+	}
+	type warmResult struct {
+		action ControlAction
+		err    error
+	}
+	results := make(chan warmResult, len(warmActions))
+	for _, action := range warmActions {
+		go func(action ControlAction) {
+			results <- warmResult{
+				action: action,
+				err:    r.clientForWorker(action.Worker).Load(ctx, action.Worker.LlamaSwapURL, action.Model),
+			}
+		}(action)
+	}
+	for range warmActions {
+		result := <-results
+		action := result.action
+		if result.err != nil {
+			err := result.err
+			if r.RecordReachability != nil {
+				r.RecordReachability(action.Worker.ID, err, time.Now())
+			}
+			r.markWarmCooldown(action.Worker.ID, action.Model, "control_warm_failed")
+			r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_error", err)
+			r.logControlAction("control_action_error", action, err)
+			r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "error")
+			outErr = errors.Join(outErr, err)
+			continue
+		}
+		if r.RecordReachability != nil {
+			r.RecordReachability(action.Worker.ID, nil, time.Now())
+		}
+		r.recordWarmEvent(action.Worker.ID, action.Model, "gateway_model_warm_done", nil)
+		r.logControlAction("control_action_done", action, nil)
+		r.observeControlAction(string(action.Type), action.Model, action.Worker.ID, action.Reason, "done")
 	}
 	return outErr
 }
