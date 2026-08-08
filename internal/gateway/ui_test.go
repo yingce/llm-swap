@@ -450,7 +450,7 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 		LlamaSwapURL: "http://worker-upgrade-agent",
 		Artifacts:    map[string]string{"qwen": "ready"},
 		AgentBuild: protocol.BuildInfo{
-			ProtocolVersion: 1,
+			ProtocolVersion: minSupportedAgentProtocolVersion - 1,
 		},
 	})
 	postHeartbeat(t, srv, protocol.HeartbeatRequest{
