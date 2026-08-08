@@ -40,6 +40,13 @@ with at least seven hexadecimal Git commit characters, for example
 `@sha256:` image digest. `verify.sh` rejects `latest`, the template value, and
 mutable labels such as `frp-cu128`.
 
+Set `LLMSWAP_BUILD_VERSION` to the human Agent release identifier (the current
+v3 fencing release is `2026.08.08.1`) and set `LLMSWAP_BUILD_COMMIT` to the
+exact source Git SHA. They are separate required Docker build args: never put
+the commit SHA in the version field or reuse one value for both. `verify.sh`
+rejects equal values without printing either value. These build variables are
+not runtime container identity or credentials.
+
 Load the path references without printing them, create private directories,
 then write the agent token through a hidden prompt:
 
@@ -126,9 +133,10 @@ digests have different preparation paths.
 ### Commit-tag build path
 
 For a tag ending in the current Git commit, build the shared image once on the
-GPU host. First put a new commit-suffixed tag in `.env`; never rebuild or
-overwrite an older deployment tag. `docker compose build` can assign this tag
-to its output:
+GPU host. First put a new commit-suffixed tag plus the distinct Agent release
+version and source commit in `.env`; never rebuild or overwrite an older
+deployment tag. `docker compose build` passes those two values independently
+to `Dockerfile.agent` and can assign this tag to its output:
 
 ```bash
 LLMSWAP_VERIFY_REQUIRE_8_GPUS=1 bash ./verify.sh ./.env

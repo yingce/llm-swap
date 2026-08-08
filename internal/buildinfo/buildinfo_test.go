@@ -3,6 +3,7 @@ package buildinfo
 import "testing"
 
 func TestCurrentUsesSourceAgentVersionByDefault(t *testing.T) {
+	const wantVersion = "2026.08.08.1"
 	oldVersion, oldCommit, oldBuildTime := Version, Commit, BuildTime
 	t.Cleanup(func() {
 		Version, Commit, BuildTime = oldVersion, oldCommit, oldBuildTime
@@ -10,8 +11,8 @@ func TestCurrentUsesSourceAgentVersionByDefault(t *testing.T) {
 	Version, Commit, BuildTime = "", "", ""
 
 	got := Current(2)
-	if got.Version != AgentVersion {
-		t.Fatalf("version = %q, want source agent version %q", got.Version, AgentVersion)
+	if got.Version != wantVersion {
+		t.Fatalf("version = %q, want published Agent release %q", got.Version, wantVersion)
 	}
 }
 

@@ -38,6 +38,8 @@ new_fixture() {
   chmod 0600 "$fixture/secrets/agent-token"
   cat >"$fixture/.env" <<EOF
 WORKER_IMAGE=$image
+LLMSWAP_BUILD_VERSION=2026.08.08.1
+LLMSWAP_BUILD_COMMIT=abcdef1234567890
 LLMSWAP_GATEWAY_URL=http://gateway-host:8080
 WORKER_STATE_ROOT=$fixture/state
 MODEL_ROOT=$fixture/models
@@ -77,6 +79,10 @@ new_fixture valid
 expect_pass valid "$verify" "$fixture/.env"
 expect_output_contains valid 'Image mode: commit-tag build path.'
 
+new_fixture duplicated-build-identity
+sed -i 's/^LLMSWAP_BUILD_VERSION=.*/LLMSWAP_BUILD_VERSION=abcdef1234567890/' "$fixture/.env"
+expect_fail duplicated-build-identity "$verify" "$fixture/.env"
+
 new_fixture digest registry.local:5000/llmswap/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 expect_pass digest env PATH="$fake_bin:$original_path" DOCKER_REAL="$real_docker" "$verify" "$fixture/.env"
 expect_output_contains digest 'Image mode: preloaded digest deployment path.'
@@ -105,6 +111,8 @@ expect_fail symlink-model-root "$verify" "$fixture/.env"
 new_fixture relative-state-root
 cat >"$fixture/.env" <<EOF
 WORKER_IMAGE=registry.local:5000/llmswap/agent:frp-abcdef1
+LLMSWAP_BUILD_VERSION=2026.08.08.1
+LLMSWAP_BUILD_COMMIT=abcdef1234567890
 LLMSWAP_GATEWAY_URL=http://gateway-host:8080
 WORKER_STATE_ROOT=relative/state
 MODEL_ROOT=$fixture/models

@@ -66,6 +66,31 @@ func TestFabricDeployDoesNotReferenceTailscale(t *testing.T) {
 	}
 }
 
+func TestFabricGatewayBuildKeepsCommitAndBuildTimeWithoutInjectingAgentReleaseVersion(t *testing.T) {
+	fabfile := filepath.Join(fabfileRepoRoot(t), "scripts", "fabfile.py")
+	data, err := os.ReadFile(fabfile)
+	if err != nil {
+		t.Fatalf("read fabfile: %v", err)
+	}
+	text := string(data)
+
+	for _, forbidden := range []string{"LLMSWAP_BUILD_VERSION", "internal/buildinfo.Version="} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Gateway deploy build must not inject Agent release identity %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		`-e LLMSWAP_BUILD_COMMIT="$COMMIT"`,
+		`-e LLMSWAP_BUILD_TIME="$BUILD_TIME"`,
+		`internal/buildinfo.Commit=$LLMSWAP_BUILD_COMMIT`,
+		`internal/buildinfo.BuildTime=$LLMSWAP_BUILD_TIME`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("Gateway deploy build missing independent provenance injection %q", required)
+		}
+	}
+}
+
 func fabfileRepoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

@@ -100,7 +100,11 @@ func TestComposeDefinesEightIsolatedGPUWorkers(t *testing.T) {
 		if svc.Image == "" || svc.Build.Context != "../.." || svc.Build.Dockerfile != "Dockerfile.agent" {
 			t.Errorf("%s must use the shared Dockerfile.agent image/build: %#v", name, svc.Build)
 		}
-		wantArgs := map[string]string{"LLMSWAP_RUNTIME": "all"}
+		wantArgs := map[string]string{
+			"LLMSWAP_RUNTIME":       "all",
+			"LLMSWAP_BUILD_VERSION": "${LLMSWAP_BUILD_VERSION:?set LLMSWAP_BUILD_VERSION}",
+			"LLMSWAP_BUILD_COMMIT":  "${LLMSWAP_BUILD_COMMIT:?set LLMSWAP_BUILD_COMMIT}",
+		}
 		if !reflect.DeepEqual(svc.Build.Args, wantArgs) {
 			t.Errorf("%s build args = %#v, want %#v", name, svc.Build.Args, wantArgs)
 		}
@@ -207,7 +211,7 @@ func TestGatewayTestTemplateLoads(t *testing.T) {
 
 func TestEnvExampleContainsPathsAndNoCredentials(t *testing.T) {
 	raw := string(mustRead(t, ".env.example"))
-	for _, key := range []string{"WORKER_IMAGE=", "LLMSWAP_GATEWAY_URL=", "WORKER_STATE_ROOT=", "MODEL_ROOT=", "AGENT_TOKEN_FILE="} {
+	for _, key := range []string{"WORKER_IMAGE=", "LLMSWAP_BUILD_VERSION=", "LLMSWAP_BUILD_COMMIT=", "LLMSWAP_GATEWAY_URL=", "WORKER_STATE_ROOT=", "MODEL_ROOT=", "AGENT_TOKEN_FILE="} {
 		if !strings.Contains(raw, key) {
 			t.Errorf(".env.example missing %s", key)
 		}
@@ -222,6 +226,19 @@ func TestEnvExampleContainsPathsAndNoCredentials(t *testing.T) {
 	}
 	if !strings.Contains(raw, "WORKER_IMAGE=llmswap-agent:frp-REPLACE_WITH_GIT_SHA") {
 		t.Error(".env.example must force an immutable deployment-specific image tag")
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(raw, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["LLMSWAP_BUILD_VERSION"] == "" || values["LLMSWAP_BUILD_COMMIT"] == "" {
+		t.Fatal(".env.example must provide distinct non-empty Agent release and commit placeholders")
+	}
+	if values["LLMSWAP_BUILD_VERSION"] == values["LLMSWAP_BUILD_COMMIT"] {
+		t.Fatal(".env.example must not inject one value into both Agent release and commit")
 	}
 }
 

@@ -63,6 +63,8 @@ def load_required_env(path):
         values[key] = value
     required = {
         "WORKER_IMAGE",
+        "LLMSWAP_BUILD_VERSION",
+        "LLMSWAP_BUILD_COMMIT",
         "LLMSWAP_GATEWAY_URL",
         "WORKER_STATE_ROOT",
         "MODEL_ROOT",
@@ -73,6 +75,8 @@ def load_required_env(path):
     return values
 
 deployment_env = load_required_env(sys.argv[2])
+if deployment_env["LLMSWAP_BUILD_VERSION"] == deployment_env["LLMSWAP_BUILD_COMMIT"]:
+    raise SystemExit("Agent release version and source commit must be distinct")
 
 expected_names = [f"worker-gpu{i}" for i in range(8)]
 services = config.get("services", {})
@@ -95,7 +99,11 @@ for index, name in enumerate(expected_names):
     build = service.get("build", {})
     if os.path.basename(build.get("dockerfile", "")) != "Dockerfile.agent":
         raise SystemExit(f"{name}: must build Dockerfile.agent")
-    if build.get("args") != {"LLMSWAP_RUNTIME": "all"}:
+    if build.get("args") != {
+            "LLMSWAP_RUNTIME": "all",
+            "LLMSWAP_BUILD_VERSION": deployment_env["LLMSWAP_BUILD_VERSION"],
+            "LLMSWAP_BUILD_COMMIT": deployment_env["LLMSWAP_BUILD_COMMIT"],
+    }:
         raise SystemExit(f"{name}: unexpected build args")
 
     environment = service.get("environment", {})

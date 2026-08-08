@@ -5,6 +5,8 @@ x-worker-common: &worker-common
     dockerfile: Dockerfile.agent
     args:
       LLMSWAP_RUNTIME: all
+      LLMSWAP_BUILD_VERSION: ${LLMSWAP_BUILD_VERSION:?set LLMSWAP_BUILD_VERSION}
+      LLMSWAP_BUILD_COMMIT: ${LLMSWAP_BUILD_COMMIT:?set LLMSWAP_BUILD_COMMIT}
   environment:
     LLMSWAP_GATEWAY_URL: ${LLMSWAP_GATEWAY_URL:?set LLMSWAP_GATEWAY_URL}
     LLMSWAP_AGENT_TOKEN_FILE: /run/secrets/agent_token
