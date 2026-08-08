@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"llm-swap/internal/buildinfo"
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
@@ -440,20 +439,27 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 		LlamaSwapURL: "http://worker-current",
 		Artifacts:    map[string]string{"qwen": "ready"},
 		AgentBuild: protocol.BuildInfo{
-			Version:         buildinfo.AgentVersion,
+			Version:         "2026.08.08.99",
 			Commit:          "abc123",
 			ProtocolVersion: protocol.AgentProtocolVersion,
 		},
 	})
 	postHeartbeat(t, srv, protocol.HeartbeatRequest{
-		AgentID:      "worker-outdated",
+		AgentID:      "worker-upgrade-agent",
 		Tags:         []string{"gpu-4090"},
-		LlamaSwapURL: "http://worker-outdated",
+		LlamaSwapURL: "http://worker-upgrade-agent",
 		Artifacts:    map[string]string{"qwen": "ready"},
 		AgentBuild: protocol.BuildInfo{
-			Version:         "2026.07.06.0",
-			Commit:          "old123",
-			ProtocolVersion: protocol.AgentProtocolVersion,
+			ProtocolVersion: 1,
+		},
+	})
+	postHeartbeat(t, srv, protocol.HeartbeatRequest{
+		AgentID:      "worker-upgrade-gateway",
+		Tags:         []string{"gpu-4090"},
+		LlamaSwapURL: "http://worker-upgrade-gateway",
+		Artifacts:    map[string]string{"qwen": "ready"},
+		AgentBuild: protocol.BuildInfo{
+			ProtocolVersion: protocol.AgentProtocolVersion + 1,
 		},
 	})
 	postHeartbeat(t, srv, protocol.HeartbeatRequest{
@@ -481,11 +487,14 @@ func TestUIStatusIncludesAgentBuildAndVersionStatus(t *testing.T) {
 	if got := workers["worker-current"].AgentBuild.Commit; got != "abc123" {
 		t.Fatalf("worker-current commit=%q want abc123", got)
 	}
-	if got := workers["worker-current"].AgentVersionStatus; got != "current" {
-		t.Fatalf("worker-current version status=%q want current", got)
+	if got := workers["worker-current"].AgentVersionStatus; got != "compatible" {
+		t.Fatalf("worker-current version status=%q want compatible", got)
 	}
-	if got := workers["worker-outdated"].AgentVersionStatus; got != "outdated" {
-		t.Fatalf("worker-outdated version status=%q want outdated", got)
+	if got := workers["worker-upgrade-agent"].AgentVersionStatus; got != "upgrade_agent" {
+		t.Fatalf("worker-upgrade-agent version status=%q want upgrade_agent", got)
+	}
+	if got := workers["worker-upgrade-gateway"].AgentVersionStatus; got != "upgrade_gateway" {
+		t.Fatalf("worker-upgrade-gateway version status=%q want upgrade_gateway", got)
 	}
 	if got := workers["worker-legacy"].AgentVersionStatus; got != "legacy" {
 		t.Fatalf("worker-legacy version status=%q want legacy", got)

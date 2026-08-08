@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"llm-swap/internal/buildinfo"
 	"llm-swap/internal/config"
 	"llm-swap/internal/protocol"
 )
@@ -544,17 +543,22 @@ func (s *Server) workerLiveCapacity(cfg config.GatewayConfig, worker Worker, now
 	return capacity, available
 }
 
+const (
+	minSupportedAgentProtocolVersion = 2
+	maxSupportedAgentProtocolVersion = protocol.AgentProtocolVersion
+)
+
 func agentVersionStatus(build protocol.BuildInfo) string {
-	if build.ProtocolVersion == 0 && build.Commit == "" && build.Version == "" {
+	switch {
+	case build.ProtocolVersion <= 0:
 		return "legacy"
+	case build.ProtocolVersion < minSupportedAgentProtocolVersion:
+		return "upgrade_agent"
+	case build.ProtocolVersion > maxSupportedAgentProtocolVersion:
+		return "upgrade_gateway"
+	default:
+		return "compatible"
 	}
-	if build.ProtocolVersion < protocol.AgentProtocolVersion {
-		return "outdated"
-	}
-	if build.Version != buildinfo.AgentVersion {
-		return "outdated"
-	}
-	return "current"
 }
 
 func cooldownsForWorker(cooldowns ReplicaCooldownSnapshot, workerID string, now time.Time) []ReplicaCooldown {
